@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "v browser Bridge",
+  "version": "0.0.1",
+  "description": "Share browser tabs with v browser server",
+  "permissions": ["debugger", "activeTab", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "lib/background.mjs",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "v browser Bridge",
+    "default_icon": {
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "128": "icons/icon-128.png"
+  }
+}
