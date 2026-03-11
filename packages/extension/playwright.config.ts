@@ -16,7 +16,9 @@
 
 import { defineConfig } from '@playwright/test';
 
-import type { TestOptions } from '../playwright-mcp/tests/fixtures';
+type TestOptions = {
+  mcpBrowser?: string;
+};
 
 export default defineConfig<TestOptions>({
   testDir: './tests',

@@ -19,13 +19,15 @@ import { CopyToClipboard } from './copyToClipboard';
 import * as icons from './icons';
 import './authToken.css';
 
+const authTokenStorageKey = 'auth-token';
+
 export const AuthTokenSection: React.FC<{}> = ({}) => {
   const [authToken, setAuthToken] = useState<string>(getOrCreateAuthToken);
   const [isExampleExpanded, setIsExampleExpanded] = useState<boolean>(false);
 
   const onRegenerateToken = useCallback(() => {
     const newToken = generateAuthToken();
-    localStorage.setItem('auth-token', newToken);
+    localStorage.setItem(authTokenStorageKey, newToken);
     setAuthToken(newToken);
   }, []);
 
@@ -109,10 +111,22 @@ function generateAuthToken(): string {
 }
 
 export const getOrCreateAuthToken = (): string => {
-  let token = localStorage.getItem('auth-token');
+  let token = getStoredAuthToken();
   if (!token) {
     token = generateAuthToken();
-    localStorage.setItem('auth-token', token);
+    localStorage.setItem(authTokenStorageKey, token);
   }
   return token;
 }
+
+export const getStoredAuthToken = (): string => {
+  return localStorage.getItem(authTokenStorageKey) || '';
+};
+
+export const seedAuthToken = (token: string): string => {
+  const normalized = token.trim();
+  if (!normalized)
+    return getOrCreateAuthToken();
+  localStorage.setItem(authTokenStorageKey, normalized);
+  return normalized;
+};

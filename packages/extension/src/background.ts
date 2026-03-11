@@ -59,9 +59,8 @@ class TabShareExtension {
             (error: any) => sendResponse({ success: false, error: error.message }));
         return true;
       case 'connectToTab':
-        const tabId = message.tabId || sender.tab?.id!;
-        const windowId = message.windowId || sender.tab?.windowId!;
-        this._connectTab(sender.tab!.id!, tabId, windowId, message.mcpRelayUrl!).then(
+        this._resolveTargetTab(sender, message.tabId, message.windowId).then(
+          ({ tabId, windowId }) => this._connectTab(sender.tab?.id || tabId, tabId, windowId, message.mcpRelayUrl!)).then(
             () => sendResponse({ success: true }),
             (error: any) => sendResponse({ success: false, error: error.message }));
         return true; // Return true to indicate that the response will be sent asynchronously
@@ -104,6 +103,27 @@ class TabShareExtension {
     }
   }
 
+  private async _resolveTargetTab(sender: chrome.runtime.MessageSender, requestedTabId?: number, requestedWindowId?: number): Promise<{ tabId: number, windowId: number }> {
+    if (requestedTabId && requestedWindowId)
+      return { tabId: requestedTabId, windowId: requestedWindowId };
+
+    const tabs = await chrome.tabs.query({ lastFocusedWindow: true });
+    const candidate = tabs.find(tab => {
+      if (!tab.id || !tab.windowId || !tab.url)
+        return false;
+      if (tab.id === sender.tab?.id)
+        return false;
+      return !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('chrome:') && !tab.url.startsWith('edge:') && !tab.url.startsWith('devtools:');
+    });
+    if (candidate?.id && candidate.windowId)
+      return { tabId: candidate.id, windowId: candidate.windowId };
+
+    if (sender.tab?.id && sender.tab.windowId)
+      return { tabId: sender.tab.id, windowId: sender.tab.windowId };
+
+    throw new Error('No target tab available for extension connection');
+  }
+
   private async _connectTab(selectorTabId: number, tabId: number, windowId: number, mcpRelayUrl: string): Promise<void> {
     try {
       debugLog(`Connecting tab ${tabId} to relay at ${mcpRelayUrl}`);
@@ -119,6 +139,9 @@ class TabShareExtension {
         throw new Error('No active MCP relay connection');
       this._pendingTabSelection.delete(selectorTabId);
 
+      this._activeConnection.onTabIdChanged = (nextTabId) => {
+        void this._setConnectedTabId(nextTabId);
+      };
       this._activeConnection.setTabId(tabId);
       this._activeConnection.onclose = () => {
         debugLog('MCP connection closed');

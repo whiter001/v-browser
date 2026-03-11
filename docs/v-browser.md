@@ -2,11 +2,35 @@
 
 `v-browser` 是一个面向 AI Agent 的浏览器自动化 CLI 工具，基于 vlang 实现, 配合extension使用。
 
+## 安装与启动
+
+```bash
+# 构建 CLI
+cd packages/server
+v test .
+v -o ./v-browser .
+
+# 构建扩展
+cd ../extension
+npm install
+npm run build
+```
+
+然后在 Chrome / Chromium / Edge 中以开发者模式加载 packages/extension/dist。首次使用前，建议先打开扩展的状态页确认 token 已生成。
+
+连接时 CLI 会自动尝试拉起扩展连接页：
+
+```bash
+cd packages/server
+./v-browser connect
+```
+
 ---
 
 ## 快速开始
 
 ```bash
+v-browser connect
 v-browser open example.com
 v-browser snapshot                    # 获取带引用符的无障碍树
 v-browser click @e2                   # 通过快照引用符点击
@@ -46,8 +70,9 @@ v-browser close
 | `v-browser pdf <path>`                 | 保存为 PDF                                         |
 | `v-browser snapshot`                   | 获取带引用符的无障碍树（推荐 AI 使用）             |
 | `v-browser eval <js>`                  | 执行 JavaScript（`-b` base64，`--stdin` 管道输入） |
-| `v-browser connect <port>`             | 通过 CDP 连接浏览器                                |
+| `v-browser connect`                    | 自动打开扩展连接页并 attach 当前页面               |
 | `v-browser close`                      | 关闭浏览器（别名: quit, exit）                     |
+| `v-browser --json ...`                 | 以统一 JSON 包装输出结果或错误                     |
 
 ---
 
@@ -80,16 +105,16 @@ v-browser is checked <sel>       # 检查是否已勾选
 ## 查找元素（语义定位器）
 
 ```bash
-v-browser find role <role> <action> [value]       # 按 ARIA 角色
+v-browser find role <role> <action> [value]       # 按 role / 隐式角色
 v-browser find text <text> <action>               # 按文本内容
-v-browser find label <label> <action> [value]     # 按标签
-v-browser find placeholder <ph> <action> [value]  # 按占位符
-v-browser find alt <text> <action>               # 按 alt 文本
+v-browser find label <label> <action> [value]     # 按 label 文本关联控件
+v-browser find placeholder <ph> <action> [value]  # 按 placeholder
+v-browser find alt <text> <action>                # 按 alt 文本
 v-browser find title <text> <action>              # 按 title 属性
 v-browser find testid <id> <action> [value]       # 按 data-testid
 v-browser find first <sel> <action> [value]       # 第一个匹配
 v-browser find last <sel> <action> [value]        # 最后一个匹配
-v-browser find nth <n> <sel> <action> [value]     # 第 n 个匹配
+v-browser find nth <n> <sel> <action> [value]     # 第 n 个匹配（从 0 开始）
 ```
 
 **支持的 Actions:** `click`, `fill`, `type`, `hover`, `focus`, `check`, `uncheck`, `text`
@@ -105,6 +130,7 @@ v-browser find nth <n> <sel> <action> [value]     # 第 n 个匹配
 v-browser find role button click --name "Submit"
 v-browser find text "Sign In" click
 v-browser find label "Email" fill "test@test.com"
+v-browser find alt "Hero banner" click
 v-browser find first ".item" click
 v-browser find nth 2 "a" text
 ```
@@ -138,6 +164,8 @@ v-browser mouse wheel <dy> [dx]   # 滚动滚轮
 ---
 
 ## 浏览器设置
+
+当前 `set device` 内置这些预设：`iPhone 14`、`iPhone 14 Pro`、`Pixel 7`、`iPad mini`。
 
 ```bash
 v-browser set viewport <w> <h> [scale]  # 设置视口大小 (scale 为视网膜缩放，如 2)
@@ -173,6 +201,8 @@ v-browser storage session        # 同上
 
 ## 网络
 
+当前 `network route` / `unroute` / `network requests` 已可用；请求状态码依赖浏览器返回的 `Network.responseReceived` / `Network.responseReceivedExtraInfo`，因此少数请求可能只显示基础信息。
+
 ```bash
 v-browser network route <url>              # 拦截请求
 v-browser network route <url> --abort      # 阻止请求
@@ -189,14 +219,16 @@ v-browser network requests --filter api    # 过滤请求
 ```bash
 v-browser tab                     # 列出标签页
 v-browser tab new [url]          # 新建标签页（可选带 URL）
-v-browser tab <n>                # 切换到第 n 个标签页
-v-browser tab close [n]           # 关闭标签页
-v-browser window new             # 新建窗口
+v-browser tab switch <id>        # 切换到指定 tab id
+v-browser tab close <id>         # 关闭指定 tab id
+v-browser window new [url]       # 新建窗口并切换到该窗口的首个标签页
 ```
 
 ---
 
 ## 框架
+
+当前 `frame` 已支持同源 iframe / `srcdoc` 场景；跨域 iframe 仍未支持。
 
 ```bash
 v-browser frame <sel>            # 切换到 iframe
@@ -215,6 +247,8 @@ v-browser dialog dismiss          # 关闭
 ---
 
 ## 差异对比
+
+当前仅 `diff snapshot` 可用，`diff screenshot` 和 `diff url` 尚未实现。
 
 ```bash
 # 快照对比
@@ -238,6 +272,8 @@ v-browser diff url https://v1.com https://v2.com --selector "#main"  # 限定元
 
 ## 调试
 
+`trace stop` 现在会把 CDP trace 流真正写到文件；`console`、`errors`、`highlight`、`profiler` 保持可用。
+
 ```bash
 v-browser trace start [path]       # 开始录制 trace
 v-browser trace stop [path]        # 停止并保存 trace
@@ -248,8 +284,26 @@ v-browser console --clear         # 清除控制台
 v-browser errors                   # 查看页面错误（未捕获的 JS 异常）
 v-browser errors --clear          # 清除错误
 v-browser highlight <sel>         # 高亮元素
+```
 
-# 状态管理
+## JSON 输出
+
+```bash
+v-browser --json status
+v-browser --json get title
+v-browser --json find text "Submit" click
+```
+
+输出格式当前统一为：
+
+- 成功：`{"ok":true,"result":...}`
+- 失败：`{"ok":false,"error":{"code":"...","message":"..."}}`
+
+当前错误码已覆盖常见场景，例如 `INVALID_ARGUMENT`、`NOT_FOUND`、`NOT_CONNECTED`、`TIMEOUT`、`COMMAND_FAILED`。
+
+## 状态管理
+
+```bash
 v-browser state save <path>        # 保存认证状态
 v-browser state load <path>       # 加载认证状态
 v-browser state list              # 列出保存的状态文件
@@ -284,5 +338,5 @@ v-browser fill @e3 "text"      # 填充引用符指向的输入框
 ---
 
 > 参考项目:
-> https://github.com/vercel-labs/agent-browser
-> https://github.com/microsoft/playwright-mcp#
+> [agent-browser](https://github.com/vercel-labs/agent-browser)
+> [playwright-mcp](https://github.com/microsoft/playwright-mcp)

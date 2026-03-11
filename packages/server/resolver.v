@@ -1,0 +1,163 @@
+// resolver.v — 统一选择器解析：@eN → CSS/XPath → 坐标
+// 输出: (x, y f64) 用于 Input.dispatchMouseEvent
+//        + backend_node_id 用于 DOM 操作
+module main
+
+struct ResolvedElement {
+	x               f64
+	y               f64
+	width           f64
+	height          f64
+	backend_node_id int
+	object_id       string // Runtime RemoteObjectId
+}
+
+// resolve_selector 统一解析选择器，返回元素信息
+fn resolve_selector(mut sess CdpSession, sel string) !ResolvedElement {
+	if axref_is_ref(sel) {
+		return resolve_axref(mut sess, sel)
+	}
+	return resolve_css(mut sess, sel)
+}
+
+// resolve_axref 通过 @eN 引用查元素坐标
+fn resolve_axref(mut sess CdpSession, ref string) !ResolvedElement {
+	r := axref_get(&sess.axref, ref) or {
+		return error('unknown ref ${ref}: run `v-browser snapshot` first')
+	}
+	if r.has_coords {
+		return ResolvedElement{
+			x:               r.x
+			y:               r.y
+			backend_node_id: r.backend_node_id
+		}
+	}
+	// 通过 backendNodeId 查边界框
+	return get_box_by_backend_node_id(mut sess, r.backend_node_id)
+}
+
+// resolve_css 通过 CSS 选择器查元素（支持 XPath: 以 //  开头）
+fn resolve_css(mut sess CdpSession, sel string) !ResolvedElement {
+	js := build_rect_query_js(&sess, sel)
+
+	eval_resp := sess.send_command('Runtime.evaluate', '{"expression":${js_str(js)},"returnByValue":true}') or {
+		return error('Runtime.evaluate failed: ${err}')
+	}
+
+	result_obj := cdp_extract_obj_key(eval_resp.result, '"result":')
+	value_obj := cdp_extract_obj_key(result_obj, '"value":')
+	if value_obj == '' || value_obj == 'null' {
+		return error('element not found: ${sel}')
+	}
+
+	x := cdp_extract_float(value_obj, 'x')
+	y := cdp_extract_float(value_obj, 'y')
+	w := cdp_extract_float(value_obj, 'width')
+	h := cdp_extract_float(value_obj, 'height')
+
+	// 获取 backendNodeId via DOM.querySelector
+	bnid := get_backend_node_id(mut sess, sel) or { 0 }
+
+	return ResolvedElement{
+		x:               x + w / 2
+		y:               y + h / 2
+		width:           w
+		height:          h
+		backend_node_id: bnid
+	}
+}
+
+// get_box_by_backend_node_id 通过 backendNodeId 获取元素位置
+fn get_box_by_backend_node_id(mut sess CdpSession, bnid int) !ResolvedElement {
+	// 先 resolve 到 nodeId
+	resolve_resp := sess.send_command('DOM.resolveNode', '{"backendNodeId":${bnid}}') or {
+		return error('DOM.resolveNode failed: ${err}')
+	}
+	object_id := cdp_extract_str(resolve_resp.result, 'objectId')
+	if object_id == '' {
+		return error('could not resolve backendNodeId ${bnid}')
+	}
+	// 通过 Runtime 获取 boundingClientRect
+	call_resp := sess.send_command('Runtime.callFunctionOn', '{"objectId":${json_str(object_id)},"functionDeclaration":"function(){return this.getBoundingClientRect()}","returnByValue":true}') or {
+		return error('callFunctionOn failed: ${err}')
+	}
+	result_obj := cdp_extract_obj_key(call_resp.result, '"result":')
+	value_obj := cdp_extract_obj_key(result_obj, '"value":')
+	x := cdp_extract_float(value_obj, 'x')
+	y := cdp_extract_float(value_obj, 'y')
+	w := cdp_extract_float(value_obj, 'width')
+	h := cdp_extract_float(value_obj, 'height')
+	return ResolvedElement{
+		x:               x + w / 2
+		y:               y + h / 2
+		width:           w
+		height:          h
+		backend_node_id: bnid
+		object_id:       object_id
+	}
+}
+
+fn get_backend_node_id(mut sess CdpSession, sel string) !int {
+	lookup_js := build_element_scope_js(&sess, sel, 'return el;')
+	resolve_resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(lookup_js)}}') or {
+		return error(err.msg())
+	}
+	object_id := cdp_extract_str(resolve_resp.result, 'objectId')
+	if object_id == '' {
+		return error('element not found: ${sel}')
+	}
+	node_resp := sess.send_command('DOM.requestNode', '{"objectId":${json_str(object_id)}}') or {
+		return error(err.msg())
+	}
+	nid := cdp_extract_int(node_resp.result, '"nodeId":')
+	if nid == 0 { return error('element not found: ${sel}') }
+	desc_resp := sess.send_command('DOM.describeNode', '{"nodeId":${nid},"depth":0}') or {
+		return error(err.msg())
+	}
+	return cdp_extract_int(desc_resp.result, '"backendNodeId":')
+}
+
+fn build_document_scope_js(sess &CdpSession, body string) string {
+	if sess.current_frame_selector == '' {
+		return '(function(){ var frame=null; var doc=document; var win=window; ${body} })()'
+	}
+	frame_sel := js_str(sess.current_frame_selector)
+	return '(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${body} })()'
+}
+
+fn build_element_scope_js(sess &CdpSession, sel string, body string) string {
+	query := if sel.starts_with('//') || sel.starts_with('(//') {
+		'var el=doc.evaluate(${js_str(sel)}, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;'
+	} else {
+		'var el=doc.querySelector(${js_str(sel)});'
+	}
+	return build_document_scope_js(sess, '${query} ${body}')
+}
+
+fn build_elements_scope_js(sess &CdpSession, sel string, body string) string {
+	return build_document_scope_js(sess, 'var els=doc.querySelectorAll(${js_str(sel)}); ${body}')
+}
+
+fn build_rect_query_js(sess &CdpSession, sel string) string {
+	return build_element_scope_js(sess, sel, 'if(!el) return null; var r=el.getBoundingClientRect(); if(frame){ var fr=frame.getBoundingClientRect(); return {x:fr.x+r.x,y:fr.y+r.y,width:r.width,height:r.height}; } return r;')
+}
+
+// ─── 帮助函数 ────────────────────────────────────────────────
+
+fn cdp_extract_float(s string, key string) f64 {
+	search := '"${key}":'
+	idx := s.index(search) or { return 0.0 }
+	rest := s[idx + search.len..].trim_left(' ')
+	mut end := 0
+	for end < rest.len && rest[end] !in [`,`, `}`, `]`, ` `, `\n`].map(u8(it)) { end++ }
+	return rest[..end].f64()
+}
+
+fn js_str(s string) string {
+	return json_str(s) // JSON 字符串恰好也是合法 JS 字符串字面量
+}
+
+// scroll_into_view_js 返回让元素进入视野的 JS 代码片段（injectElement 用）
+fn scroll_into_view_js(sel string) string {
+	return "document.querySelector(${js_str(sel)})?.scrollIntoView({block:'center',inline:'center'})"
+}

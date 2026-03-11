@@ -17,7 +17,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button, TabItem } from './tabItem';
-import { AuthTokenSection, getOrCreateAuthToken } from './authToken';
+import { AuthTokenSection, getOrCreateAuthToken, getStoredAuthToken, seedAuthToken } from './authToken';
 
 import type { TabInfo } from './tabItem';
 
@@ -59,8 +59,6 @@ const ConnectApp: React.FC = () => {
         return;
       }
 
-      setMcpRelayUrl(relayUrl);
-
       try {
         const client = JSON.parse(params.get('client') || '{}');
         const info = `${client.name}/${client.version}`;
@@ -89,19 +87,24 @@ const ConnectApp: React.FC = () => {
         return;
       }
 
-      const expectedToken = getOrCreateAuthToken();
-      const token = params.get('token');
-      if (token === expectedToken) {
-        await connectToMCPRelay(relayUrl);
-        await handleConnectToTab();
-        return;
+      const urlToken = params.get('token')?.trim() || '';
+      const storedToken = getStoredAuthToken();
+      let expectedToken = storedToken;
+      if (urlToken && urlToken !== storedToken) {
+        expectedToken = seedAuthToken(urlToken);
+      } else if (!storedToken) {
+        expectedToken = getOrCreateAuthToken();
       }
-      if (token) {
-        handleReject('Invalid token provided.');
+      const relayUrlWithToken = appendTokenToRelayUrl(relayUrl, expectedToken);
+      setMcpRelayUrl(relayUrlWithToken);
+
+      if (urlToken) {
+        await connectToMCPRelay(relayUrlWithToken);
+        await handleConnectToTab(undefined, relayUrlWithToken);
         return;
       }
 
-      await connectToMCPRelay(relayUrl);
+      await connectToMCPRelay(relayUrlWithToken);
 
       // If this is a browser_navigate command, hide the tab list and show simple allow/reject
       if (params.get('newTab') === 'true') {
@@ -134,14 +137,15 @@ const ConnectApp: React.FC = () => {
       setStatus({ type: 'error', message: 'Failed to load tabs: ' + response.error });
   }, []);
 
-  const handleConnectToTab = useCallback(async (tab?: TabInfo) => {
+  const handleConnectToTab = useCallback(async (tab?: TabInfo, relayUrlOverride?: string) => {
     setShowButtons(false);
     setShowTabList(false);
 
     try {
+      const relayUrl = relayUrlOverride || mcpRelayUrl;
       const response = await chrome.runtime.sendMessage({
         type: 'connectToTab',
-        mcpRelayUrl,
+        mcpRelayUrl: relayUrl,
         tabId: tab?.id,
         windowId: tab?.windowId,
       });
@@ -260,4 +264,11 @@ const container = document.getElementById('root');
 if (container) {
   const root = createRoot(container);
   root.render(<ConnectApp />);
+}
+
+function appendTokenToRelayUrl(relayUrl: string, token: string): string {
+  const url = new URL(relayUrl);
+  if (token)
+    url.searchParams.set('token', token);
+  return url.toString();
 }

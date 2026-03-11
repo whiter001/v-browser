@@ -1,0 +1,7 @@
+# V binaries
+v-browser
+server
+
+# Build outputs
+*.c
+*.o

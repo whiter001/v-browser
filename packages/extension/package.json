@@ -23,6 +23,7 @@
     "clean": "rm -rf dist"
   },
   "devDependencies": {
+    "@playwright/test": "^1.54.2",
     "@types/chrome": "^0.0.315",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
