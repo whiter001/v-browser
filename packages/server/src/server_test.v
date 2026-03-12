@@ -197,6 +197,17 @@ fn test_cdp_on_message_tracks_network_requests() {
 	assert json.contains('"finished":true')
 }
 
+fn test_cdp_on_message_tracks_dialog_events() {
+	mut sess := new_cdp_session(noop_send)
+	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Page.javascriptDialogOpening","params":{"url":"http://127.0.0.1:48280/lab.html","message":"fixture prompt","type":"prompt","hasBrowserHandler":true,"defaultPrompt":"prefilled"}}}')
+	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Page.javascriptDialogClosed","params":{"result":true,"userInput":"typed by v-browser"}}}')
+	assert sess.dialog_events.len == 2
+	assert sess.dialog_events[0].contains('Page.javascriptDialogOpening')
+	assert sess.dialog_events[0].contains('fixture prompt')
+	assert sess.dialog_events[1].contains('Page.javascriptDialogClosed')
+	assert sess.dialog_events[1].contains('typed by v-browser')
+}
+
 fn test_cdp_on_message_routes_pending_response() {
 	mut sess := new_cdp_session(noop_send)
 	ch := chan ProtocolResponse{cap: 1}

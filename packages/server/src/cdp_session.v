@@ -51,9 +51,12 @@ mut:
 	network_request_order  []string
 	network_enabled        bool
 	network_mu             sync.Mutex
+	page_enabled           bool
+	page_mu                sync.Mutex
 	// 运行时缓存（debug 命令使用）
 	console_msgs []string
 	page_errors  []string
+	dialog_events []string
 }
 
 fn new_cdp_session(send_fn fn (string) !) &CdpSession {
@@ -216,6 +219,7 @@ fn (mut s CdpSession) attach_to_tab() !string {
 	resp := s.send_bridge_command_to('attachToTab', '{}', cdp_attach_timeout) or {
 		return error(if err.msg().contains('timed out') { 'Extension connection timeout: no extension connected within 60s. Please install the v-browser extension and allow the connection.' } else { err.msg() })
 	}
+	s.enable_page_events() or {}
 	s.enable_network_tracking() or {}
 	return resp.result
 }
@@ -247,6 +251,9 @@ fn (mut s CdpSession) on_message(raw string) {
 			} else if inner_method == 'Runtime.exceptionThrown' {
 				s.page_errors << inner_params
 				if s.page_errors.len > 200 { s.page_errors = s.page_errors[1..] }
+			} else if inner_method == 'Page.javascriptDialogOpening' || inner_method == 'Page.javascriptDialogClosed' {
+				s.dialog_events << '{"method":${json_str(inner_method)},"params":${inner_params}}'
+				if s.dialog_events.len > 50 { s.dialog_events = s.dialog_events[1..] }
 			} else if inner_method.starts_with('Network.') {
 				track_network_event(mut s, inner_method, inner_params)
 			}
@@ -317,6 +324,19 @@ fn (mut s CdpSession) enable_network_tracking() ! {
 	s.network_mu.@lock()
 	s.network_enabled = true
 	s.network_mu.unlock()
+}
+
+fn (mut s CdpSession) enable_page_events() ! {
+	s.page_mu.@lock()
+	if s.page_enabled {
+		s.page_mu.unlock()
+		return
+	}
+	s.page_mu.unlock()
+	s.send_command('Page.enable', '{}')!
+	s.page_mu.@lock()
+	s.page_enabled = true
+	s.page_mu.unlock()
 }
 
 fn (mut s CdpSession) network_requests_json(filter string) string {

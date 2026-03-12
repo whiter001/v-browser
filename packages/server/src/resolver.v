@@ -12,6 +12,11 @@ struct ResolvedElement {
 	object_id       string // Runtime RemoteObjectId
 }
 
+struct DomNodeRef {
+	backend_node_id int
+	object_id       string
+}
+
 // resolve_selector 统一解析选择器，返回元素信息
 fn resolve_selector(mut sess CdpSession, sel string) !ResolvedElement {
 	if axref_is_ref(sel) {
@@ -55,15 +60,15 @@ fn resolve_css(mut sess CdpSession, sel string) !ResolvedElement {
 	w := cdp_extract_float(value_obj, 'width')
 	h := cdp_extract_float(value_obj, 'height')
 
-	// 获取 backendNodeId via DOM.querySelector
-	bnid := get_backend_node_id(mut sess, sel) or { 0 }
+	node_ref := get_dom_node_ref(mut sess, sel) or { DomNodeRef{} }
 
 	return ResolvedElement{
 		x:               x + w / 2
 		y:               y + h / 2
 		width:           w
 		height:          h
-		backend_node_id: bnid
+		backend_node_id: node_ref.backend_node_id
+		object_id:       node_ref.object_id
 	}
 }
 
@@ -97,7 +102,7 @@ fn get_box_by_backend_node_id(mut sess CdpSession, bnid int) !ResolvedElement {
 	}
 }
 
-fn get_backend_node_id(mut sess CdpSession, sel string) !int {
+fn get_dom_node_ref(mut sess CdpSession, sel string) !DomNodeRef {
 	lookup_js := build_element_scope_js(&sess, sel, 'return el;')
 	resolve_resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(lookup_js)}}') or {
 		return error(err.msg())
@@ -107,14 +112,25 @@ fn get_backend_node_id(mut sess CdpSession, sel string) !int {
 		return error('element not found: ${sel}')
 	}
 	node_resp := sess.send_command('DOM.requestNode', '{"objectId":${json_str(object_id)}}') or {
-		return error(err.msg())
+		return DomNodeRef{
+			object_id: object_id
+		}
 	}
 	nid := cdp_extract_int(node_resp.result, '"nodeId":')
-	if nid == 0 { return error('element not found: ${sel}') }
-	desc_resp := sess.send_command('DOM.describeNode', '{"nodeId":${nid},"depth":0}') or {
-		return error(err.msg())
+	if nid == 0 {
+		return DomNodeRef{
+			object_id: object_id
+		}
 	}
-	return cdp_extract_int(desc_resp.result, '"backendNodeId":')
+	desc_resp := sess.send_command('DOM.describeNode', '{"nodeId":${nid},"depth":0}') or {
+		return DomNodeRef{
+			object_id: object_id
+		}
+	}
+	return DomNodeRef{
+		backend_node_id: cdp_extract_int(desc_resp.result, '"backendNodeId":')
+		object_id:       object_id
+	}
 }
 
 fn build_document_scope_js(sess &CdpSession, body string) string {

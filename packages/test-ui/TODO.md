@@ -11,5 +11,5 @@
 
 ## 验证观察
 
-- 已通过：open、wait、title、fill、select、check、localstorage、sessionstorage、cookies、network requests（通过 eval 触发）
-- 待确认：click、hover、upload、dialog、frame 内 DOM 读取，这一轮表现更像 v-browser 命令行为问题，不是 fixture 缺少靶点
+- 已通过：open、wait、title、fill、select、check、click、hover、upload、frame、localstorage、sessionstorage、cookies、network requests（通过 eval 触发）
+- 仍待确认：dialog。当前在 Chrome + debugger/extension 这条链路里，点击按钮和直接 eval 都没有让 `Page.handleJavaScriptDialog` 看到可处理的 JS dialog，更像运行环境限制，不是 fixture 靶点缺失

@@ -80,11 +80,76 @@ fn cmd_eval(mut sess CdpSession, params string) string {
 		decoded := base64.decode_str(expr)
 		decoded
 	} else { expr }
-	p := '{"expression":${json_str(actual_expr)},"returnByValue":true,"awaitPromise":${await_promise}}'
-	resp := sess.send_command('Runtime.evaluate', p) or { return 'ERROR:${err}' }
+	val := eval_scoped_expression(mut sess, actual_expr, await_promise) or { return 'ERROR:${err}' }
+	return json_str(val)
+}
+
+fn build_scoped_runtime_js(sess &CdpSession, body string) string {
+	if sess.current_frame_selector == '' {
+		return '(function(document, window){ ${body} })(document, window)'
+	}
+	frame_sel := js_str(sess.current_frame_selector)
+	return '(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; return (function(document, window){ ${body} })(doc, win); })()'
+}
+
+fn evaluate_bool_js(mut sess CdpSession, js string) !bool {
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
 	result := cdp_extract_obj_key(resp.result, '"result":')
 	val := cdp_extract_value_from_result(result)
-	return json_str(val)
+	return val == 'true'
+}
+
+fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) !string {
+	scoped_expr := build_scoped_runtime_js(&sess, 'return window.eval(${js_str(expr)});')
+	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":${await_promise}}'
+	resp := sess.send_command('Runtime.evaluate', p)!
+	result := cdp_extract_obj_key(resp.result, '"result":')
+	return cdp_extract_value_from_result(result)
+}
+
+fn resolve_object_id_by_selector(mut sess CdpSession, sel string) !string {
+	js := build_scoped_runtime_js(&sess, 'return document.querySelector(${js_str(sel)});')
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}')!
+	object_id := cdp_extract_str(resp.result, 'objectId')
+	if object_id == '' {
+		return error('element not found: ${sel}')
+	}
+	return object_id
+}
+
+fn run_element_action(mut sess CdpSession, sel string, body string) ! {
+	expr := '(function(){ var el=document.querySelector(${js_str(sel)}); if(el === null) return false; ${body} })()'
+	ok := eval_scoped_expression(mut sess, expr, false)! == 'true'
+	if !ok {
+		return error('element not found: ${sel}')
+	}
+}
+
+fn build_click_action_body() string {
+	return 'if(typeof el.click === "function") { el.click(); return true; } el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: win })); return true;'
+}
+
+fn build_dblclick_action_body() string {
+	return 'if(typeof el.click === "function") { el.click(); el.click(); } el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: win, detail: 2 })); return true;'
+}
+
+fn build_hover_action_body() string {
+	return 'var events=["pointerover","mouseover","pointerenter","mouseenter","mousemove"]; for (var i=0;i<events.length;i++) { var name=events[i]; el.dispatchEvent(new MouseEvent(name, { bubbles: name !== "mouseenter" && name !== "pointerenter", cancelable: true, view: window })); } return true;'
+}
+
+fn build_fill_action_body(text string) string {
+	value_js := js_str(text)
+	return 'el.focus(); if ("value" in el) { el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); el.value = ${value_js}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; } if (el.isContentEditable) { el.textContent = ${value_js}; el.dispatchEvent(new Event("input", { bubbles: true })); return true; } return false;'
+}
+
+fn build_type_action_body(text string) string {
+	value_js := js_str(text)
+	return 'el.focus(); if ("value" in el) { var current = el.value || ""; el.value = current + ${value_js}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; } if (el.isContentEditable) { el.textContent = (el.textContent || "") + ${value_js}; el.dispatchEvent(new Event("input", { bubbles: true })); return true; } return false;'
+}
+
+fn build_toggle_action_body(checked bool) string {
+	checked_js := if checked { 'true' } else { 'false' }
+	return 'if(!("checked" in el)) return false; el.focus(); el.checked = ${checked_js}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true;'
 }
 
 fn cdp_extract_value_from_result(result_obj string) string {
@@ -229,35 +294,33 @@ fn ax_prop(node_str string, prop string) string {
 fn cmd_click(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' { return 'ERROR:missing selector' }
-	el := resolve_selector(mut sess, sel) or { return 'ERROR:${err}' }
-	mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
+	if el := resolve_selector(mut sess, sel) {
+		mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
+		return 'null'
+	}
+	run_element_action(mut sess, sel, build_click_action_body()) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
 fn cmd_dblclick(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' { return 'ERROR:missing selector' }
-	el := resolve_selector(mut sess, sel) or { return 'ERROR:${err}' }
-	mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
-	time.sleep(50 * time.millisecond)
-	mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
+	run_element_action(mut sess, sel, build_dblclick_action_body()) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
 fn mouse_click(mut sess CdpSession, x f64, y f64) ! {
-	for typ in ['mousePressed', 'mouseReleased'] {
-		sess.send_command('Input.dispatchMouseEvent', '{"type":"${typ}","x":${x},"y":${y},"button":"left","clickCount":1}')!
-	}
+	sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseMoved","x":${x},"y":${y},"button":"none","buttons":0}')!
+	sess.send_command('Input.dispatchMouseEvent', '{"type":"mousePressed","x":${x},"y":${y},"button":"left","buttons":1,"clickCount":1}')!
+	time.sleep(20 * time.millisecond)
+	sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseReleased","x":${x},"y":${y},"button":"left","buttons":0,"clickCount":1}')!
 }
 
 // ─── hover ──────────────────────────────────────────────────
 fn cmd_hover(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' { return 'ERROR:missing selector' }
-	el := resolve_selector(mut sess, sel) or { return 'ERROR:${err}' }
-	sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseMoved","x":${el.x},"y":${el.y}}') or {
-		return 'ERROR:${err}'
-	}
+	run_element_action(mut sess, sel, build_hover_action_body()) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
@@ -279,18 +342,7 @@ fn cmd_fill(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	text := cdp_extract_str(params, 'text')
 	if sel == '' { return 'ERROR:missing selector' }
-	// 点击聚焦
-	el := resolve_selector(mut sess, sel) or { return 'ERROR:${err}' }
-	mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
-	// 全选清空
-	sess.send_command('Input.dispatchKeyEvent', '{"type":"keyDown","key":"a","modifiers":4}') or {}
-	sess.send_command('Input.dispatchKeyEvent', '{"type":"keyUp","key":"a","modifiers":4}') or {}
-	// 插入文本
-	if text.len > 0 {
-		sess.send_command('Input.insertText', '{"text":${json_str(text)}}') or {
-			return 'ERROR:${err}'
-		}
-	}
+	run_element_action(mut sess, sel, build_fill_action_body(text)) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
@@ -299,11 +351,7 @@ fn cmd_type_text(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	text := cdp_extract_str(params, 'text')
 	if sel == '' { return 'ERROR:missing selector' }
-	el := resolve_selector(mut sess, sel) or { return 'ERROR:${err}' }
-	mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
-	sess.send_command('Input.insertText', '{"text":${json_str(text)}}') or {
-		return 'ERROR:${err}'
-	}
+	run_element_action(mut sess, sel, build_type_action_body(text)) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
@@ -381,20 +429,14 @@ fn cmd_select(mut sess CdpSession, params string) string {
 fn cmd_check(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' { return 'ERROR:missing selector' }
-	js := build_element_scope_js(&sess, sel, 'if(!el) return; if(!el.checked) el.click();')
-	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
-		return 'ERROR:${err}'
-	}
+	run_element_action(mut sess, sel, build_toggle_action_body(true)) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
 fn cmd_uncheck(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' { return 'ERROR:missing selector' }
-	js := build_element_scope_js(&sess, sel, 'if(!el) return; if(el.checked) el.click();')
-	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
-		return 'ERROR:${err}'
-	}
+	run_element_action(mut sess, sel, build_toggle_action_body(false)) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
@@ -466,14 +508,11 @@ fn cmd_upload(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	files_str := cdp_extract_str(params, 'files')
 	if sel == '' { return 'ERROR:missing selector' }
-	el := resolve_selector(mut sess, sel) or { return 'ERROR:${err}' }
 	files := files_str.split(',').map(it.trim_space()).filter(it != '')
 	if files.len == 0 { return 'ERROR:no files specified' }
-	// DOM.setFileInputFiles requires nodeId
-	bnid := el.backend_node_id
-	if bnid == 0 { return 'ERROR:could not resolve element backendNodeId' }
 	files_json := '[' + files.map(json_str(it)).join(',') + ']'
-	sess.send_command('DOM.setFileInputFiles', '{"backendNodeId":${bnid},"files":${files_json}}') or {
+	object_id := resolve_object_id_by_selector(mut sess, sel) or { return 'ERROR:${err}' }
+	sess.send_command('DOM.setFileInputFiles', '{"objectId":${json_str(object_id)},"files":${files_json}}') or {
 		return 'ERROR:${err}'
 	}
 	return 'null'
@@ -788,28 +827,15 @@ fn exec_semantic_action(mut sess CdpSession, locator_js string, locator string, 
 }
 
 fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, locator string) string {
-	js := build_semantic_action_js(&sess, locator_js, 'if (!el) return null; var r = el.getBoundingClientRect(); if (frame) { var fr = frame.getBoundingClientRect(); return { x: fr.x + r.x, y: fr.y + r.y, width: r.width, height: r.height }; } return { x: r.x, y: r.y, width: r.width, height: r.height };')
-	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
-		return 'ERROR:${err}'
+	body := match action {
+		'click' { build_click_action_body() }
+		'hover' { build_hover_action_body() }
+		else { return 'ERROR:unknown action: ${action}' }
 	}
-	result := cdp_extract_obj_key(resp.result, '"result":')
-	val_obj := cdp_extract_obj_key(result, '"value":')
-	if val_obj == '' || val_obj == 'null' { return 'ERROR:element not found: ${locator}' }
-	x := cdp_extract_float(val_obj, 'x')
-	y := cdp_extract_float(val_obj, 'y')
-	w := cdp_extract_float(val_obj, 'width')
-	h := cdp_extract_float(val_obj, 'height')
-	match action {
-		'click' {
-			mouse_click(mut sess, x + w / 2, y + h / 2) or { return 'ERROR:${err}' }
-		}
-		'hover' {
-			sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseMoved","x":${x + w / 2},"y":${y + h / 2}}') or {
-				return 'ERROR:${err}'
-			}
-		}
-		else {}
-	}
+	js := build_semantic_action_js(&sess, locator_js,
+		'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
+	ok := evaluate_bool_js(mut sess, js) or { return 'ERROR:${err}' }
+	if !ok { return 'ERROR:element not found: ${locator}' }
 	return 'null'
 }
 
@@ -835,29 +861,19 @@ fn evaluate_semantic_result(mut sess CdpSession, js string, locator string, retu
 fn apply_action(mut sess CdpSession, el ResolvedElement, sel string, action string, value string) string {
 	match action {
 		'click' {
-			mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_click_action_body()) or { return 'ERROR:${err}' }
 			return 'null'
 		}
 		'fill' {
-			mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
-			sess.send_command('Input.dispatchKeyEvent', '{"type":"keyDown","key":"a","modifiers":4}') or {}
-			sess.send_command('Input.dispatchKeyEvent', '{"type":"keyUp","key":"a","modifiers":4}') or {}
-			sess.send_command('Input.insertText', '{"text":${json_str(value)}}') or {
-				return 'ERROR:${err}'
-			}
+			run_element_action(mut sess, sel, build_fill_action_body(value)) or { return 'ERROR:${err}' }
 			return 'null'
 		}
 		'type' {
-			mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
-			sess.send_command('Input.insertText', '{"text":${json_str(value)}}') or {
-				return 'ERROR:${err}'
-			}
+			run_element_action(mut sess, sel, build_type_action_body(value)) or { return 'ERROR:${err}' }
 			return 'null'
 		}
 		'hover' {
-			sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseMoved","x":${el.x},"y":${el.y}}') or {
-				return 'ERROR:${err}'
-			}
+			run_element_action(mut sess, sel, build_hover_action_body()) or { return 'ERROR:${err}' }
 			return 'null'
 		}
 		'text' {
@@ -873,11 +889,11 @@ fn apply_action(mut sess CdpSession, el ResolvedElement, sel string, action stri
 			return 'null'
 		}
 		'check' {
-			mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_toggle_action_body(true)) or { return 'ERROR:${err}' }
 			return 'null'
 		}
 		'uncheck' {
-			mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_toggle_action_body(false)) or { return 'ERROR:${err}' }
 			return 'null'
 		}
 		else { return 'ERROR:unknown action: ${action}' }
@@ -1114,19 +1130,49 @@ fn cmd_dialog(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	text := cdp_extract_str(params, 'text')
 	match action {
+		'events' {
+			sess.enable_page_events() or { return 'ERROR:${err}' }
+			if sess.dialog_events.len == 0 {
+				return '[]'
+			}
+			return '[' + sess.dialog_events.map(it).join(',') + ']'
+		}
+		'clear' {
+			sess.dialog_events.clear()
+			return 'null'
+		}
 		'accept' {
-			sess.send_command('Page.handleJavaScriptDialog', '{"accept":true,"promptText":${json_str(text)}}') or {
+			sess.enable_page_events() or { return 'ERROR:${err}' }
+			handle_dialog_with_retry(mut sess,
+				'{"accept":true,"promptText":${json_str(text)}}') or {
 				return 'ERROR:${err}'
 			}
 		}
 		'dismiss' {
-			sess.send_command('Page.handleJavaScriptDialog', '{"accept":false}') or {
+			sess.enable_page_events() or { return 'ERROR:${err}' }
+			handle_dialog_with_retry(mut sess, '{"accept":false}') or {
 				return 'ERROR:${err}'
 			}
 		}
 		else { return 'ERROR:unknown dialog action: ${action}' }
 	}
 	return 'null'
+}
+
+fn handle_dialog_with_retry(mut sess CdpSession, params string) ! {
+	mut last_err := ''
+	for _ in 0 .. 10 {
+		sess.send_command('Page.handleJavaScriptDialog', params) or {
+			last_err = err.msg()
+			if last_err.contains('No dialog is showing') {
+				time.sleep(100 * time.millisecond)
+				continue
+			}
+			return error(last_err)
+		}
+		return
+	}
+	return error(last_err)
 }
 
 // ─── highlight ──────────────────────────────────────────────
