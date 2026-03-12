@@ -9,6 +9,7 @@ const els = {
   primaryAction: $('primaryAction'),
   doubleAction: $('doubleAction'),
   hoverAction: $('hoverAction'),
+  customCardAction: $('customCardAction'),
   emailField: $('emailField'),
   projectField: $('projectField'),
   notesField: $('notesField'),
@@ -105,6 +106,10 @@ els.doubleAction.addEventListener('dblclick', () => {
 
 els.hoverAction.addEventListener('mouseenter', () => {
   els.heroStatus.textContent = 'hover marker entered';
+});
+
+els.customCardAction.addEventListener('click', () => {
+  els.heroStatus.textContent = 'custom card activated';
 });
 
 [els.emailField, els.projectField, els.notesField, els.prioritySelect, els.termsCheckbox, els.planBasic, els.planPro].forEach((el) => {

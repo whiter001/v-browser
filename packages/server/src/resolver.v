@@ -30,6 +30,9 @@ fn resolve_axref(mut sess CdpSession, ref string) !ResolvedElement {
 	r := axref_get(&sess.axref, ref) or {
 		return error('unknown ref ${ref}: run `v-browser snapshot` first')
 	}
+	if r.selector != '' {
+		return resolve_css(mut sess, r.selector)
+	}
 	if r.has_coords {
 		return ResolvedElement{
 			x:               r.x
@@ -38,6 +41,9 @@ fn resolve_axref(mut sess CdpSession, ref string) !ResolvedElement {
 		}
 	}
 	// 通过 backendNodeId 查边界框
+	if r.backend_node_id == 0 {
+		return error('ref ${ref} cannot be resolved')
+	}
 	return get_box_by_backend_node_id(mut sess, r.backend_node_id)
 }
 

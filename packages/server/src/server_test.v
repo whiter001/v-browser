@@ -230,11 +230,13 @@ fn test_axref_store_round_trip() {
 	mut store := AxRefStore{}
 	axref_set(mut store, '@e1', AxRef{
 		backend_node_id: 101
+		selector:        '.submit'
 		role:            'button'
 		name:            'Submit'
 	})
 	r := axref_get(&store, '@e1') or { panic(err) }
 	assert r.backend_node_id == 101
+	assert r.selector == '.submit'
 	assert r.role == 'button'
 	assert r.name == 'Submit'
 	assert axref_is_ref('@e1')
@@ -278,6 +280,33 @@ fn test_build_document_scope_js_wraps_frame_context() {
 	assert js.contains('document.querySelector("#child")')
 	assert js.contains('contentDocument')
 	assert js.contains('return doc ? true : false;')
+}
+
+fn test_build_action_point_query_js_checks_actionability() {
+	mut sess := new_cdp_session(noop_send)
+	js := build_action_point_query_js(sess, 'document.querySelector("#submit")')
+	assert js.contains('scrollIntoView')
+	assert js.contains('pointerEvents === "none"')
+	assert js.contains('r.width <= 0 || r.height <= 0')
+	assert js.contains('disabled')
+}
+
+fn test_build_action_point_query_js_wraps_frame_offsets() {
+	mut sess := new_cdp_session(noop_send)
+	sess.current_frame_selector = '#child'
+	js := build_action_point_query_js(sess, 'document.querySelector("#submit")')
+	assert js.contains('document.querySelector("#child")')
+	assert js.contains('var fr = frame.getBoundingClientRect();')
+	assert js.contains('fr.x + r.x + r.width / 2')
+}
+
+fn test_build_cursor_interactive_snapshot_js_covers_custom_click_targets() {
+	mut sess := new_cdp_session(noop_send)
+	js := build_cursor_interactive_snapshot_js(sess)
+	assert js.contains('cursor === "pointer"')
+	assert js.contains('onclick')
+	assert js.contains('data-testid')
+	assert js.contains('clickable')
 }
 
 fn test_resolve_device_preset_iphone_14() {

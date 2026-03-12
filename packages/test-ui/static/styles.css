@@ -316,6 +316,26 @@ textarea:focus {
   line-height: 1.6;
 }
 
+.custom-card-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  padding: 0 18px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.16), rgba(180, 35, 24, 0.14));
+  border: 1px solid rgba(24, 33, 43, 0.1);
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.custom-card-action:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(24, 33, 43, 0.12);
+}
+
 .fixture-pre {
   margin: 0;
   padding: 16px;

@@ -57,6 +57,6 @@ cd packages/server
 
 - V 单测：在 packages/server 下运行 `v test ./src`
 - 扩展构建校验：在 packages/extension 下运行 `npm run build`
-- CLI smoke test：在 packages/extension 下运行 `npx playwright test tests/v-browser-cli.spec.ts`
+- CLI smoke test：运行 `sh packages/test-ui/smoke-cli.sh`
 
 更完整的命令说明见 docs/v-browser.md。

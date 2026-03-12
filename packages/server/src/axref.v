@@ -15,6 +15,7 @@ struct AxRef {
 	backend_node_id int
 	node_id         int
 	object_id       string // Runtime.RemoteObjectId（可选，click 时用坐标更可靠）
+	selector        string
 	role            string
 	name            string
 	// 元素在页面上的大致坐标（由 DOM.getBoxModel 查出，缓存在此）

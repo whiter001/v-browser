@@ -7,9 +7,11 @@
 - [x] 覆盖 localStorage、sessionStorage、cookie、network requests 所需靶点
 - [x] 将首页默认 open URL 指向 fixture 页面
 - [x] 构建 test-ui 并做基础手工验证
+- [x] 提供无需 Playwright 的 CLI smoke 脚本
 - [ ] 用 v-browser 对关键能力逐项验证
 
 ## 验证观察
 
 - 已通过：open、wait、title、fill、select、check、click、hover、upload、frame、localstorage、sessionstorage、cookies、network requests（通过 eval 触发）
+- 已自动化：click、dblclick、hover，以及 snapshot 对 cursor-interactive ref 的覆盖
 - 仍待确认：dialog。当前在 Chrome + debugger/extension 这条链路里，点击按钮和直接 eval 都没有让 `Page.handleJavaScriptDialog` 看到可处理的 JS dialog，更像运行环境限制，不是 fixture 靶点缺失

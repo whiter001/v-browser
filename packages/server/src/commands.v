@@ -100,7 +100,8 @@ fn evaluate_bool_js(mut sess CdpSession, js string) !bool {
 }
 
 fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) !string {
-	scoped_expr := build_scoped_runtime_js(&sess, 'return window.eval(${js_str(expr)});')
+	encoded_expr := base64.encode_str(expr)
+	scoped_expr := build_scoped_runtime_js(&sess, 'return window.eval(window.atob(${js_str(encoded_expr)}));')
 	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":${await_promise}}'
 	resp := sess.send_command('Runtime.evaluate', p)!
 	result := cdp_extract_obj_key(resp.result, '"result":')
@@ -118,10 +119,97 @@ fn resolve_object_id_by_selector(mut sess CdpSession, sel string) !string {
 }
 
 fn run_element_action(mut sess CdpSession, sel string, body string) ! {
-	expr := '(function(){ var el=document.querySelector(${js_str(sel)}); if(el === null) return false; ${body} })()'
-	ok := eval_scoped_expression(mut sess, expr, false)! == 'true'
+	js := build_element_scope_js(&sess, sel, 'if(el === null) return false; ${body}')
+	result := eval_scoped_expression(mut sess, js, false)!
+	ok := result == 'true'
 	if !ok {
 		return error('element not found: ${sel}')
+	}
+}
+
+fn build_action_point_query_js(sess &CdpSession, locator_js string) string {
+	return build_document_scope_js(sess, '
+			var el = (${locator_js});
+			if (!el) return null;
+			el.scrollIntoView({ block: "center", inline: "center" });
+			var style = win.getComputedStyle(el);
+			if (style.visibility === "hidden" || style.display === "none" || style.pointerEvents === "none") return null;
+			if ("disabled" in el && el.disabled) return null;
+			var r = el.getBoundingClientRect();
+			if (r.width <= 0 || r.height <= 0) return null;
+			if (frame) {
+				var fr = frame.getBoundingClientRect();
+				return { x: fr.x + r.x + r.width / 2, y: fr.y + r.y + r.height / 2, width: r.width, height: r.height };
+			}
+			return { x: r.x + r.width / 2, y: r.y + r.height / 2, width: r.width, height: r.height };
+		')
+}
+
+fn resolve_action_point_by_js(mut sess CdpSession, locator_js string) !ResolvedElement {
+	js := build_action_point_query_js(&sess, locator_js)
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
+	result_obj := cdp_extract_obj_key(resp.result, '"result":')
+	value_obj := cdp_extract_obj_key(result_obj, '"value":')
+	if value_obj == '' || value_obj == 'null' {
+		return error('element not actionable')
+	}
+	return ResolvedElement{
+		x:      cdp_extract_float(value_obj, 'x')
+		y:      cdp_extract_float(value_obj, 'y')
+		width:  cdp_extract_float(value_obj, 'width')
+		height: cdp_extract_float(value_obj, 'height')
+	}
+}
+
+fn scroll_resolved_element_into_view(mut sess CdpSession, sel string, el ResolvedElement) ! {
+	if el.backend_node_id > 0 {
+		sess.send_command('DOM.scrollIntoViewIfNeeded', '{"backendNodeId":${el.backend_node_id}}')!
+		return
+	}
+	js := build_element_scope_js(&sess, sel, 'if(!el) return false; el.scrollIntoView({block:"center",inline:"center"}); return true;')
+	if !evaluate_bool_js(mut sess, js)! {
+		return error('element not found: ${sel}')
+	}
+}
+
+fn pointer_move(mut sess CdpSession, x f64, y f64) ! {
+	sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseMoved","x":${x},"y":${y},"button":"none"}')!
+}
+
+fn pointer_hover(mut sess CdpSession, x f64, y f64) ! {
+	pointer_move(mut sess, x, y)!
+}
+
+fn pointer_click(mut sess CdpSession, x f64, y f64, click_count int) ! {
+	pointer_move(mut sess, x, y)!
+	for index := 1; index <= click_count; index++ {
+		sess.send_command('Input.dispatchMouseEvent', '{"type":"mousePressed","x":${x},"y":${y},"button":"left","clickCount":${index}}')!
+		time.sleep(20 * time.millisecond)
+		sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseReleased","x":${x},"y":${y},"button":"left","clickCount":${index}}')!
+		if index < click_count {
+			time.sleep(40 * time.millisecond)
+		}
+	}
+}
+
+fn pointer_action_for_selector(mut sess CdpSession, sel string, action string) ! {
+	mut el := resolve_selector(mut sess, sel)!
+	scroll_resolved_element_into_view(mut sess, sel, el)!
+	el = resolve_selector(mut sess, sel) or { el }
+	match action {
+		'click' { pointer_click(mut sess, el.x, el.y, 1)! }
+		'dblclick' { pointer_click(mut sess, el.x, el.y, 2)! }
+		'hover' { pointer_hover(mut sess, el.x, el.y)! }
+		else { return error('unknown pointer action: ${action}') }
+	}
+}
+
+fn pointer_action_for_locator_js(mut sess CdpSession, locator_js string, action string) ! {
+	el := resolve_action_point_by_js(mut sess, locator_js)!
+	match action {
+		'click' { pointer_click(mut sess, el.x, el.y, 1)! }
+		'hover' { pointer_hover(mut sess, el.x, el.y)! }
+		else { return error('unknown pointer action: ${action}') }
 	}
 }
 
@@ -242,11 +330,20 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 
 	axref_clear(mut sess.axref)
 	mut out := '= Accessibility Snapshot =\n'
-	out += render_ax_tree(nodes_json, 1, mut sess.axref)
+	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref)
+	out += ax_out
+	cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref) or { '' }
+	if cursor_out != '' {
+		if ax_out != '' && !ax_out.ends_with('\n') {
+			out += '\n'
+		}
+		out += '# Cursor-interactive elements:\n'
+		out += cursor_out
+	}
 	return json_str(out)
 }
 
-fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore) string {
+fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore) (string, int) {
 	mut out := ''
 	mut counter := start_counter
 	mut pos := 1 // skip opening '['
@@ -276,6 +373,127 @@ fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore) st
 		i++
 		if i > 10000 { break } // 安全上限
 	}
+	return out, counter
+}
+
+fn build_cursor_interactive_snapshot_js(sess &CdpSession) string {
+	return build_document_scope_js(sess, '
+		var interactiveRoles = new Set([
+			"button", "link", "textbox", "checkbox", "radio", "combobox", "listbox",
+			"menuitem", "menuitemcheckbox", "menuitemradio", "option", "searchbox",
+			"slider", "spinbutton", "switch", "tab", "treeitem"
+		]);
+		var interactiveTags = new Set(["a", "button", "input", "select", "textarea", "details", "summary"]);
+		function normalizeText(value) {
+			return String(value || "").replace(/\\s+/g, " ").trim();
+		}
+		function buildSelector(el) {
+			var testId = el.getAttribute("data-testid");
+			if (testId) return "[data-testid=" + JSON.stringify(testId) + "]";
+			if (el.id) return "#" + CSS.escape(el.id);
+			var path = [];
+			var current = el;
+			while (current && current !== doc.body) {
+				var sel = current.tagName.toLowerCase();
+				var classes = Array.from(current.classList || []).filter(function(name) { return String(name || "").trim() !== ""; });
+				if (classes.length > 0) sel += "." + CSS.escape(classes[0]);
+				var parent = current.parentElement;
+				if (parent) {
+					var siblings = Array.from(parent.children);
+					var matching = siblings.filter(function(node) {
+						if (node.tagName !== current.tagName) return false;
+						if (classes.length > 0 && !node.classList.contains(classes[0])) return false;
+						return true;
+					});
+					if (matching.length > 1) {
+						sel += ":nth-of-type(" + (matching.indexOf(current) + 1) + ")";
+					}
+				}
+				path.unshift(sel);
+				current = current.parentElement;
+				try {
+					var candidate = path.join(" > ");
+					if (doc.querySelectorAll(candidate).length === 1) break;
+				} catch (e) {}
+				if (path.length >= 8) break;
+			}
+			return path.join(" > ");
+		}
+		var seen = new Set();
+		var results = [];
+		var all = doc.querySelectorAll("*");
+		for (var i = 0; i < all.length; i++) {
+			var el = all[i];
+			var tag = (el.tagName || "").toLowerCase();
+			if (interactiveTags.has(tag)) continue;
+			var role = normalizeText(el.getAttribute("role"));
+			if (role && interactiveRoles.has(role.toLowerCase())) continue;
+			var style = win.getComputedStyle(el);
+			var hasCursorPointer = style.cursor === "pointer";
+			var hasOnClick = el.hasAttribute("onclick") || typeof el.onclick === "function";
+			var tabIndex = el.getAttribute("tabindex");
+			var hasTabIndex = tabIndex !== null && tabIndex !== "-1";
+			if (!hasCursorPointer && !hasOnClick && !hasTabIndex) continue;
+			if (hasCursorPointer && !hasOnClick && !hasTabIndex) {
+				var parentEl = el.parentElement;
+				if (parentEl && win.getComputedStyle(parentEl).cursor === "pointer") continue;
+			}
+			if (style.visibility === "hidden" || style.display === "none" || style.pointerEvents === "none") continue;
+			var rect = el.getBoundingClientRect();
+			if (rect.width <= 0 || rect.height <= 0) continue;
+			var text = normalizeText(el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title") || "");
+			if (!text) continue;
+			var selector = buildSelector(el);
+			if (!selector || seen.has(selector)) continue;
+			seen.add(selector);
+			var hints = [];
+			if (hasCursorPointer) hints.push("cursor:pointer");
+			if (hasOnClick) hints.push("onclick");
+			if (hasTabIndex) hints.push("tabindex");
+			results.push({ selector: selector, text: text.slice(0, 120), role: hasCursorPointer || hasOnClick ? "clickable" : "focusable", hints: hints.join(", ") });
+		}
+		return results.map(function(item) {
+			return [item.selector, item.text.replace(/[\t\n\r]+/g, " "), item.role, item.hints.replace(/[\t\n\r]+/g, " ")].join("\t");
+		}).join("\n");
+	')
+}
+
+fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mut store AxRefStore) !string {
+	js := build_cursor_interactive_snapshot_js(&sess)
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
+	result_obj := cdp_extract_obj_key(resp.result, '"result":')
+	raw_lines := cdp_extract_value_from_result(result_obj)
+	if raw_lines == '' || raw_lines == 'null' {
+		return ''
+	}
+	mut out := ''
+	mut counter := start_counter
+	for line in raw_lines.split('\n') {
+		parts := line.split('\t')
+		if parts.len < 3 {
+			continue
+		}
+		selector := parts[0].trim_space()
+		text := parts[1].trim_space()
+		role := parts[2].trim_space()
+		hints := if parts.len > 3 { parts[3].trim_space() } else { '' }
+		if selector == '' || text == '' {
+			continue
+		}
+		ref_key := '@e${counter}'
+		counter++
+		resolved_role := if role != '' { role } else { 'clickable' }
+		out += '${ref_key} [${resolved_role}] ${text}'
+		if hints != '' {
+			out += ' (${hints})'
+		}
+		out += '\n'
+		axref_set(mut store, ref_key, AxRef{
+			selector: selector
+			role: resolved_role
+			name: text
+		})
+	}
 	return out
 }
 
@@ -294,33 +512,35 @@ fn ax_prop(node_str string, prop string) string {
 fn cmd_click(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' { return 'ERROR:missing selector' }
-	if el := resolve_selector(mut sess, sel) {
-		mouse_click(mut sess, el.x, el.y) or { return 'ERROR:${err}' }
+	run_element_action(mut sess, sel, build_click_action_body()) or {
+		pointer_action_for_selector(mut sess, sel, 'click') or { return 'ERROR:${err}' }
 		return 'null'
 	}
-	run_element_action(mut sess, sel, build_click_action_body()) or { return 'ERROR:${err}' }
 	return 'null'
-}
+	}
 
 fn cmd_dblclick(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' { return 'ERROR:missing selector' }
-	run_element_action(mut sess, sel, build_dblclick_action_body()) or { return 'ERROR:${err}' }
+	run_element_action(mut sess, sel, build_dblclick_action_body()) or {
+		pointer_action_for_selector(mut sess, sel, 'dblclick') or { return 'ERROR:${err}' }
+		return 'null'
+	}
 	return 'null'
 }
 
 fn mouse_click(mut sess CdpSession, x f64, y f64) ! {
-	sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseMoved","x":${x},"y":${y},"button":"none","buttons":0}')!
-	sess.send_command('Input.dispatchMouseEvent', '{"type":"mousePressed","x":${x},"y":${y},"button":"left","buttons":1,"clickCount":1}')!
-	time.sleep(20 * time.millisecond)
-	sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseReleased","x":${x},"y":${y},"button":"left","buttons":0,"clickCount":1}')!
+	pointer_click(mut sess, x, y, 1)!
 }
 
 // ─── hover ──────────────────────────────────────────────────
 fn cmd_hover(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' { return 'ERROR:missing selector' }
-	run_element_action(mut sess, sel, build_hover_action_body()) or { return 'ERROR:${err}' }
+	run_element_action(mut sess, sel, build_hover_action_body()) or {
+		pointer_action_for_selector(mut sess, sel, 'hover') or { return 'ERROR:${err}' }
+		return 'null'
+	}
 	return 'null'
 }
 
@@ -834,8 +1054,16 @@ fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, 
 	}
 	js := build_semantic_action_js(&sess, locator_js,
 		'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
-	ok := evaluate_bool_js(mut sess, js) or { return 'ERROR:${err}' }
-	if !ok { return 'ERROR:element not found: ${locator}' }
+	ok := eval_scoped_expression(mut sess, js, false) or {
+		pointer_action_for_locator_js(mut sess, locator_js, action) or { return 'ERROR:${err}' }
+		return 'null'
+	}
+	if ok != 'true' {
+		pointer_action_for_locator_js(mut sess, locator_js, action) or {
+			return 'ERROR:element not found: ${locator}'
+		}
+		return 'null'
+	}
 	return 'null'
 }
 
