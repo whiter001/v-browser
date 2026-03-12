@@ -13,8 +13,10 @@
         <p class="eyebrow">Manual Test Bench</p>
         <h1>v-browser Server And Extension Lab</h1>
         <p class="lede">一个用 veb 托管的本地测试台，用来验证 server、扩展连接、CLI 命令和日志链路。</p>
+        <p class="subtle">被测页面入口：<a class="link" href="/lab.html">/lab.html</a></p>
       </div>
       <div class="hero-actions">
+        <a class="button secondary link-button" href="/lab.html">Open Fixture Lab</a>
         <button id="refreshStatus" class="button secondary" type="button">Refresh Status</button>
         <button id="buildServer" class="button primary" type="button">Build Server</button>
       </div>
@@ -67,7 +69,7 @@
         <h2>Page Commands</h2>
         <label class="field">
           <span>Open URL</span>
-          <input id="openUrl" type="url" value="https://example.com" placeholder="https://example.com">
+          <input id="openUrl" type="url" value="http://127.0.0.1:48280/lab.html" placeholder="http://127.0.0.1:48280/lab.html">
         </label>
         <label class="field">
           <span>Eval Expression</span>

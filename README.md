@@ -35,7 +35,9 @@ cd packages/test-ui
 v run ./src
 ```
 
-然后打开 <http://127.0.0.1:48280> 。页面里可以查看 token、已同步的 extension id、server 日志，并触发 build / connect / open / eval / snapshot / tab list / 自定义命令。
+然后打开 <http://127.0.0.1:48280> 。首页是控制面板，可以查看 token、已同步的 extension id、server 日志，并触发 build / connect / open / eval / snapshot / tab list / 自定义命令。
+
+用于 v-browser 功能验证的被测页面在 <http://127.0.0.1:48280/lab.html> 。这个 fixture lab 提供表单、等待态、拖拽、上传、对话框、同源 iframe、storage 和 network 请求靶点，适合手工调试和后续 CLI/E2E 测试复用。
 
 1. 在 Chromium / Chrome 中加载 packages/extension/dist 作为解压扩展
 

@@ -24,19 +24,19 @@ pub:
 }
 
 struct StatusResponse {
-	ok                    bool
-	server_binary         string
-	binary_exists         bool
-	v_browser_home        string
-	token                 string
-	stored_extension_id   string
-	extension_status_url  string
-	server_running        bool
-	extension_connected   bool
-	ipc_port              int
-	status_raw            string
-	server_log_tail       string
-	hint                  string
+	ok                   bool
+	server_binary        string
+	binary_exists        bool
+	v_browser_home       string
+	token                string
+	stored_extension_id  string
+	extension_status_url string
+	server_running       bool
+	extension_connected  bool
+	ipc_port             int
+	status_raw           string
+	server_log_tail      string
+	hint                 string
 }
 
 struct ActionRequest {
@@ -68,6 +68,25 @@ struct ProbeStatus {
 	extension_connected bool
 	ipc_port            int
 	status_raw          string
+}
+
+struct DemoInfoResponse {
+	ok         bool
+	path       string
+	method     string
+	timestamp  i64
+	message    string
+	request_id string
+}
+
+struct DemoSlowResponse {
+	ok            bool
+	path          string
+	delayed_ms    int
+	ready_text    string
+	timestamp     i64
+	storage_hint  string
+	network_label string
 }
 
 fn main() {
@@ -102,6 +121,35 @@ pub fn (app &App) index(mut ctx Context) veb.Result {
 	return ctx.file(os.join_path(app.static_dir, 'index.html'))
 }
 
+@['/api/demo/request-info'; get]
+pub fn (app &App) api_demo_request_info(mut ctx Context) veb.Result {
+	now := time.now().unix_milli()
+	request_id := now.str()
+	return ctx.json(DemoInfoResponse{
+		ok:         true
+		path:       '/api/demo/request-info'
+		method:     'GET'
+		timestamp:  now
+		message:    'fixture request captured'
+		request_id: request_id
+	})
+}
+
+@['/api/demo/slow'; get]
+pub fn (app &App) api_demo_slow(mut ctx Context) veb.Result {
+	time.sleep(650 * time.millisecond)
+	now := time.now().unix_milli()
+	return ctx.json(DemoSlowResponse{
+		ok:            true
+		path:          '/api/demo/slow'
+		delayed_ms:    650
+		ready_text:    'slow response complete'
+		timestamp:     now
+		storage_hint:  'localStorage and sessionStorage should already be seeded on lab load'
+		network_label: 'slow-demo'
+	})
+}
+
 @['/api/status'; get]
 pub fn (app &App) api_status(mut ctx Context) veb.Result {
 	return ctx.json(collect_status(app))
@@ -112,8 +160,8 @@ pub fn (app &App) api_run(mut ctx Context) veb.Result {
 	request := json.decode(ActionRequest, ctx.req.data) or {
 		ctx.res.set_status(.bad_request)
 		return ctx.json(ActionResponse{
-			ok:    false
-			error: 'invalid request body: ${err}'
+			ok:     false
+			error:  'invalid request body: ${err}'
 			status: collect_status(app)
 		})
 	}
@@ -239,29 +287,24 @@ fn collect_status(app &App) StatusResponse {
 		extension_connected:  probe.extension_connected
 		ipc_port:             probe.ipc_port
 		status_raw:           probe.status_raw
-		server_log_tail:      tail_lines_from_file(server_log_path(app.v_browser_home), max_log_lines)
+		server_log_tail:      tail_lines_from_file(server_log_path(app.v_browser_home),
+			max_log_lines)
 		hint:                 hint
 	}
 }
 
 fn probe_server_status(v_browser_home string) ProbeStatus {
-	port_str := os.read_file(ipc_sock_path(v_browser_home)) or {
-		return ProbeStatus{}
-	}
+	port_str := os.read_file(ipc_sock_path(v_browser_home)) or { return ProbeStatus{} }
 	port := port_str.trim_space().int()
 	if port <= 0 {
 		return ProbeStatus{}
 	}
-	mut conn := net.dial_tcp('127.0.0.1:${port}') or {
-		return ProbeStatus{}
-	}
+	mut conn := net.dial_tcp('127.0.0.1:${port}') or { return ProbeStatus{} }
 	defer {
 		conn.close() or {}
 	}
 	conn.set_read_timeout(2 * time.second)
-	conn.write_string('{"id":1,"method":"status","params":{}}\n') or {
-		return ProbeStatus{}
-	}
+	conn.write_string('{"id":1,"method":"status","params":{}}\n') or { return ProbeStatus{} }
 	mut buf := []u8{len: 4096}
 	mut raw := ''
 	for {

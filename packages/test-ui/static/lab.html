@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>v-browser Fixture Lab</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="fixture-body">
+  <main class="shell fixture-shell" id="fixture-root">
+    <section class="hero fixture-hero">
+      <div>
+        <p class="eyebrow">Automation Fixture</p>
+        <h1>v-browser Fixture Lab</h1>
+        <p class="lede">这个页面专门为 v-browser 的命令验证准备，集中提供稳定的交互控件、动态状态、同源 iframe 和网络请求靶点。</p>
+      </div>
+      <div class="hero-actions hero-actions-stack">
+        <a class="button secondary link-button" href="/">Back To Dashboard</a>
+        <button id="seedStorageButton" class="button primary" type="button">Seed Storage</button>
+        <button id="revealAsyncButton" class="button secondary" type="button">Reveal Async Content</button>
+      </div>
+    </section>
+
+    <section class="grid fixture-grid">
+      <article class="panel fixture-panel">
+        <div class="panel-header">
+          <h2>Locator Targets</h2>
+          <span class="badge">find / get / is</span>
+        </div>
+        <p id="heroStatus" class="fixture-note" data-testid="hero-status">ready</p>
+        <div class="row wrap">
+          <button id="primaryAction" class="button primary" data-testid="primary-action" title="Primary action title" type="button">Submit Order</button>
+          <button id="doubleAction" class="button secondary" data-testid="double-action" type="button">Double Tap Me</button>
+          <button id="hoverAction" class="button secondary" data-testid="hover-action" type="button">Hover Marker</button>
+        </div>
+        <p class="subtle">链接、图片和列表项都带了可访问名称，便于验证 role、text、alt、title、testid 和 nth。</p>
+        <div class="fixture-stack">
+          <a id="docsLink" class="link" href="/lab.html#details" data-testid="docs-link">Read Fixture Details</a>
+          <a id="newTabLink" class="link" href="/iframe.html" target="_blank" rel="noreferrer" data-testid="new-tab-link">Open Iframe Page In New Tab</a>
+          <img id="heroImage" class="fixture-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 480 180'%3E%3Crect width='480' height='180' rx='24' fill='%230f766e'/%3E%3Ccircle cx='96' cy='90' r='46' fill='%23f4efe6' opacity='0.8'/%3E%3Cpath d='M180 56h164v18H180zm0 34h122v18H180zm0 34h184v18H180z' fill='%23f8fbfb'/%3E%3C/svg%3E" alt="Hero banner" data-testid="hero-image">
+          <ul class="fixture-list" id="resultsList">
+            <li class="item" data-testid="result-item">alpha</li>
+            <li class="item" data-testid="result-item">bravo</li>
+            <li class="item" data-testid="result-item">charlie</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="panel fixture-panel">
+        <div class="panel-header">
+          <h2>Forms</h2>
+          <span class="badge">fill / type / select</span>
+        </div>
+        <form id="fixtureForm" class="fixture-form">
+          <label class="field">
+            <span>Email</span>
+            <input id="emailField" name="email" type="email" placeholder="name@example.com" autocomplete="off" data-testid="email-field">
+          </label>
+          <label class="field">
+            <span>Project Name</span>
+            <input id="projectField" name="project" type="text" value="v-browser" title="Project input" data-testid="project-field">
+          </label>
+          <label class="field">
+            <span>Notes</span>
+            <textarea id="notesField" name="notes" rows="4" placeholder="Write test notes" data-testid="notes-field"></textarea>
+          </label>
+          <label class="field">
+            <span>Priority</span>
+            <select id="prioritySelect" name="priority" data-testid="priority-select">
+              <option value="low">low</option>
+              <option value="medium" selected>medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+          <div class="row wrap">
+            <label class="choice"><input id="termsCheckbox" type="checkbox" data-testid="terms-checkbox"> Accept Terms</label>
+            <label class="choice"><input id="planBasic" type="radio" name="plan" value="basic" checked> Basic</label>
+            <label class="choice"><input id="planPro" type="radio" name="plan" value="pro"> Pro</label>
+          </div>
+        </form>
+        <pre id="formState" class="fixture-pre" data-testid="form-state">{"email":"","project":"v-browser","notes":"","priority":"medium","terms":false,"plan":"basic"}</pre>
+      </article>
+
+      <article class="panel fixture-panel">
+        <div class="panel-header">
+          <h2>Wait And Events</h2>
+          <span class="badge">wait / press / mouse</span>
+        </div>
+        <div class="fixture-stack">
+          <label class="field">
+            <span>Keyboard Target</span>
+            <input id="keyboardTarget" type="text" placeholder="Press keys here" data-testid="keyboard-target">
+          </label>
+          <div id="mousePad" class="mouse-pad" tabindex="0" data-testid="mouse-pad">Move, click or wheel here</div>
+          <p id="mouseState" class="fixture-note" data-testid="mouse-state">mouse: idle</p>
+          <p id="keyState" class="fixture-note" data-testid="key-state">key: idle</p>
+          <p id="asyncText" class="fixture-note hidden" data-testid="async-text">Async content is ready</p>
+          <p id="timerState" class="fixture-note" data-testid="timer-state">timer: idle</p>
+        </div>
+      </article>
+
+      <article class="panel fixture-panel">
+        <div class="panel-header">
+          <h2>Scroll And Drag</h2>
+          <span class="badge">scroll / drag</span>
+        </div>
+        <div id="scrollBox" class="scroll-box" data-testid="scroll-box">
+          <div class="scroll-spacer">top</div>
+          <div id="scrollTarget" class="scroll-target" data-testid="scroll-target">Scroll target reached</div>
+          <div class="scroll-spacer">bottom</div>
+        </div>
+        <div class="drag-grid">
+          <div id="dragSource" class="drag-card" draggable="true" data-testid="drag-source">Drag source</div>
+          <div id="dragTarget" class="drag-card drag-target" data-testid="drag-target">Drop target</div>
+        </div>
+        <p id="dragState" class="fixture-note" data-testid="drag-state">drag: idle</p>
+      </article>
+
+      <article class="panel fixture-panel">
+        <div class="panel-header">
+          <h2>Upload And Dialog</h2>
+          <span class="badge">upload / dialog</span>
+        </div>
+        <label class="field">
+          <span>Upload Input</span>
+          <input id="uploadField" type="file" multiple data-testid="upload-field">
+        </label>
+        <p id="uploadState" class="fixture-note" data-testid="upload-state">upload: none</p>
+        <div class="row wrap">
+          <button id="alertButton" class="button secondary" type="button" data-testid="alert-button">Alert Dialog</button>
+          <button id="confirmButton" class="button secondary" type="button" data-testid="confirm-button">Confirm Dialog</button>
+          <button id="promptButton" class="button secondary" type="button" data-testid="prompt-button">Prompt Dialog</button>
+        </div>
+        <p id="dialogState" class="fixture-note" data-testid="dialog-state">dialog: idle</p>
+      </article>
+
+      <article class="panel fixture-panel">
+        <div class="panel-header">
+          <h2>Storage And Network</h2>
+          <span class="badge">storage / cookies / network</span>
+        </div>
+        <div class="row wrap">
+          <button id="fetchInfoButton" class="button primary" type="button" data-testid="fetch-info-button">Fetch Request Info</button>
+          <button id="fetchSlowButton" class="button secondary" type="button" data-testid="fetch-slow-button">Fetch Slow JSON</button>
+        </div>
+        <pre id="storageState" class="fixture-pre" data-testid="storage-state">{"local":{},"session":{},"cookie":""}</pre>
+        <pre id="networkState" class="fixture-pre" data-testid="network-state">{"status":"idle"}</pre>
+      </article>
+
+      <article class="panel fixture-panel">
+        <div class="panel-header">
+          <h2>Iframe</h2>
+          <span class="badge">frame</span>
+        </div>
+        <iframe id="fixtureFrame" class="fixture-frame" title="Fixture Iframe" src="/iframe.html" data-testid="fixture-frame"></iframe>
+      </article>
+    </section>
+  </main>
+
+  <script src="/lab.js" type="module"></script>
+</body>
+</html>
