@@ -19,19 +19,29 @@ import { createRoot } from 'react-dom/client';
 import { Button, TabItem  } from './tabItem';
 
 import type { TabInfo } from './tabItem';
-import { AuthTokenSection } from './authToken';
+import { AuthTokenSection, getOrCreateAuthToken } from './authToken';
 
 interface ConnectionStatus {
   isConnected: boolean;
   connectedTabId: number | null;
   connectedTab?: TabInfo;
+  extensionId: string;
+  browserName: string;
 }
+
+type SyncStatus =
+  | { type: 'idle' }
+  | { type: 'success'; message: string }
+  | { type: 'error'; message: string };
 
 const StatusApp: React.FC = () => {
   const [status, setStatus] = useState<ConnectionStatus>({
     isConnected: false,
-    connectedTabId: null
+    connectedTabId: null,
+    extensionId: chrome.runtime.id,
+    browserName: detectBrowserName(),
   });
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({ type: 'idle' });
 
   useEffect(() => {
     void loadStatus();
@@ -39,12 +49,14 @@ const StatusApp: React.FC = () => {
 
   const loadStatus = async () => {
     // Get current connection status from background script
-    const { connectedTabId } = await chrome.runtime.sendMessage({ type: 'getConnectionStatus' });
+    const { connectedTabId, extensionId, browserName } = await chrome.runtime.sendMessage({ type: 'getConnectionStatus' });
     if (connectedTabId) {
       const tab = await chrome.tabs.get(connectedTabId);
       setStatus({
         isConnected: true,
         connectedTabId,
+        extensionId,
+        browserName,
         connectedTab: {
           id: tab.id!,
           windowId: tab.windowId!,
@@ -56,9 +68,32 @@ const StatusApp: React.FC = () => {
     } else {
       setStatus({
         isConnected: false,
-        connectedTabId: null
+        connectedTabId: null,
+        extensionId,
+        browserName,
       });
     }
+  };
+
+  const syncExtensionInfo = async () => {
+    setSyncStatus({ type: 'idle' });
+    const relayUrl = buildRelayRegistrationUrl(getOrCreateAuthToken());
+    const response = await chrome.runtime.sendMessage({
+      type: 'syncExtensionRegistration',
+      mcpRelayUrl: relayUrl,
+    });
+    if (response?.success) {
+      setSyncStatus({
+        type: 'success',
+        message: `Synchronized ${response.extensionId} to local server via ${response.via}.`,
+      });
+      await loadStatus();
+      return;
+    }
+    setSyncStatus({
+      type: 'error',
+      message: response?.error || 'Failed to synchronize with local server.',
+    });
   };
 
   const openConnectedTab = async () => {
@@ -76,6 +111,32 @@ const StatusApp: React.FC = () => {
   return (
     <div className='app-container'>
       <div className='content-wrapper'>
+        <div className='info-grid'>
+          <div className='info-card'>
+            <div className='info-label'>Extension ID</div>
+            <div className='info-value info-code'>{status.extensionId}</div>
+          </div>
+          <div className='info-card'>
+            <div className='info-label'>Browser</div>
+            <div className='info-value'>{status.browserName}</div>
+          </div>
+        </div>
+
+        <div className='manual-sync-section'>
+          <div className='manual-sync-copy'>
+            Push the current extension identity to the local v-browser server.
+          </div>
+          <Button variant='primary' onClick={syncExtensionInfo}>
+            Sync To Local Server
+          </Button>
+        </div>
+
+        {syncStatus.type !== 'idle' && (
+          <div className={`status-banner ${syncStatus.type === 'error' ? 'error' : 'connected'}`}>
+            {syncStatus.message}
+          </div>
+        )}
+
         {status.isConnected && status.connectedTab ? (
           <div>
             <div className='tab-section-title'>
@@ -109,4 +170,31 @@ const container = document.getElementById('root');
 if (container) {
   const root = createRoot(container);
   root.render(<StatusApp />);
+}
+
+function buildRelayRegistrationUrl(token: string): string {
+  return `ws://127.0.0.1:47978?token=${encodeURIComponent(token)}`;
+}
+
+function detectBrowserName(): string {
+  const navigatorWithBrands = navigator as Navigator & {
+    userAgentData?: {
+      brands?: Array<{ brand: string; version: string }>;
+    };
+  };
+  const brands = navigatorWithBrands.userAgentData?.brands || [];
+  const brandMatch = brands.find(brand => !brand.brand.includes('Not'));
+  if (brandMatch?.brand)
+    return brandMatch.brand;
+
+  const userAgent = navigator.userAgent;
+  if (userAgent.includes('Edg/'))
+    return 'Microsoft Edge';
+  if (userAgent.includes('Chromium/'))
+    return 'Chromium';
+  if (userAgent.includes('Chrome/'))
+    return 'Google Chrome';
+  if (userAgent.includes('Safari/'))
+    return 'Safari';
+  return 'Unknown browser';
 }

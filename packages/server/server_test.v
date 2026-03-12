@@ -155,6 +155,16 @@ fn test_cdp_parse_message_parses_error_object() {
 	assert resp.err == 'boom'
 }
 
+fn test_parse_extension_registration_extracts_runtime_id() {
+	extension_id := parse_extension_registration('{"method":"registerExtension","params":{"extensionId":"pcomgagjilgkfioemopicalioepnanjj"}}')
+	assert extension_id == 'pcomgagjilgkfioemopicalioepnanjj'
+}
+
+fn test_parse_extension_registration_ignores_regular_protocol_messages() {
+	extension_id := parse_extension_registration('{"id":1,"method":"attachToTab","params":{}}')
+	assert extension_id == ''
+}
+
 fn test_cdp_on_message_dispatches_inner_event_and_caches_console() {
 	mut sess := new_cdp_session(noop_send)
 	ch := sess.subscribe('Runtime.consoleAPICalled')

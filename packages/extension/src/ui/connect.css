@@ -35,6 +35,55 @@ body {
   margin: 0 auto;
 }
 
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.info-card {
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background-color: #ffffff;
+  padding: 12px;
+}
+
+.info-label {
+  font-size: 12px;
+  color: #656d76;
+  margin-bottom: 6px;
+}
+
+.info-value {
+  font-size: 14px;
+  color: #1f2328;
+  font-weight: 600;
+}
+
+.info-code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.manual-sync-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  background-color: #f6f8fa;
+}
+
+.manual-sync-copy {
+  color: #57606a;
+  line-height: 1.4;
+}
+
 /* Status Banner */
 .status-container {
   display: flex;
@@ -52,6 +101,7 @@ body {
   align-items: center;
   gap: 8px;
   flex: 1;
+  margin-bottom: 16px;
 }
 
 .status-banner.connected {
@@ -125,6 +175,13 @@ body {
 .button.reject:hover {
   background-color: #c73836;
   border-color: #c73836;
+}
+
+@media (max-width: 640px) {
+  .manual-sync-section {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 /* Tab selection */

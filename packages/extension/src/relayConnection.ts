@@ -53,6 +53,7 @@ export class RelayConnection {
     this._debuggee = { };
     this._tabPromise = new Promise(resolve => this._tabPromiseResolve = resolve);
     this._ws = ws;
+    this.sendExtensionRegistration();
     this._ws.onmessage = this._onMessage.bind(this);
     this._ws.onclose = () => this._onClose();
     // Store listeners for cleanup
@@ -66,6 +67,16 @@ export class RelayConnection {
   setTabId(tabId: number): void {
     this._debuggee = { tabId };
     this._tabPromiseResolve();
+  }
+
+  sendExtensionRegistration(extraParams?: Record<string, unknown>): void {
+    this._sendMessage({
+      method: 'registerExtension',
+      params: {
+        extensionId: chrome.runtime.id,
+        ...extraParams,
+      },
+    });
   }
 
   close(message: string): void {

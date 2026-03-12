@@ -133,6 +133,15 @@ fn (mut s VBrowserServer) run_ws_server() ! {
 	ws.on_message_ref(fn [mut s] (mut c websocket.Client, msg &websocket.Message, v voidptr) ! {
 		if msg.opcode == .text_frame || msg.opcode == .binary_frame {
 			raw := msg.payload.bytestr()
+			extension_id := parse_extension_registration(raw)
+			if extension_id != '' {
+				save_extension_id(extension_id) or {
+					srv_log_err('Failed to persist extension id ${extension_id}: ${err}')
+					return
+				}
+				srv_log('Recorded extension id: ${extension_id}')
+				return
+			}
 			s.ext_mu.@lock()
 			if mut conn := s.ext_conn {
 				conn.session.on_message(raw)
@@ -153,6 +162,14 @@ fn (mut s VBrowserServer) run_ws_server() ! {
 
 	srv_log('WebSocket relay listening on ws://127.0.0.1:${relay}')
 	ws.listen()!
+}
+
+fn parse_extension_registration(raw string) string {
+	msg := cdp_parse_message(raw)
+	if msg.id != 0 || msg.method != 'registerExtension' {
+		return ''
+	}
+	return cdp_extract_str(msg.params, 'extensionId').trim_space()
 }
 
 fn (mut s VBrowserServer) run_ipc_server() {

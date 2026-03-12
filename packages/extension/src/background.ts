@@ -29,6 +29,9 @@ type PageMessage = {
 } | {
   type: 'getConnectionStatus';
 } | {
+  type: 'syncExtensionRegistration';
+  mcpRelayUrl?: string;
+} | {
   type: 'disconnect';
 };
 
@@ -66,9 +69,16 @@ class TabShareExtension {
         return true; // Return true to indicate that the response will be sent asynchronously
       case 'getConnectionStatus':
         sendResponse({
-          connectedTabId: this._connectedTabId
+          connectedTabId: this._connectedTabId,
+          extensionId: chrome.runtime.id,
+          browserName: detectBrowserName(),
         });
         return false;
+      case 'syncExtensionRegistration':
+        this._syncExtensionRegistration(message.mcpRelayUrl).then(
+            result => sendResponse({ success: true, ...result }),
+            (error: any) => sendResponse({ success: false, error: error.message }));
+        return true;
       case 'disconnect':
         this._disconnect().then(
             () => sendResponse({ success: true }),
@@ -240,6 +250,92 @@ class TabShareExtension {
     this._activeConnection = undefined;
     await this._setConnectedTabId(null);
   }
+
+  private async _syncExtensionRegistration(mcpRelayUrl?: string): Promise<{ extensionId: string; browserName: string; via: 'active-connection' | 'direct-connect' }> {
+    const browserName = detectBrowserName();
+    if (this._activeConnection) {
+      this._activeConnection.sendExtensionRegistration({ browserName });
+      return {
+        extensionId: chrome.runtime.id,
+        browserName,
+        via: 'active-connection',
+      };
+    }
+
+    const relayUrl = mcpRelayUrl?.trim();
+    if (!relayUrl)
+      throw new Error('Missing relay URL for manual sync');
+
+    const socket = new WebSocket(relayUrl);
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (settled)
+          return;
+        settled = true;
+        try {
+          socket.close();
+        } catch {
+        }
+        reject(new Error('Connection timeout'));
+      }, 5000);
+
+      socket.onopen = () => {
+        if (settled)
+          return;
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve();
+      };
+
+      socket.onerror = () => {
+        if (settled)
+          return;
+        settled = true;
+        clearTimeout(timeoutId);
+        reject(new Error('WebSocket error'));
+      };
+    });
+
+    socket.send(JSON.stringify({
+      method: 'registerExtension',
+      params: {
+        extensionId: chrome.runtime.id,
+        browserName,
+      },
+    }));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    socket.close(1000, 'Extension registration synced');
+
+    return {
+      extensionId: chrome.runtime.id,
+      browserName,
+      via: 'direct-connect',
+    };
+  }
+}
+
+function detectBrowserName(): string {
+  const navigatorWithBrands = navigator as Navigator & {
+    userAgentData?: {
+      brands?: Array<{ brand: string; version: string }>;
+    };
+  };
+  const brands = navigatorWithBrands.userAgentData?.brands || [];
+  const brandMatch = brands.find(brand => !brand.brand.includes('Not'));
+  if (brandMatch?.brand)
+    return brandMatch.brand;
+
+  const userAgent = navigator.userAgent;
+  if (userAgent.includes('Edg/'))
+    return 'Microsoft Edge';
+  if (userAgent.includes('Chromium/'))
+    return 'Chromium';
+  if (userAgent.includes('Chrome/'))
+    return 'Google Chrome';
+  if (userAgent.includes('Safari/'))
+    return 'Safari';
+  return 'Unknown browser';
 }
 
 new TabShareExtension();
