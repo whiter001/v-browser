@@ -7,7 +7,7 @@ os.chdir(os.dir(@FILE)) or {
 	exit(1)
 }
 
-exit_code := os.system('v -o ./v-browser .')
+exit_code := os.system('v -o ./v-browser ./src')
 if exit_code != 0 {
 	exit(exit_code)
 }

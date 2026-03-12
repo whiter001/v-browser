@@ -18,6 +18,8 @@ out/
 
 # V binaries
 v-browser
+packages/test-ui/main
+packages/test-ui/test-ui
 
 # OS files
 .DS_Store

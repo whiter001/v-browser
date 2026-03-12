@@ -41,7 +41,7 @@ fn main() {
 	}
 
 	cmd := args[0]
-	rest := args[1..]
+	rest := args[1..].clone()
 
 	// 特殊：server 子命令本地处理，不需要 IPC
 	if cmd == 'server' || cmd == 'daemon' {

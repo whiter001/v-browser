@@ -7,8 +7,8 @@
 ```bash
 # 构建 CLI
 cd packages/server
-v test .
-v -o ./v-browser .
+v test ./src
+v -o ./v-browser ./src
 
 # 构建扩展
 cd ../extension

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>v-browser Test UI</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Manual Test Bench</p>
+        <h1>v-browser Server And Extension Lab</h1>
+        <p class="lede">一个用 veb 托管的本地测试台，用来验证 server、扩展连接、CLI 命令和日志链路。</p>
+      </div>
+      <div class="hero-actions">
+        <button id="refreshStatus" class="button secondary" type="button">Refresh Status</button>
+        <button id="buildServer" class="button primary" type="button">Build Server</button>
+      </div>
+    </section>
+
+    <section class="grid status-grid">
+      <article class="panel metric">
+        <span class="label">Server Binary</span>
+        <strong id="serverBinary">-</strong>
+        <span class="meta" id="serverBinaryState">-</span>
+      </article>
+      <article class="panel metric">
+        <span class="label">Server Running</span>
+        <strong id="serverRunning">-</strong>
+        <span class="meta" id="extensionConnected">-</span>
+      </article>
+      <article class="panel metric">
+        <span class="label">Stored Extension ID</span>
+        <strong id="extensionId">-</strong>
+        <a id="extensionStatusLink" class="link" href="#" target="_blank" rel="noreferrer">Open status page</a>
+      </article>
+      <article class="panel metric">
+        <span class="label">Token</span>
+        <strong id="tokenValue">-</strong>
+        <span class="meta" id="ipcPort">-</span>
+      </article>
+    </section>
+
+    <section class="panel hint-panel">
+      <span class="label">Hint</span>
+      <p id="hintText">-</p>
+      <p class="subtle">V_BROWSER_HOME: <span id="vBrowserHome">-</span></p>
+    </section>
+
+    <section class="grid command-grid">
+      <article class="panel command-card">
+        <h2>Connection</h2>
+        <label class="field">
+          <span>Extension ID Override</span>
+          <input id="connectExtensionId" type="text" placeholder="可选，例如 pcomgagjilgkfioemopicalioepnanjj">
+        </label>
+        <div class="row">
+          <button id="connectButton" class="button primary" type="button">Run Connect</button>
+          <button data-action="status" class="button secondary quick-action" type="button">CLI Status</button>
+          <button data-action="tab-list" class="button secondary quick-action" type="button">Tab List</button>
+        </div>
+      </article>
+
+      <article class="panel command-card">
+        <h2>Page Commands</h2>
+        <label class="field">
+          <span>Open URL</span>
+          <input id="openUrl" type="url" value="https://example.com" placeholder="https://example.com">
+        </label>
+        <label class="field">
+          <span>Eval Expression</span>
+          <textarea id="evalExpression" rows="4" placeholder="document.title">document.title</textarea>
+        </label>
+        <div class="row wrap">
+          <button id="openButton" class="button primary" type="button">Open URL</button>
+          <button id="evalButton" class="button primary" type="button">Run Eval</button>
+          <button data-action="snapshot" class="button secondary quick-action" type="button">Snapshot</button>
+        </div>
+      </article>
+
+      <article class="panel command-card">
+        <h2>Custom CLI</h2>
+        <label class="field">
+          <span>Command Arguments</span>
+          <textarea id="customCommand" rows="5" placeholder="例如：wait --text \"Hello\"
+或者：screenshot /tmp/page.png --full"></textarea>
+        </label>
+        <div class="row">
+          <button id="customRunButton" class="button primary" type="button">Run Custom Command</button>
+        </div>
+        <p class="subtle">支持直接输入完整参数；如果前缀写了 v-browser，会自动去掉。</p>
+      </article>
+    </section>
+
+    <section class="grid output-grid">
+      <article class="panel output-panel">
+        <div class="panel-header">
+          <h2>Last Command Output</h2>
+          <span id="lastCommandLabel" class="badge">idle</span>
+        </div>
+        <pre id="commandOutput" class="output">等待执行命令…</pre>
+      </article>
+      <article class="panel output-panel">
+        <div class="panel-header">
+          <h2>Server Log Tail</h2>
+          <span class="badge">~/.v-browser/server.log</span>
+        </div>
+        <pre id="serverLog" class="output">等待刷新状态…</pre>
+      </article>
+    </section>
+  </main>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
