@@ -45,6 +45,29 @@ fn test_build_macos_open_command_quotes_arguments() {
 	assert cmd == "open -a 'Google Chrome' 'chrome-extension://abc/connect.html?token=o'\\''hara'"
 }
 
+fn test_build_pueue_add_command_quotes_arguments() {
+	$if windows {
+		cmd := build_pueue_add_command('C:\\Program Files\\v-browser\\v-browser.exe')
+		assert cmd == 'pueue add --immediate --print-task-id --label "v-browser server" --working-directory "C:\\Program Files\\v-browser" --escape "C:\\Program Files\\v-browser\\v-browser.exe" server'
+	} $else {
+		cmd := build_pueue_add_command('/tmp/v browser/v-browser')
+		assert cmd == "pueue add --immediate --print-task-id --label 'v-browser server' --working-directory '/tmp/v browser' --escape '/tmp/v browser/v-browser' server"
+	}
+}
+
+fn test_build_windows_open_command_supports_default_or_explicit_browser() {
+	$if windows {
+		default_cmd := build_windows_open_command('chrome-extension://abc/connect.html?token=tok-1&x=1',
+			'')
+		assert default_cmd == 'cmd /c start "" "chrome-extension://abc/connect.html?token=tok-1&x=1"'
+		explicit_cmd := build_windows_open_command('chrome-extension://abc/connect.html?token=tok-1&x=1',
+			'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe')
+		assert explicit_cmd == 'cmd /c start "" "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" "chrome-extension://abc/connect.html?token=tok-1&x=1"'
+	} $else {
+		assert true
+	}
+}
+
 fn test_shell_quote_escapes_single_quotes() {
 	assert shell_quote("a'b") == "'a'\\''b'"
 }
@@ -105,7 +128,7 @@ fn test_parse_cli_to_ipc_tab_switch_and_window_new() {
 
 fn test_ipc_request_round_trip() {
 	req := IpcRequest{
-		id: 42
+		id:     42
 		method: 'open'
 		params: '{"url":"https://example.com","nested":{"ok":true}}'
 	}
@@ -117,7 +140,7 @@ fn test_ipc_request_round_trip() {
 
 fn test_ipc_response_round_trip() {
 	resp := IpcResponse{
-		id: 9
+		id:     9
 		result: '{"ok":true}'
 	}
 	decoded := ipc_decode_response(ipc_encode_response(resp)) or { panic(err) }
@@ -186,8 +209,8 @@ fn test_axref_store_round_trip() {
 	mut store := AxRefStore{}
 	axref_set(mut store, '@e1', AxRef{
 		backend_node_id: 101
-		role: 'button'
-		name: 'Submit'
+		role:            'button'
+		name:            'Submit'
 	})
 	r := axref_get(&store, '@e1') or { panic(err) }
 	assert r.backend_node_id == 101
@@ -231,7 +254,7 @@ fn test_build_document_scope_js_wraps_frame_context() {
 	mut sess := new_cdp_session(noop_send)
 	sess.current_frame_selector = '#child'
 	js := build_document_scope_js(sess, 'return doc ? true : false;')
-	assert js.contains("document.querySelector(\"#child\")")
+	assert js.contains('document.querySelector("#child")')
 	assert js.contains('contentDocument')
 	assert js.contains('return doc ? true : false;')
 }

@@ -15,7 +15,8 @@ v-browser 是一个基于 V 语言实现的浏览器自动化 CLI。它通过本
 ```bash
 cd packages/server
 v test .
-v -o ./v-browser .
+v run ./build.vsh
+sh ./fmt.sh
 ```
 
 1. 构建 extension

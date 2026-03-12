@@ -50,6 +50,10 @@ fn server_log_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.log')
 }
 
+fn server_task_path() string {
+	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.task')
+}
+
 // ExtensionConn 代表一个已连接的扩展 + 对应 CDP session
 @[heap]
 struct ExtensionConn {
@@ -79,7 +83,9 @@ mut:
 
 fn new_server() !&VBrowserServer {
 	token := load_or_create_token()!
-	return &VBrowserServer{ token: token }
+	return &VBrowserServer{
+		token: token
+	}
 }
 
 // start 启动所有监听（阻塞，直至 WebSocket server 退出）
@@ -175,14 +181,18 @@ fn (mut s VBrowserServer) handle_ipc_client(mut conn net.TcpConn) {
 
 	for {
 		n := conn.read(mut buf) or { break }
-		if n == 0 { break }
+		if n == 0 {
+			break
+		}
 		pending += buf[..n].bytestr()
 
 		for {
 			nl_idx := pending.index('\n') or { break }
 			line := pending[..nl_idx]
 			pending = pending[nl_idx + 1..]
-			if line.trim_space().len == 0 { continue }
+			if line.trim_space().len == 0 {
+				continue
+			}
 
 			req := ipc_decode_request(line) or {
 				conn.write_string(ipc_encode_response(IpcResponse{ id: 0, err: 'parse: ${err}' })) or {}
@@ -200,13 +210,22 @@ fn (mut s VBrowserServer) dispatch(req IpcRequest) IpcResponse {
 		s.ext_mu.@lock()
 		connected := s.ext_conn != none
 		s.ext_mu.unlock()
-		return IpcResponse{ id: req.id, result: '{"connected":${connected}}' }
+		return IpcResponse{
+			id:     req.id
+			result: '{"connected":${connected}}'
+		}
 	}
 	if req.method == 'connect' {
 		attached := s.attach_session(req.params) or {
-			return IpcResponse{ id: req.id, err: err.msg() }
+			return IpcResponse{
+				id:  req.id
+				err: err.msg()
+			}
 		}
-		return IpcResponse{ id: req.id, result: attached }
+		return IpcResponse{
+			id:     req.id
+			result: attached
+		}
 	}
 
 	// 获取 session
@@ -215,17 +234,24 @@ fn (mut s VBrowserServer) dispatch(req IpcRequest) IpcResponse {
 	s.ext_mu.unlock()
 	mut conn := conn_opt or {
 		return IpcResponse{
-			id: req.id
+			id:  req.id
 			err: 'no extension connected. Open Chrome with the v-browser extension, then run: v-browser connect'
 		}
 	}
+
 	mut sess := conn.session
 
 	result := dispatch_command(mut sess, req.method, req.params)
 	if result.starts_with('ERROR:') {
-		return IpcResponse{ id: req.id, err: result[6..] }
+		return IpcResponse{
+			id:  req.id
+			err: result[6..]
+		}
 	}
-	return IpcResponse{ id: req.id, result: result }
+	return IpcResponse{
+		id:     req.id
+		result: result
+	}
 }
 
 // attach_session 在扩展连接后发 attachToTab（被 `v-browser connect` 命令触发）
@@ -260,13 +286,17 @@ fn load_or_create_token() !string {
 	os.mkdir_all(dir) or {}
 	if os.exists(token_path()) {
 		t := os.read_file(token_path()) or { '' }
-		if t.trim_space().len >= 16 { return t.trim_space() }
+		if t.trim_space().len >= 16 {
+			return t.trim_space()
+		}
 	}
 	// 简易伪随机 token（生产可换 crypto random）
 	now := time.now().unix_milli()
 	raw := '${now}-${os.getpid()}-vbrowser'
 	mut h := u64(0)
-	for b in raw.bytes() { h = h * 31 + u64(b) }
+	for b in raw.bytes() {
+		h = h * 31 + u64(b)
+	}
 	token := h.hex()
 	os.write_file(token_path(), token)!
 	return token
@@ -289,7 +319,9 @@ fn extract_query_param(resource_name string, key string) string {
 	q_idx := resource_name.index('?') or { return '' }
 	query := resource_name[q_idx + 1..]
 	for pair in query.split('&') {
-		if pair.len == 0 { continue }
+		if pair.len == 0 {
+			continue
+		}
 		parts := pair.split_nth('=', 2)
 		if parts.len == 2 && parts[0] == key {
 			return parts[1]

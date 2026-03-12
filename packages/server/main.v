@@ -79,11 +79,13 @@ fn handle_connect_command(args []string, json_output bool) {
 			}
 			eprintln('[v-browser] Opened extension connect page: ${connect_url}')
 			if !wait_for_extension_connection(35 * time.second) {
-				print_error('extension did not connect within 35s; select a tab in the extension page, then run v-browser connect again', json_output)
+				print_error('extension did not connect within 35s; select a tab in the extension page, then run v-browser connect again',
+					json_output)
 				return
 			}
 		} else {
-			print_error('no extension connected; set V_BROWSER_EXTENSION_ID or run v-browser connect --extension-id <id>', json_output)
+			print_error('no extension connected; set V_BROWSER_EXTENSION_ID or run v-browser connect --extension-id <id>',
+				json_output)
 			exit(1)
 		}
 	}
@@ -107,7 +109,7 @@ fn ensure_server_running() ! {
 		}
 		time.sleep(200 * time.millisecond)
 	}
-	return error('v-browser server did not become ready. Check ${server_log_path()}')
+	return error('v-browser server did not become ready. Check ${background_server_diagnostics_hint()}')
 }
 
 fn can_reach_ipc_server() bool {
@@ -127,11 +129,35 @@ fn start_server_daemon() ! {
 	if executable == '' {
 		return error('could not determine current executable path')
 	}
-	cmd := 'nohup ${shell_quote(executable)} server >> ${shell_quote(server_log_path())} 2>&1 &'
-	result := os.execute(cmd)
+	result := os.execute(build_pueue_add_command(executable))
 	if result.exit_code != 0 {
-		return error('failed to start v-browser server: ${result.output}')
+		$if windows {
+			return error('failed to enqueue v-browser server with pueue: ${result.output}')
+		}
+		fallback := os.execute('nohup ${shell_quote(executable)} server >> ${shell_quote(server_log_path())} 2>&1 &')
+		if fallback.exit_code != 0 {
+			return error('failed to start v-browser server: ${result.output}\nfallback failed: ${fallback.output}')
+		}
+		os.write_file(server_task_path(), '') or {}
+		return
 	}
+	task_id := result.output.trim_space()
+	if task_id != '' {
+		os.write_file(server_task_path(), task_id) or {}
+	}
+}
+
+fn build_pueue_add_command(executable string) string {
+	work_dir := os.dir(executable)
+	return 'pueue add --immediate --print-task-id --label ${host_shell_quote('v-browser server')} --working-directory ${host_shell_quote(work_dir)} --escape ${host_shell_quote(executable)} server'
+}
+
+fn background_server_diagnostics_hint() string {
+	task_id := (os.read_file(server_task_path()) or { '' }).trim_space()
+	if task_id != '' {
+		return 'pueue log ${task_id}'
+	}
+	return server_log_path()
 }
 
 // ─── 启动服务 ────────────────────────────────────────────────
@@ -176,7 +202,9 @@ fn extract_flag_value(args []string, flag string) string {
 }
 
 fn save_extension_id(extension_id string) ! {
-	if extension_id.trim_space() == '' { return }
+	if extension_id.trim_space() == '' {
+		return
+	}
 	os.mkdir_all(os.dir(extension_id_path()))!
 	os.write_file(extension_id_path(), extension_id.trim_space())!
 }
@@ -219,7 +247,22 @@ fn open_url_in_browser(url string) ! {
 		}
 		return error(reason)
 	}
-	result := os.execute('open "${url}"')
+	$if windows {
+		browser_app := os.getenv('V_BROWSER_BROWSER_APP').trim_space()
+		result := os.execute(build_windows_open_command(url, browser_app))
+		if result.exit_code != 0 {
+			mut reason := 'failed to open extension connect page'
+			if result.output.trim_space() != '' {
+				reason += ': ${result.output}'
+			}
+			if browser_app == '' {
+				reason += '. Set V_BROWSER_BROWSER_APP to your browser executable path if the default handler is not a Chromium-based browser'
+			}
+			return error(reason)
+		}
+		return
+	}
+	result := os.execute('xdg-open ${shell_quote(url)}')
 	if result.exit_code != 0 {
 		return error('failed to open extension connect page: ${result.output}')
 	}
@@ -240,6 +283,20 @@ fn browser_open_candidates(preferred string) []string {
 
 fn build_macos_open_command(app string, url string) string {
 	return 'open -a ${shell_quote(app)} ${shell_quote(url)}'
+}
+
+fn build_windows_open_command(url string, browser_app string) string {
+	if browser_app.trim_space() != '' {
+		return 'cmd /c start "" ${host_shell_quote(browser_app)} ${host_shell_quote(url)}'
+	}
+	return 'cmd /c start "" ${host_shell_quote(url)}'
+}
+
+fn host_shell_quote(value string) string {
+	$if windows {
+		return '"' + value.replace('"', '""') + '"'
+	}
+	return shell_quote(value)
 }
 
 fn shell_quote(value string) string {
@@ -301,7 +358,9 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 	match cmd {
 		// ── 导航 ──
 		'open', 'goto', 'navigate' {
-			url := flags['url'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			url := flags['url'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'open', '{"url":${json_str(url)}}'
 		}
 		'close', 'quit', 'exit' {
@@ -321,7 +380,11 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 			tab_id := flags['tab-id'] or { '' }
 			window_id := flags['window-id'] or { '' }
 			if tab_id != '' {
-				return 'connect', '{"tabId":${tab_id},"windowId":${if window_id != '' { window_id } else { '0' }}}'
+				return 'connect', '{"tabId":${tab_id},"windowId":${if window_id != '' {
+					window_id
+				} else {
+					'0'
+				}}}'
 			}
 			return 'connect', '{}'
 		}
@@ -330,14 +393,18 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── 截图 ──
 		'screenshot', 'shot', 'ss' {
-			path := flags['path'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			path := flags['path'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			full := flags['full'] or { 'false' }
 			fmt := flags['format'] or { 'png' }
 			return 'screenshot', '{"path":${json_str(path)},"full":${json_str(full)},"format":${json_str(fmt)}}'
 		}
 		// ── PDF ──
 		'pdf' {
-			path := flags['path'] or { if positionals.len > 0 { positionals[0] } else { 'output.pdf' } }
+			path := flags['path'] or {
+				if positionals.len > 0 { positionals[0] } else { 'output.pdf' }
+			}
 			return 'pdf', '{"path":${json_str(path)}}'
 		}
 		// ── 快照 ──
@@ -346,57 +413,97 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── 元素操作 ──
 		'click' {
-			sel := flags['selector'] or { flags['sel'] or { if positionals.len > 0 { positionals[0] } else { '' } } }
+			sel := flags['selector'] or {
+				flags['sel'] or {
+					if positionals.len > 0 { positionals[0] } else { '' }
+				}
+			}
 			return 'click', '{"selector":${json_str(sel)}}'
 		}
 		'dblclick', 'doubleclick' {
-			sel := flags['selector'] or { flags['sel'] or { if positionals.len > 0 { positionals[0] } else { '' } } }
+			sel := flags['selector'] or {
+				flags['sel'] or {
+					if positionals.len > 0 { positionals[0] } else { '' }
+				}
+			}
 			return 'dblclick', '{"selector":${json_str(sel)}}'
 		}
 		'hover' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'hover', '{"selector":${json_str(sel)}}'
 		}
 		'focus' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'focus', '{"selector":${json_str(sel)}}'
 		}
 		'fill' {
-			sel := flags['selector'] or { flags['sel'] or { if positionals.len > 0 { positionals[0] } else { '' } } }
-			text := flags['text'] or { flags['value'] or { if positionals.len > 1 { positionals[1] } else { '' } } }
+			sel := flags['selector'] or {
+				flags['sel'] or {
+					if positionals.len > 0 { positionals[0] } else { '' }
+				}
+			}
+			text := flags['text'] or {
+				flags['value'] or {
+					if positionals.len > 1 { positionals[1] } else { '' }
+				}
+			}
 			return 'fill', '{"selector":${json_str(sel)},"text":${json_str(text)}}'
 		}
 		'type' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
-			text := flags['text'] or { if positionals.len > 1 { positionals[1] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
+			text := flags['text'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
 			return 'type', '{"selector":${json_str(sel)},"text":${json_str(text)}}'
 		}
 		'press', 'key' {
-			key := flags['key'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			key := flags['key'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'press', '{"key":${json_str(key)}}'
 		}
 		'select' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
-			value := flags['value'] or { if positionals.len > 1 { positionals[1] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
+			value := flags['value'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
 			return 'select', '{"selector":${json_str(sel)},"value":${json_str(value)}}'
 		}
 		'check' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'check', '{"selector":${json_str(sel)}}'
 		}
 		'uncheck' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'uncheck', '{"selector":${json_str(sel)}}'
 		}
 		// ── 滚动 ──
 		'scroll' {
-			dir := flags['direction'] or { flags['dir'] or { if positionals.len > 0 { positionals[0] } else { 'down' } } }
+			dir := flags['direction'] or {
+				flags['dir'] or {
+					if positionals.len > 0 { positionals[0] } else { 'down' }
+				}
+			}
 			px := flags['px'] or { '300' }
 			sel := flags['selector'] or { '' }
 			return 'scroll', '{"direction":${json_str(dir)},"px":${px},"selector":${json_str(sel)}}'
 		}
 		'scrollintoview', 'scrollinto' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'scrollintoview', '{"selector":${json_str(sel)}}'
 		}
 		// ── 拖拽 ──
@@ -407,23 +514,37 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── 上传 ──
 		'upload' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
-			files := flags['files'] or { if positionals.len > 1 { positionals[1..].join(',') } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
+			files := flags['files'] or {
+				if positionals.len > 1 { positionals[1..].join(',') } else { '' }
+			}
 			return 'upload', '{"selector":${json_str(sel)},"files":${json_str(files)}}'
 		}
 		// ── 获取属性 ──
 		'get' {
-			prop := flags['property'] or { flags['prop'] or { if positionals.len > 0 { positionals[0] } else { 'text' } } }
-			sel := flags['selector'] or { if positionals.len > 1 { positionals[1] } else { '' } }
+			prop := flags['property'] or {
+				flags['prop'] or {
+					if positionals.len > 0 { positionals[0] } else { 'text' }
+				}
+			}
+			sel := flags['selector'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
 			attr := flags['attr'] or { '' }
 			return 'get', '{"property":${json_str(prop)},"selector":${json_str(sel)},"attr":${json_str(attr)}}'
 		}
 		'text' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'get', '{"property":"text","selector":${json_str(sel)}}'
 		}
 		'html' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'get', '{"property":"html","selector":${json_str(sel)}}'
 		}
 		'title' {
@@ -434,8 +555,12 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── 状态检查 ──
 		'is' {
-			state := flags['state'] or { if positionals.len > 0 { positionals[0] } else { 'visible' } }
-			sel := flags['selector'] or { if positionals.len > 1 { positionals[1] } else { '' } }
+			state := flags['state'] or {
+				if positionals.len > 0 { positionals[0] } else { 'visible' }
+			}
+			sel := flags['selector'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
 			return 'is', '{"state":${json_str(state)},"selector":${json_str(sel)}}'
 		}
 		// ── 等待 ──
@@ -449,26 +574,47 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 				// 选择器
 				return 'wait', '{"selector":${json_str(arg)}}'
 			}
-			if load := flags['load'] { return 'wait', '{"load":${json_str(load)}}' }
-			if url_p := flags['url'] { return 'wait', '{"url":${json_str(url_p)}}' }
-			if text := flags['text'] { return 'wait', '{"text":${json_str(text)}}' }
-			if fn_e := flags['fn'] { return 'wait', '{"fn":${json_str(fn_e)}}' }
+			if load := flags['load'] {
+				return 'wait', '{"load":${json_str(load)}}'
+			}
+			if url_p := flags['url'] {
+				return 'wait', '{"url":${json_str(url_p)}}'
+			}
+			if text := flags['text'] {
+				return 'wait', '{"text":${json_str(text)}}'
+			}
+			if fn_e := flags['fn'] {
+				return 'wait', '{"fn":${json_str(fn_e)}}'
+			}
 			return 'wait', '{"ms":"1000"}'
 		}
 		// ── find（语义定位器）──
 		'find' {
-			loc_key := if flags.keys().contains('role') { 'role' }
-				else if flags.keys().contains('text') { 'text' }
-				else if flags.keys().contains('label') { 'label' }
-				else if flags.keys().contains('placeholder') { 'placeholder' }
-				else if flags.keys().contains('alt') { 'alt' }
-				else if flags.keys().contains('title') { 'title' }
-				else if flags.keys().contains('testid') { 'testid' }
-				else if flags.keys().contains('first') { 'first' }
-				else if flags.keys().contains('last') { 'last' }
-				else if flags.keys().contains('nth') { 'nth' }
-				else if positionals.len > 0 { positionals[0] }
-				else { '' }
+			loc_key := if flags.keys().contains('role') {
+				'role'
+			} else if flags.keys().contains('text') {
+				'text'
+			} else if flags.keys().contains('label') {
+				'label'
+			} else if flags.keys().contains('placeholder') {
+				'placeholder'
+			} else if flags.keys().contains('alt') {
+				'alt'
+			} else if flags.keys().contains('title') {
+				'title'
+			} else if flags.keys().contains('testid') {
+				'testid'
+			} else if flags.keys().contains('first') {
+				'first'
+			} else if flags.keys().contains('last') {
+				'last'
+			} else if flags.keys().contains('nth') {
+				'nth'
+			} else if positionals.len > 0 {
+				positionals[0]
+			} else {
+				''
+			}
 			mut query := flags[loc_key] or { '' }
 			mut index := flags['index'] or { '' }
 			mut action_pos := 1
@@ -481,49 +627,92 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 						}
 						action_pos = 3
 					}
-					'role', 'text', 'label', 'placeholder', 'alt', 'title', 'testid', 'first', 'last' {
+					'role', 'text', 'label', 'placeholder', 'alt', 'title', 'testid', 'first',
+					'last' {
 						query = positionals[1]
 						action_pos = 2
 					}
 					else {}
 				}
 			}
-			action := if flags.keys().contains('click') { 'click' }
-				else if flags.keys().contains('fill') { 'fill' }
-				else if flags.keys().contains('type') { 'type' }
-				else if flags.keys().contains('hover') { 'hover' }
-				else if flags.keys().contains('focus') { 'focus' }
-				else if flags.keys().contains('check') { 'check' }
-				else if flags.keys().contains('uncheck') { 'uncheck' }
-				else if flags.keys().contains('text') && loc_key != 'text' { 'text' }
-				else { flags['action'] or { if positionals.len > action_pos { positionals[action_pos] } else { 'click' } } }
-			value := flags['value'] or { if positionals.len > action_pos + 1 { positionals[action_pos + 1] } else { '' } }
+			action := if flags.keys().contains('click') {
+				'click'
+			} else if flags.keys().contains('fill') {
+				'fill'
+			} else if flags.keys().contains('type') {
+				'type'
+			} else if flags.keys().contains('hover') {
+				'hover'
+			} else if flags.keys().contains('focus') {
+				'focus'
+			} else if flags.keys().contains('check') {
+				'check'
+			} else if flags.keys().contains('uncheck') {
+				'uncheck'
+			} else if flags.keys().contains('text') && loc_key != 'text' {
+				'text'
+			} else {
+				flags['action'] or {
+					if positionals.len > action_pos { positionals[action_pos] } else { 'click' }
+				}
+			}
+			value := flags['value'] or {
+				if positionals.len > action_pos + 1 { positionals[action_pos + 1] } else { '' }
+			}
 			exact := if flags.keys().contains('exact') { 'true' } else { 'false' }
 			name_filter := flags['name'] or { '' }
 			return 'find', '{"locator":${json_str(loc_key)},"query":${json_str(query)},"action":${json_str(action)},"value":${json_str(value)},"exact":${json_str(exact)},"name":${json_str(name_filter)},"index":${json_str(index)}}'
 		}
 		// ── eval ──
 		'eval', 'js', 'execute', 'run' {
-			expr := flags['expression'] or { flags['expr'] or { if positionals.len > 0 { positionals[0] } else { '' } } }
+			expr := flags['expression'] or {
+				flags['expr'] or {
+					if positionals.len > 0 { positionals[0] } else { '' }
+				}
+			}
 			await_p := flags['await'] or { 'false' }
 			return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)}}'
 		}
 		// ── tab ──
 		'tab' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'list' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'list' }
+			}
 			match action {
 				'new' {
-					url := flags['url'] or { if positionals.len > 1 { positionals[1] } else { '' } }
+					url := flags['url'] or {
+						if positionals.len > 1 { positionals[1] } else { '' }
+					}
 					return 'tab', '{"action":"new","url":${json_str(url)}}'
 				}
 				'switch' {
-					tab_id := flags['id'] or { flags['tab-id'] or { if positionals.len > 1 { positionals[1] } else { '' } } }
+					tab_id := flags['id'] or {
+						flags['tab-id'] or {
+							if positionals.len > 1 { positionals[1] } else { '' }
+						}
+					}
 					window_id := flags['window-id'] or { '' }
-					return 'tab', '{"action":"switch","tabId":${if tab_id != '' { tab_id } else { '0' }},"windowId":${if window_id != '' { window_id } else { '0' }}}'
+					return 'tab', '{"action":"switch","tabId":${if tab_id != '' {
+						tab_id
+					} else {
+						'0'
+					}},"windowId":${if window_id != '' {
+						window_id
+					} else {
+						'0'
+					}}}'
 				}
 				'close' {
-					tid := flags['id'] or { flags['tab-id'] or { if positionals.len > 1 { positionals[1] } else { '' } } }
-					return 'tab', '{"action":"close","tabId":${if tid != '' { tid } else { '0' }}}'
+					tid := flags['id'] or {
+						flags['tab-id'] or {
+							if positionals.len > 1 { positionals[1] } else { '' }
+						}
+					}
+					return 'tab', '{"action":"close","tabId":${if tid != '' {
+						tid
+					} else {
+						'0'
+					}}}'
 				}
 				else {
 					return 'tab', '{"action":"list"}'
@@ -531,15 +720,25 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 			}
 		}
 		'window' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'new' } }
-			url := flags['url'] or { if positionals.len > 1 { positionals[1] } else { '' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'new' }
+			}
+			url := flags['url'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
 			return 'window', '{"action":${json_str(action)},"url":${json_str(url)}}'
 		}
 		// ── mouse ──
 		'mouse' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { '' } }
-			x := flags['x'] or { if positionals.len > 1 { positionals[1] } else { '0' } }
-			y := flags['y'] or { if positionals.len > 2 { positionals[2] } else { '0' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
+			x := flags['x'] or {
+				if positionals.len > 1 { positionals[1] } else { '0' }
+			}
+			y := flags['y'] or {
+				if positionals.len > 2 { positionals[2] } else { '0' }
+			}
 			btn := flags['button'] or { 'left' }
 			dx := flags['dx'] or { '0' }
 			dy := flags['dy'] or { '0' }
@@ -547,7 +746,9 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── cookies ──
 		'cookies', 'cookie' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'get' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'get' }
+			}
 			name := flags['name'] or { '' }
 			value := flags['value'] or { '' }
 			domain := flags['domain'] or { '' }
@@ -555,17 +756,27 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── storage ──
 		'storage', 'localstorage', 'sessionstorage' {
-			storage_type := if cmd == 'sessionstorage' { 'session' } else {
+			storage_type := if cmd == 'sessionstorage' {
+				'session'
+			} else {
 				flags['type'] or { 'local' }
 			}
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'get' } }
-			key := flags['key'] or { if positionals.len > 1 { positionals[1] } else { '' } }
-			value := flags['value'] or { if positionals.len > 2 { positionals[2] } else { '' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'get' }
+			}
+			key := flags['key'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
+			value := flags['value'] or {
+				if positionals.len > 2 { positionals[2] } else { '' }
+			}
 			return 'storage', '{"type":${json_str(storage_type)},"action":${json_str(action)},"key":${json_str(key)},"value":${json_str(value)}}'
 		}
 		// ── network ──
 		'network' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'requests' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'requests' }
+			}
 			url := flags['url'] or { '' }
 			abort := flags['abort'] or { 'false' }
 			body := flags['body'] or { '' }
@@ -574,18 +785,24 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── frame ──
 		'frame' {
-			selector := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { 'main' } }
+			selector := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { 'main' }
+			}
 			return 'frame', '{"selector":${json_str(selector)}}'
 		}
 		// ── dialog ──
 		'dialog' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'accept' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'accept' }
+			}
 			text := flags['text'] or { '' }
 			return 'dialog', '{"action":${json_str(action)},"text":${json_str(text)}}'
 		}
 		// ── highlight ──
 		'highlight' {
-			sel := flags['selector'] or { if positionals.len > 0 { positionals[0] } else { '' } }
+			sel := flags['selector'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
 			return 'highlight', '{"selector":${json_str(sel)}}'
 		}
 		// ── console / errors ──
@@ -599,33 +816,55 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── trace ──
 		'trace' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'start' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'start' }
+			}
 			path := flags['path'] or { '' }
 			return 'trace', '{"action":${json_str(action)},"path":${json_str(path)}}'
 		}
 		// ── profiler ──
 		'profiler', 'profile' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'start' } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'start' }
+			}
 			path := flags['path'] or { '' }
 			return 'profiler', '{"action":${json_str(action)},"path":${json_str(path)}}'
 		}
 		// ── set ──
 		'set' {
-			prop := flags['property'] or { flags['prop'] or { if positionals.len > 0 { positionals[0] } else { '' } } }
+			prop := flags['property'] or {
+				flags['prop'] or {
+					if positionals.len > 0 { positionals[0] } else { '' }
+				}
+			}
 			match prop {
 				'viewport' {
-					w := flags['width'] or { if positionals.len > 1 { positionals[1] } else { '1280' } }
-					h := flags['height'] or { if positionals.len > 2 { positionals[2] } else { '800' } }
-					scale := flags['scale'] or { if positionals.len > 3 { positionals[3] } else { '1' } }
+					w := flags['width'] or {
+						if positionals.len > 1 { positionals[1] } else { '1280' }
+					}
+					h := flags['height'] or {
+						if positionals.len > 2 { positionals[2] } else { '800' }
+					}
+					scale := flags['scale'] or {
+						if positionals.len > 3 { positionals[3] } else { '1' }
+					}
 					return 'set', '{"property":"viewport","width":${w},"height":${h},"scale":${scale}}'
 				}
 				'device' {
-					value := flags['value'] or { if positionals.len > 1 { positionals[1..].join(' ') } else { '' } }
+					value := flags['value'] or {
+						if positionals.len > 1 { positionals[1..].join(' ') } else { '' }
+					}
 					return 'set', '{"property":"device","value":${json_str(value)}}'
 				}
 				'geo', 'geolocation' {
-					lat := flags['lat'] or { if positionals.len > 1 { positionals[1] } else { '0' } }
-					lng := flags['lng'] or { flags['lon'] or { if positionals.len > 2 { positionals[2] } else { '0' } } }
+					lat := flags['lat'] or {
+						if positionals.len > 1 { positionals[1] } else { '0' }
+					}
+					lng := flags['lng'] or {
+						flags['lon'] or {
+							if positionals.len > 2 { positionals[2] } else { '0' }
+						}
+					}
 					return 'set', '{"property":"geo","lat":${lat},"lng":${lng}}'
 				}
 				'offline' {
@@ -645,19 +884,31 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 					value := flags['value'] or { 'dark' }
 					return 'set', '{"property":"media","value":${json_str(value)}}'
 				}
-				else { return 'set', '{"property":${json_str(prop)}}' }
+				else {
+					return 'set', '{"property":${json_str(prop)}}'
+				}
 			}
 		}
 		// ── diff ──
 		'diff' {
-			dtype := flags['type'] or { if positionals.len > 0 { positionals[0] } else { 'snapshot' } }
-			baseline := flags['baseline'] or { if positionals.len > 1 { positionals[1] } else { '' } }
+			dtype := flags['type'] or {
+				if positionals.len > 0 { positionals[0] } else { 'snapshot' }
+			}
+			baseline := flags['baseline'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
 			return 'diff', '{"type":${json_str(dtype)},"baseline":${json_str(baseline)}}'
 		}
 		// ── state ──
 		'state' {
-			action := flags['action'] or { if positionals.len > 0 { positionals[0] } else { 'list' } }
-			path := flags['path'] or { flags['name'] or { if positionals.len > 1 { positionals[1] } else { '' } } }
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { 'list' }
+			}
+			path := flags['path'] or {
+				flags['name'] or {
+					if positionals.len > 1 { positionals[1] } else { '' }
+				}
+			}
 			new_path := flags['newPath'] or { flags['new'] or { '' } }
 			return 'state', '{"action":${json_str(action)},"path":${json_str(path)},"newPath":${json_str(new_path)}}'
 		}
@@ -676,8 +927,12 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 			// 未知命令直接透传到 dispatch_command
 			// 构造最简 params：把所有 positionals 和 flags 塞进去
 			mut p := '{"_cmd":${json_str(cmd)}'
-			for k, v in flags { p += ',"${k}":${json_str(v)}' }
-			for j, pos in positionals { p += ',"arg${j}":${json_str(pos)}' }
+			for k, v in flags {
+				p += ',"${k}":${json_str(v)}'
+			}
+			for j, pos in positionals {
+				p += ',"arg${j}":${json_str(pos)}'
+			}
 			p += '}'
 			return cmd, p
 		}
@@ -704,7 +959,11 @@ fn send_ipc(method string, params string) !string {
 	conn.set_read_timeout(60 * time.second)
 
 	// 发送请求
-	req := IpcRequest{ id: 1, method: method, params: params }
+	req := IpcRequest{
+		id:     1
+		method: method
+		params: params
+	}
 	conn.write_string(ipc_encode_request(req)) or { return error('send failed: ${err}') }
 
 	// 读取响应
@@ -712,9 +971,13 @@ fn send_ipc(method string, params string) !string {
 	mut raw := ''
 	for {
 		n := conn.read(mut buf) or { break }
-		if n == 0 { break }
+		if n == 0 {
+			break
+		}
 		raw += buf[..n].bytestr()
-		if raw.contains('\n') { break }
+		if raw.contains('\n') {
+			break
+		}
 	}
 
 	resp := ipc_decode_response(raw.trim_space()) or { return error('parse response: ${err}') }
@@ -724,7 +987,8 @@ fn send_ipc(method string, params string) !string {
 	// 美化输出：去除外层引号（如果是字符串 JSON）
 	result := resp.result
 	if result.starts_with('"') && result.ends_with('"') {
-		return result[1..result.len - 1].replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+		return result[1..result.len - 1].replace('\\"', '"').replace('\\n', '\n').replace('\\\\',
+			'\\')
 	}
 	return result
 }
