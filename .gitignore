@@ -25,5 +25,9 @@ packages/test-ui/test-ui
 .DS_Store
 Thumbs.db
 
+# Local env files
+.env
+.env.local
+
 # Test results
 test-results/

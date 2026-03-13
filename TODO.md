@@ -93,12 +93,12 @@ Chrome Tab (CDP 1.3)
 
 ## 关键技术决策
 
-| 决策点 | 选择 |
-| ------ | ---- |
-| CLI↔Server IPC | 本地 TCP + JSON-RPC（sock 文件记录端口） |
-| CDP 响应等待 | `chan` + deadline timeout（默认 30s） |
-| @eN 引用存储 | server 内存 `map[string]int`（backendNodeId） |
-| auth token | `~/.v-browser/token` 文件，CLI/server 共享 |
-| 全页截图 | `Page.captureScreenshot {captureBeyondViewport: true}` |
-| 事件等待 | 订阅 CDP 事件 chan，select + timeout |
-| 选择器优先级 | `@eN` > CSS/XPath > 语义定位器 |
+| 决策点         | 选择                                                   |
+| -------------- | ------------------------------------------------------ |
+| CLI↔Server IPC | 本地 TCP + JSON-RPC（sock 文件记录端口）               |
+| CDP 响应等待   | `chan` + deadline timeout（默认 30s）                  |
+| @eN 引用存储   | server 内存 `map[string]int`（backendNodeId）          |
+| auth token     | `~/.v-browser/token` 文件，CLI/server 共享             |
+| 全页截图       | `Page.captureScreenshot {captureBeyondViewport: true}` |
+| 事件等待       | 订阅 CDP 事件 chan，select + timeout                   |
+| 选择器优先级   | `@eN` > CSS/XPath > 语义定位器                         |

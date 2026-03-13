@@ -22,11 +22,82 @@ npm run build
 
 然后在 Chrome / Chromium / Edge 中以开发者模式加载 packages/extension/dist。首次使用前，建议先打开扩展的状态页确认 token 已生成。
 
+## 配置项说明
+
+`v-browser` 使用环境变量做运行时配置。下面列出项目里目前实际使用到的配置项、默认值和示例。
+
+| 变量名                   | 是否必需 | 默认值                                                | 说明                                                                                |
+| ------------------------ | -------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `V_BROWSER_EXTENSION_ID` | 建议设置 | 从 `${HOME}/.v-browser/extension_id` 读取（若已同步） | 扩展 ID。`connect` 时若未连接扩展，会用它拼出 `chrome-extension://.../connect.html` |
+| `V_BROWSER_BROWSER_APP`  | 可选     | 空                                                    | 指定打开连接页的浏览器。Windows 下建议填浏览器可执行文件路径；macOS 下可填应用名    |
+| `V_BROWSER_HOME`         | 可选     | 当前用户 Home 目录                                    | `v-browser` 的状态目录根路径                                                        |
+| `V_BROWSER_RELAY_PORT`   | 可选     | `47978`                                               | WebSocket relay 端口                                                                |
+| `V_BROWSER_IPC_PORT`     | 可选     | `47979`                                               | 本地 IPC 端口                                                                       |
+
+### 状态文件位置
+
+当未设置 `V_BROWSER_HOME` 时，以下文件默认写入用户主目录下的 `.v-browser`：
+
+- `~/.v-browser/token`：CLI 与扩展握手 token
+- `~/.v-browser/extension_id`：最近一次同步/记录的扩展 ID
+- `~/.v-browser/server.sock`：当前 IPC 端口记录文件
+- `~/.v-browser/server.log`：server 日志
+- `~/.v-browser/server.task`：后台任务标记
+
+### `.env.example` 示例
+
+仓库根目录包含一个可复制的模板：
+
+```dotenv
+V_BROWSER_EXTENSION_ID=your-extension-id
+V_BROWSER_BROWSER_APP=path-to-your-browser
+V_BROWSER_HOME=
+V_BROWSER_RELAY_PORT=47978
+V_BROWSER_IPC_PORT=47979
+```
+
+> 注意：`v-browser` 不会自动加载 `.env`。如需使用，请在启动前由 shell、任务系统或你自己的脚本负责导入。
+
+如果你使用的是 Windows + Edge，本地 `.env` 可以参考：
+
+```dotenv
+V_BROWSER_EXTENSION_ID=eefgklfpdnjodmmjefedjfnflacaimmj
+V_BROWSER_BROWSER_APP=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+V_BROWSER_HOME=
+V_BROWSER_RELAY_PORT=47978
+V_BROWSER_IPC_PORT=47979
+```
+
+### 示例：Windows PowerShell
+
+```powershell
+$env:V_BROWSER_EXTENSION_ID = 'eefgklfpdnjodmmjefedjfnflacaimmj'
+$env:V_BROWSER_BROWSER_APP = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+./v-browser.exe connect
+```
+
+### 示例：macOS
+
+```bash
+export V_BROWSER_EXTENSION_ID="abcdefghijklmnopabcdefghijklmnop"
+export V_BROWSER_BROWSER_APP="Microsoft Edge"
+./v-browser connect
+```
+
+### 示例：隔离测试目录
+
+```bash
+export V_BROWSER_HOME="$PWD/.local"
+export V_BROWSER_RELAY_PORT=48078
+export V_BROWSER_IPC_PORT=48079
+./v-browser server
+```
+
 连接时 CLI 会自动尝试拉起扩展连接页：
 
 ```bash
 cd packages/server
-./v-browser connect
+./v-browser connect --extension-id eefgklfpdnjodmmjefedjfnflacaimmj
 ```
 
 ---

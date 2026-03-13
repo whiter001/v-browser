@@ -1,0 +1,32 @@
+{
+  "name": "v-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "V-Browser: A modular browser interaction bridge",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-repo/v-browser.git"
+  },
+  "engines": {
+    "node": ">=22",
+    "v": ">=0.5.1",
+    "pnpm": ">=8"
+  },
+  "scripts": {
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "fmt": "oxfmt .",
+    "fmt:fix": "oxfmt --write .",
+    "build:extension": "cd packages/extension && pnpm install && pnpm run build",
+    "build:server": "cd packages/server && v .",
+    "dev:server": "cd packages/server && v run src/main.v",
+    "clean": "rm -rf packages/extension/dist packages/server/v-browser.exe"
+  },
+  "keywords": [
+    "browser",
+    "automation",
+    "playwright",
+    "vlang"
+  ],
+  "license": "MIT"
+}

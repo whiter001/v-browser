@@ -53,6 +53,102 @@ cd packages/server
 ./v-browser eval document.title
 ```
 
+## 项目配置
+
+`v-browser` 目前主要通过环境变量配置运行行为。CLI/Server 本身不会自动读取根目录 `.env`，但你可以把它当成团队共享的配置模板，再按自己的 shell 手动加载。
+
+### 必要配置
+
+- `V_BROWSER_EXTENSION_ID`
+  - 用途：告诉 `v-browser connect` 要打开哪个浏览器扩展。
+  - 来源：浏览器扩展详情页中的扩展 ID，或扩展状态页同步到本地后的 `~/.v-browser/extension_id`。
+  - 示例：`eefgklfpdnjodmmjefedjfnflacaimmj`
+
+### 常用可选配置
+
+- `V_BROWSER_BROWSER_APP`
+  - 用途：显式指定要用哪个 Chromium 内核浏览器打开扩展连接页。
+  - 适用场景：Windows 默认浏览器不是 Edge/Chrome，或机器上装了多个浏览器。
+- `V_BROWSER_HOME`
+  - 用途：指定 `v-browser` 的状态目录根路径。
+  - 默认值：当前用户 Home 目录。
+  - 影响文件：`${V_BROWSER_HOME}/.v-browser/token`、`${V_BROWSER_HOME}/.v-browser/extension_id`、`${V_BROWSER_HOME}/.v-browser/server.log` 等。
+- `V_BROWSER_RELAY_PORT`
+  - 用途：覆盖 WebSocket relay 端口。
+  - 默认值：`47978`
+- `V_BROWSER_IPC_PORT`
+  - 用途：覆盖本地 IPC 端口。
+  - 默认值：`47979`
+
+### `.env` 示例
+
+仓库根目录已提供 `.env.example` 模板，你可以复制为 `.env` 后按需修改：
+
+```bash
+# Windows PowerShell
+Copy-Item .env.example .env
+
+# macOS / Linux
+cp .env.example .env
+```
+
+模板内容如下：
+
+```dotenv
+V_BROWSER_EXTENSION_ID=your-extension-id
+V_BROWSER_BROWSER_APP=path-to-your-browser
+V_BROWSER_HOME=
+V_BROWSER_RELAY_PORT=47978
+V_BROWSER_IPC_PORT=47979
+```
+
+如果是你当前这台 Windows + Edge 机器，本地 `.env` 可以写成：
+
+```dotenv
+V_BROWSER_EXTENSION_ID=eefgklfpdnjodmmjefedjfnflacaimmj
+V_BROWSER_BROWSER_APP=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+V_BROWSER_HOME=
+V_BROWSER_RELAY_PORT=47978
+V_BROWSER_IPC_PORT=47979
+```
+
+### 在不同系统中使用配置
+
+#### Windows PowerShell
+
+```powershell
+$env:V_BROWSER_EXTENSION_ID = 'eefgklfpdnjodmmjefedjfnflacaimmj'
+$env:V_BROWSER_BROWSER_APP = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+./packages/server/v-browser.exe connect
+```
+
+#### macOS / Linux
+
+```bash
+export V_BROWSER_EXTENSION_ID="your-extension-id"
+export V_BROWSER_BROWSER_APP="/Applications/Google Chrome.app"
+./packages/server/v-browser connect
+```
+
+### 推荐配置组合
+
+#### 1. Windows + Edge
+
+```dotenv
+V_BROWSER_EXTENSION_ID=eefgklfpdnjodmmjefedjfnflacaimmj
+V_BROWSER_BROWSER_APP=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+```
+
+#### 2. 隔离测试环境
+
+```dotenv
+V_BROWSER_HOME=D:\work\github\v-browser\.local
+V_BROWSER_RELAY_PORT=48078
+V_BROWSER_IPC_PORT=48079
+```
+
+这样可以避免和你平时使用的浏览器状态目录互相“踩脚趾”。
+
 ## 测试
 
 - V 单测：在 packages/server 下运行 `v test ./src`

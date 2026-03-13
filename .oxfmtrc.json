@@ -1,0 +1,10 @@
+{
+  "ignorePatterns": ["node_modules", "dist"],
+  "jsx": {
+    "indentWidth": 2,
+    "semi": true
+  },
+  "json": {
+    "indentWidth": 2
+  }
+}
