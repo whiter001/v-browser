@@ -61,6 +61,10 @@ fn main() {
 		print_error(err.msg(), json_output)
 		exit(1)
 	}
+	// status 命令：未连接时显示友好提示
+	if method == 'status' && !json_output && result.contains('"connected":false') {
+		eprintln('Not connected. Run `v-browser connect` to connect.')
+	}
 	// CLI 模式自动解码 JSON 字符串
 	if !json_output && raw_output {
 		println(decode_json_string(result))
