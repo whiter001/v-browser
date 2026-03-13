@@ -16,7 +16,7 @@ npm install
 npm run build
 ```
 
-自动后台拉起 `v-browser server` 现在优先使用 `pueue add`。如果环境里没有 `pueue`，可以手动运行 `v-browser server`。
+自动后台拉起 `v-browser server`（如有需要）。现在优先使用 `pueue add`。如果环境里没有 `pueue`，也可以手动运行 `v-browser server`（通常不需要）。
 
 在 Windows 上，`v-browser connect` 会通过系统默认关联或 `V_BROWSER_BROWSER_APP` 指定的浏览器可执行文件打开扩展连接页；如果默认浏览器不是 Chromium 内核，建议显式设置 `V_BROWSER_BROWSER_APP`。
 

@@ -886,9 +886,20 @@ fn cmd_pdf(mut sess CdpSession, params string) string {
 }
 
 // ─── snapshot ───────────────────────────────────────────────
+
+// 可交互角色列表
+const snapshot_interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'radio',
+	'combobox', 'listbox', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option',
+	'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'treeitem', 'heading', 'image',
+	'banner', 'navigation', 'region', 'main', 'form', 'search', 'dialog', 'alert',
+	'alertdialog', 'complementary', 'contentinfo', 'definition', 'directory', 'document',
+	'feed', 'figure', 'log', 'marquee', 'math', 'note', 'progressbar', 'status', 'table',
+	'term', 'timer', 'tooltip', 'tree']
+
 fn cmd_snapshot(mut sess CdpSession, params string) string {
-	// 解析 raw 参数 - 使用安全的 JSON 解析
+	// 解析参数
 	raw := cdp_extract_bool(params, 'raw')
+	interactive := cdp_extract_bool(params, 'interactive')
 
 	resp := sess.send_command('Accessibility.getFullAXTree', '{}') or { return 'ERROR:${err}' }
 	nodes_json := cdp_extract_obj_key(resp.result, '"nodes":')
@@ -898,17 +909,21 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 
 	axref_clear(mut sess.axref)
 	mut out := '= Accessibility Snapshot =\n'
-	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref)
+	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref, interactive)
 	out += ax_out
-	cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref) or {
-		''
-	}
-	if cursor_out != '' {
-		if ax_out != '' && !ax_out.ends_with('\n') {
-			out += '\n'
+	
+	// 只有在非 interactive 模式下才添加 cursor-interactive 元素
+	if !interactive {
+		cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref) or {
+			''
 		}
-		out += '# Cursor-interactive elements:\n'
-		out += cursor_out
+		if cursor_out != '' {
+			if ax_out != '' && !ax_out.ends_with('\n') {
+				out += '\n'
+			}
+			out += '# Cursor-interactive elements:\n'
+			out += cursor_out
+		}
 	}
 
 	// raw 模式返回未编码的纯文本
@@ -918,18 +933,29 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 	return json_str(out)
 }
 
-fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore) (string, int) {
+fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, interactive bool) (string, int) {
 	mut out := ''
 	mut counter := start_counter
 	mut pos := 1 // skip opening '['
-	mut i := 0
+	mut i := 0 // 安全计数器，防止解析过大的树时无限循环
+
 	for pos < nodes_json.len - 1 {
 		if nodes_json[pos] == `{` {
 			node_str := cdp_balanced(nodes_json[pos..])
 			role := ax_prop(node_str, 'role')
 			name := ax_prop(node_str, 'name')
 			bnid := cdp_extract_int(node_str, '"backendDOMNodeId":')
-			if (role != '' && role != 'none' && role != 'generic') || name != '' {
+			
+			// interactive 模式下只保留可交互角色
+			// 非 interactive 模式下过滤 none 和 generic
+			should_include := if interactive {
+				role != '' && role in snapshot_interactive_roles
+			} else {
+				role != '' && role != 'none' && role != 'generic'
+			}
+			
+			// 只有满足条件的才输出
+			if should_include {
 				ref_key := '@e${counter}'
 				counter++
 				out += '${ref_key} [${role}] ${name}\n'

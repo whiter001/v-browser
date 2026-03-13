@@ -421,7 +421,8 @@ fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string)
 		// ── 快照 ──
 		'snapshot', 'snap', 'ax' {
 			raw := if raw_output { 'true' } else { 'false' }
-			return 'snapshot', '{"raw":${raw}}'
+			interactive := flags['interactive'] or { 'false' }
+			return 'snapshot', '{"raw":${raw},"interactive":${interactive}}'
 		}
 		// ── 元素操作 ──
 		'click' {

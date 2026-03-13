@@ -443,7 +443,7 @@ fn tracked_network_request_json(entry TrackedNetworkRequest) string {
 }
 
 // ─── 超时常量 ───────────────────────────────────────────────
-const cdp_default_timeout = 30 * time.second
+const cdp_default_timeout = 60 * time.second
 const cdp_attach_timeout = 60 * time.second
 
 // ─── JSON 解析帮助函数 ──────────────────────────────────────

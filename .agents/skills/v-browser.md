@@ -21,9 +21,7 @@ npm run build
 
 ## 快速开始
 
-1. **启动 server**：`./v-browser server`（或 `v-browser connect` 自动启动）
-2. **加载扩展**：Chrome 以开发者模式加载 `packages/extension/dist`
-3. **连接浏览器**：`v-browser connect`
+1. **连接浏览器**：`v-browser connect`（自动启动 server + 打开扩展连接页）
 
 ---
 
@@ -36,9 +34,19 @@ npm run build
 | `v-browser snapshot`          | 获取无障碍树（`--raw` 返回原始文本，适合 AI 处理） |
 | `v-browser click <sel>`       | 点击元素                                           |
 | `v-browser fill <sel> <text>` | 清空并填充输入框                                   |
-| `v-browser get text <sel>`    | 获取文本内容                                       |
+| `v-browser get text <sel>`    | 获取文本内容（**需要 selector**）                  |
 | `v-browser screenshot [path]` | 截图                                               |
 | `v-browser close`             | 关闭浏览器                                         |
+
+---
+
+### ⚠️ 常见问题
+
+| 问题                      | 原因                                           | 解决方案                             |
+| ------------------------- | ---------------------------------------------- | ------------------------------------ |
+| `get text` 报 SyntaxError | 未提供 selector，生成 `querySelector("")` 无效 | 使用 `v-browser get text <selector>` |
+| `snapshot` 超时           | 大型 SPA 无障碍树太庞大                        | 使用 `v-browser eval` 获取内容       |
+| `Not connected`           | 未连接浏览器                                   | 运行 `v-browser connect`             |
 
 ---
 
