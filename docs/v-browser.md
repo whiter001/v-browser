@@ -44,6 +44,24 @@ npm run build
 - `~/.v-browser/server.log`：server 日志
 - `~/.v-browser/server.task`：后台任务标记
 
+### 全局配置文件
+
+除 `V_BROWSER_HOME` 外，`v-browser` 还支持从全局配置文件读取运行时配置，路径固定为 `~/.config/v-browser/config`。
+
+- 文件格式：每行 `key=value`
+- 支持 `#` 注释
+- 优先级：环境变量 > 全局配置文件
+- `V_BROWSER_HOME` 仅支持通过环境变量设置，不从该文件读取
+
+示例：
+
+```dotenv
+V_BROWSER_EXTENSION_ID=eefgklfpdnjodmmjefedjfnflacaimmj
+V_BROWSER_BROWSER_APP=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+V_BROWSER_RELAY_PORT=47978
+V_BROWSER_IPC_PORT=47979
+```
+
 ### `.env.example` 示例
 
 仓库根目录包含一个可复制的模板：

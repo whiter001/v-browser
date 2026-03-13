@@ -180,7 +180,7 @@ fn resolve_extension_id(args []string) string {
 		save_extension_id(explicit) or {}
 		return explicit
 	}
-	env_id := os.getenv('V_BROWSER_EXTENSION_ID').trim_space()
+	env_id := get_env_with_config('V_BROWSER_EXTENSION_ID').trim_space()
 	if env_id != '' {
 		return env_id
 	}
@@ -228,7 +228,7 @@ fn open_extension_connect_page(extension_id string) !string {
 
 fn open_url_in_browser(url string) ! {
 	$if macos {
-		candidates := browser_open_candidates(os.getenv('V_BROWSER_BROWSER_APP').trim_space())
+		candidates := browser_open_candidates(get_env_with_config('V_BROWSER_BROWSER_APP').trim_space())
 		mut last_output := ''
 		for app in candidates {
 			result := os.execute(build_macos_open_command(app, url))
@@ -243,13 +243,13 @@ fn open_url_in_browser(url string) ! {
 		if last_output != '' {
 			reason += ': ${last_output}'
 		}
-		if os.getenv('V_BROWSER_BROWSER_APP').trim_space() == '' {
+		if get_env_with_config('V_BROWSER_BROWSER_APP').trim_space() == '' {
 			reason += '. Set V_BROWSER_BROWSER_APP to an installed browser app name if needed'
 		}
 		return error(reason)
 	}
 	$if windows {
-		browser_app := os.getenv('V_BROWSER_BROWSER_APP').trim_space()
+		browser_app := get_env_with_config('V_BROWSER_BROWSER_APP').trim_space()
 		result := os.execute(build_windows_open_command(url, browser_app))
 		if result.exit_code != 0 {
 			mut reason := 'failed to open extension connect page'

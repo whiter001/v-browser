@@ -102,6 +102,65 @@ V_BROWSER_RELAY_PORT=47978
 V_BROWSER_IPC_PORT=47979
 ```
 
+> **注意**：`v-browser` 不会自动加载 `.env` 文件。如需使用，请按下方"设置环境变量"章节的方法配置。
+
+### 全局配置文件（推荐）
+
+v-browser 支持从全局配置文件读取配置，推荐使用此方式：
+
+- **配置路径**：`~/.config/v-browser/config`（即 `C:\Users\<用户名>\.config\v-browser\config`）
+- **文件格式**：每行 `key=value`，支持 `#` 注释
+
+**示例配置**：
+
+```dotenv
+# v-browser 全局配置
+V_BROWSER_EXTENSION_ID=eefgklfpdnjodmmjefedjfnflacaimmj
+V_BROWSER_BROWSER_APP=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+
+# 可选配置
+V_BROWSER_RELAY_PORT=47978
+V_BROWSER_IPC_PORT=47979
+```
+
+**优先级**：环境变量 > 全局配置文件
+
+`V_BROWSER_HOME` 不从全局配置文件读取；如需修改状态目录，请通过环境变量单独设置。
+
+### 设置环境变量
+
+#### Windows PowerShell（当前会话有效）
+
+```powershell
+$env:V_BROWSER_EXTENSION_ID = "eefgklfpdnjodmmjefedjfnflacaimmj"
+$env:V_BROWSER_BROWSER_APP = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+```
+
+#### Windows PowerShell（永久生效）
+
+```powershell
+[Environment]::SetEnvironmentVariable("V_BROWSER_EXTENSION_ID", "eefgklfpdnjodmmjefedjfnflacaimmj", "User")
+[Environment]::SetEnvironmentVariable("V_BROWSER_BROWSER_APP", "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "User")
+```
+
+设置后需要**重启终端**使环境变量生效。
+
+#### macOS / Linux
+
+```bash
+export V_BROWSER_EXTENSION_ID="eefgklfpdnjodmmjefedjfnflacaimmj"
+export V_BROWSER_BROWSER_APP="/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+```
+
+#### 永久生效（macOS / Linux）
+
+```bash
+# 添加到 ~/.zshrc 或 ~/.bashrc
+echo 'export V_BROWSER_EXTENSION_ID="eefgklfpdnjodmmjefedjfnflacaimmj"' >> ~/.zshrc
+echo 'export V_BROWSER_BROWSER_APP="/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"' >> ~/.zshrc
+source ~/.zshrc
+```
+
 如果是你当前这台 Windows + Edge 机器，本地 `.env` 可以写成：
 
 ```dotenv

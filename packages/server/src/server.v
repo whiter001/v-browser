@@ -11,7 +11,7 @@ pub const relay_port = 47978
 pub const ipc_port = 47979
 
 fn configured_relay_port() int {
-	override := os.getenv('V_BROWSER_RELAY_PORT').trim_space().int()
+	override := get_env_with_config('V_BROWSER_RELAY_PORT').trim_space().int()
 	if override > 0 {
 		return override
 	}
@@ -19,7 +19,7 @@ fn configured_relay_port() int {
 }
 
 fn configured_ipc_port() int {
-	override := os.getenv('V_BROWSER_IPC_PORT').trim_space().int()
+	override := get_env_with_config('V_BROWSER_IPC_PORT').trim_space().int()
 	if override > 0 {
 		return override
 	}
@@ -32,6 +32,45 @@ fn v_browser_home_dir() string {
 		return override
 	}
 	return os.home_dir()
+}
+
+fn v_browser_config_path() string {
+	return os.join_path(os.home_dir(), '.config', 'v-browser', 'config')
+}
+
+fn load_config_from_file() map[string]string {
+	mut config := map[string]string{}
+	config_path := v_browser_config_path()
+	if !os.exists(config_path) {
+		return config
+	}
+	lines := os.read_lines(config_path) or { return config }
+	for line_orig in lines {
+		line := line_orig.trim_space()
+		if line == '' || line.starts_with('#') {
+			continue
+		}
+		if idx := line.index('=') {
+			key := line[..idx].trim_space()
+			val := line[idx + 1..].trim_space()
+			if key != '' {
+				config[key] = val
+			}
+		}
+	}
+	return config
+}
+
+fn get_env_with_config(key string) string {
+	env_val := os.getenv(key).trim_space()
+	if env_val != '' {
+		return env_val
+	}
+	config := load_config_from_file()
+	if val := config[key] {
+		return val
+	}
+	return ''
 }
 
 fn ipc_sock_path() string {
