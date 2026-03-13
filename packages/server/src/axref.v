@@ -7,8 +7,8 @@ import sync
 @[heap]
 struct AxRefStore {
 mut:
-	refs   map[string]AxRef // "@e1" → AxRef
-	mu     sync.Mutex
+	refs map[string]AxRef // "@e1" → AxRef
+	mu   sync.Mutex
 }
 
 struct AxRef {
@@ -19,9 +19,9 @@ struct AxRef {
 	role            string
 	name            string
 	// 元素在页面上的大致坐标（由 DOM.getBoxModel 查出，缓存在此）
-	x               f64
-	y               f64
-	has_coords      bool
+	x          f64
+	y          f64
+	has_coords bool
 }
 
 fn axref_clear(mut store AxRefStore) {
@@ -52,10 +52,16 @@ fn axref_get(store &AxRefStore, key string) ?AxRef {
 
 // axref_is_ref 判断选择器是否为 @eN 格式
 fn axref_is_ref(sel string) bool {
-	if sel.len < 3 || !sel.starts_with('@') { return false }
-	if sel[1] != `e` { return false }
+	if sel.len < 3 || !sel.starts_with('@') {
+		return false
+	}
+	if sel[1] != `e` {
+		return false
+	}
 	for c in sel[2..] {
-		if c < `0` || c > `9` { return false }
+		if c < `0` || c > `9` {
+			return false
+		}
 	}
 	return true
 }

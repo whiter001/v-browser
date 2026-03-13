@@ -17,7 +17,6 @@ struct DevicePreset {
 }
 
 struct DownloadEventState {
-
 mut:
 	guid               string
 	suggested_filename string
@@ -27,64 +26,64 @@ mut:
 }
 
 struct ScreenshotDiffResult {
-	ok            bool
-	error         string
-	width         int
-	height        int
+	ok             bool
+	error          string
+	width          int
+	height         int
 	changed_pixels int
 	total_pixels   int
-	ratio         f64
-	diff_data     string
+	ratio          f64
+	diff_data      string
 }
 
 // dispatch_command 命令路由
 fn dispatch_command(mut sess CdpSession, method string, params string) string {
 	return match method {
-		'eval'           { cmd_eval(mut sess, params) }
+		'eval' { cmd_eval(mut sess, params) }
 		'open', 'goto', 'navigate' { cmd_open(mut sess, params) }
 		'close', 'quit', 'exit' { cmd_close(mut sess) }
-		'screenshot'     { cmd_screenshot(mut sess, params) }
-		'snapshot'       { cmd_snapshot(mut sess, params) }
-		'pdf'            { cmd_pdf(mut sess, params) }
-		'click'          { cmd_click(mut sess, params) }
-		'dblclick'       { cmd_dblclick(mut sess, params) }
-		'download'       { cmd_download(mut sess, params) }
-		'fill'           { cmd_fill(mut sess, params) }
-		'type'           { cmd_type_text(mut sess, params) }
-		'press', 'key'   { cmd_press(mut sess, params) }
-		'keydown'        { cmd_keydown(mut sess, params) }
-		'keyup'          { cmd_keyup(mut sess, params) }
-		'hover'          { cmd_hover(mut sess, params) }
-		'focus'          { cmd_focus(mut sess, params) }
-		'select'         { cmd_select(mut sess, params) }
-		'check'          { cmd_check(mut sess, params) }
-		'uncheck'        { cmd_uncheck(mut sess, params) }
-		'scroll'         { cmd_scroll(mut sess, params) }
+		'screenshot' { cmd_screenshot(mut sess, params) }
+		'snapshot' { cmd_snapshot(mut sess, params) }
+		'pdf' { cmd_pdf(mut sess, params) }
+		'click' { cmd_click(mut sess, params) }
+		'dblclick' { cmd_dblclick(mut sess, params) }
+		'download' { cmd_download(mut sess, params) }
+		'fill' { cmd_fill(mut sess, params) }
+		'type' { cmd_type_text(mut sess, params) }
+		'press', 'key' { cmd_press(mut sess, params) }
+		'keydown' { cmd_keydown(mut sess, params) }
+		'keyup' { cmd_keyup(mut sess, params) }
+		'hover' { cmd_hover(mut sess, params) }
+		'focus' { cmd_focus(mut sess, params) }
+		'select' { cmd_select(mut sess, params) }
+		'check' { cmd_check(mut sess, params) }
+		'uncheck' { cmd_uncheck(mut sess, params) }
+		'scroll' { cmd_scroll(mut sess, params) }
 		'scrollintoview', 'scrollinto' { cmd_scrollintoview(mut sess, params) }
-		'drag'           { cmd_drag(mut sess, params) }
-		'upload'         { cmd_upload(mut sess, params) }
-		'get'            { cmd_get(mut sess, params) }
-		'is'             { cmd_is(mut sess, params) }
-		'wait'           { cmd_wait(mut sess, params) }
-		'find'           { cmd_find(mut sess, params) }
-		'tab'            { cmd_tab(mut sess, params) }
-		'window'         { cmd_window(mut sess, params) }
-		'keyboard'       { cmd_keyboard(mut sess, params) }
-		'mouse'          { cmd_mouse(mut sess, params) }
-		'cookies'        { cmd_cookies(mut sess, params) }
-		'storage'        { cmd_storage(mut sess, params) }
-		'network'        { cmd_network(mut sess, params) }
-		'frame'          { cmd_frame(mut sess, params) }
-		'dialog'         { cmd_dialog(mut sess, params) }
-		'highlight'      { cmd_highlight(mut sess, params) }
-		'console'        { cmd_console(mut sess, params) }
-		'errors'         { cmd_errors(mut sess, params) }
-		'trace'          { cmd_trace(mut sess, params) }
-		'profiler'       { cmd_profiler(mut sess, params) }
-		'set'            { cmd_set(mut sess, params) }
-		'diff'           { cmd_diff(mut sess, params) }
-		'state'          { cmd_state(mut sess, params) }
-		else             { 'ERROR:unknown command: ${method}' }
+		'drag' { cmd_drag(mut sess, params) }
+		'upload' { cmd_upload(mut sess, params) }
+		'get' { cmd_get(mut sess, params) }
+		'is' { cmd_is(mut sess, params) }
+		'wait' { cmd_wait(mut sess, params) }
+		'find' { cmd_find(mut sess, params) }
+		'tab' { cmd_tab(mut sess, params) }
+		'window' { cmd_window(mut sess, params) }
+		'keyboard' { cmd_keyboard(mut sess, params) }
+		'mouse' { cmd_mouse(mut sess, params) }
+		'cookies' { cmd_cookies(mut sess, params) }
+		'storage' { cmd_storage(mut sess, params) }
+		'network' { cmd_network(mut sess, params) }
+		'frame' { cmd_frame(mut sess, params) }
+		'dialog' { cmd_dialog(mut sess, params) }
+		'highlight' { cmd_highlight(mut sess, params) }
+		'console' { cmd_console(mut sess, params) }
+		'errors' { cmd_errors(mut sess, params) }
+		'trace' { cmd_trace(mut sess, params) }
+		'profiler' { cmd_profiler(mut sess, params) }
+		'set' { cmd_set(mut sess, params) }
+		'diff' { cmd_diff(mut sess, params) }
+		'state' { cmd_state(mut sess, params) }
+		else { 'ERROR:unknown command: ${method}' }
 	}
 }
 
@@ -95,13 +94,17 @@ fn cmd_not_impl(name string) string {
 // ─── eval ───────────────────────────────────────────────────
 fn cmd_eval(mut sess CdpSession, params string) string {
 	expr := cdp_extract_str(params, 'expression')
-	if expr == '' { return 'ERROR:missing expression' }
+	if expr == '' {
+		return 'ERROR:missing expression'
+	}
 	await_promise := cdp_extract_str(params, 'awaitPromise') == 'true'
 	as_b64 := cdp_extract_str(params, 'base64') == 'true'
 	actual_expr := if as_b64 {
 		decoded := base64.decode_str(expr)
 		decoded
-	} else { expr }
+	} else {
+		expr
+	}
 	val := eval_scoped_expression(mut sess, actual_expr, await_promise) or { return 'ERROR:${err}' }
 	return json_str(val)
 }
@@ -265,42 +268,54 @@ fn build_toggle_action_body(checked bool) string {
 fn cdp_extract_value_from_result(result_obj string) string {
 	t := cdp_extract_str(result_obj, 'type')
 	match t {
-		'string'    { return cdp_extract_str(result_obj, 'value') }
-		'number'    { return cdp_extract_obj_key(result_obj, '"value":') }
-		'boolean'   { return cdp_extract_obj_key(result_obj, '"value":') }
-		'undefined' { return 'undefined' }
-		'object'    {
+		'string' {
+			return cdp_extract_str(result_obj, 'value')
+		}
+		'number' {
+			return cdp_extract_obj_key(result_obj, '"value":')
+		}
+		'boolean' {
+			return cdp_extract_obj_key(result_obj, '"value":')
+		}
+		'undefined' {
+			return 'undefined'
+		}
+		'object' {
 			sub_type := cdp_extract_str(result_obj, 'subtype')
-			if sub_type == 'null' { return 'null' }
+			if sub_type == 'null' {
+				return 'null'
+			}
 			v := cdp_extract_obj_key(result_obj, '"value":')
 			return if v != '' { v } else { result_obj }
 		}
-		else { return result_obj }
+		else {
+			return result_obj
+		}
 	}
 }
 
 // ─── open / navigate ────────────────────────────────────────
 fn cmd_open(mut sess CdpSession, params string) string {
 	url := cdp_extract_str(params, 'url')
-	if url == '' { return 'ERROR:missing url' }
+	if url == '' {
+		return 'ERROR:missing url'
+	}
 	// 订阅 loadEventFired
 	load_ch := sess.subscribe('Page.loadEventFired')
 	defer { sess.unsubscribe('Page.loadEventFired', load_ch) }
 
-	sess.send_command('Page.navigate', '{"url":${json_str(url)}}') or {
-		return 'ERROR:${err}'
-	}
+	sess.send_command('Page.navigate', '{"url":${json_str(url)}}') or { return 'ERROR:${err}' }
 	// 等待页面加载完成（最多 30s）
 	select {
-		_ := <-load_ch { }
-		30 * time.second { }
+		_ := <-load_ch {}
+		30 * time.second {}
 	}
 	return json_str('navigated to ${url}')
 }
 
 // ─── close ──────────────────────────────────────────────────
 fn cmd_close(mut sess CdpSession) string {
-	sess.send_command('Target.closeTarget', '{}') or { }
+	sess.send_command('Target.closeTarget', '{}') or {}
 	sess.close()
 	return 'null'
 }
@@ -314,12 +329,16 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 	quality := cdp_extract_int(params, '"quality":')
 
 	mut p := '{"format":"${fmt}","captureBeyondViewport":${full}'
-	if quality > 0 { p += ',"quality":${quality}' }
+	if quality > 0 {
+		p += ',"quality":${quality}'
+	}
 	p += '}'
 
 	resp := sess.send_command('Page.captureScreenshot', p) or { return 'ERROR:${err}' }
 	data := cdp_extract_str(resp.result, 'data')
-	if data == '' { return 'ERROR:no screenshot data returned' }
+	if data == '' {
+		return 'ERROR:no screenshot data returned'
+	}
 
 	// 决定保存路径
 	out_path := if path != '' {
@@ -711,7 +730,9 @@ fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
 			defer { sess.unsubscribe('Page.loadEventFired', ch) }
 			select {
 				_ := <-ch {}
-				30 * time.second { return error('timeout waiting for load') }
+				30 * time.second {
+					return error('timeout waiting for load')
+				}
 			}
 		}
 		'domcontentloaded' {
@@ -719,7 +740,9 @@ fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
 			defer { sess.unsubscribe('Page.domContentEventFired', ch) }
 			select {
 				_ := <-ch {}
-				30 * time.second { return error('timeout waiting for domcontentloaded') }
+				30 * time.second {
+					return error('timeout waiting for domcontentloaded')
+				}
 			}
 		}
 		'networkidle' {
@@ -732,7 +755,9 @@ fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
 							return
 						}
 					}
-					30 * time.second { return error('timeout waiting for networkidle') }
+					30 * time.second {
+						return error('timeout waiting for networkidle')
+					}
 				}
 			}
 		}
@@ -760,13 +785,17 @@ fn navigate_and_wait(mut sess CdpSession, url string, state string) ! {
 						return
 					}
 				}
-				30 * time.second { return error('timeout waiting for networkidle') }
+				30 * time.second {
+					return error('timeout waiting for networkidle')
+				}
 			}
 		}
 	}
 	select {
 		_ := <-ch {}
-		30 * time.second { return error('timeout waiting for ${state}') }
+		30 * time.second {
+			return error('timeout waiting for ${state}')
+		}
 	}
 }
 
@@ -780,43 +809,36 @@ fn baseline_mime_type(path string) string {
 
 fn screenshot_diff_js(baseline_b64 string, baseline_mime string, current_b64 string, threshold f64, include_diff bool) string {
 	include_diff_js := if include_diff { 'true' } else { 'false' }
-	return '(async function(){\n'
-		+ '  var baselineSrc = "data:${baseline_mime};base64,${baseline_b64}";\n'
-		+ '  var currentSrc = "data:image/png;base64,${current_b64}";\n'
-		+ '  function load(src){ return new Promise(function(resolve,reject){ var img=new Image(); img.onload=function(){ resolve(img); }; img.onerror=function(){ reject(new Error("image decode failed")); }; img.src=src; }); }\n'
-		+ '  var images = await Promise.all([load(baselineSrc), load(currentSrc)]);\n'
-		+ '  var a = images[0];\n'
-		+ '  var b = images[1];\n'
-		+ '  if (a.naturalWidth !== b.naturalWidth || a.naturalHeight !== b.naturalHeight) { return { ok:false, error:"dimension mismatch", width:b.naturalWidth, height:b.naturalHeight }; }\n'
-		+ '  var w = a.naturalWidth;\n'
-		+ '  var h = a.naturalHeight;\n'
-		+ '  var c1 = document.createElement("canvas"); c1.width = w; c1.height = h;\n'
-		+ '  var c2 = document.createElement("canvas"); c2.width = w; c2.height = h;\n'
-		+ '  var diffCanvas = document.createElement("canvas"); diffCanvas.width = w; diffCanvas.height = h;\n'
-		+ '  var x1 = c1.getContext("2d"); var x2 = c2.getContext("2d"); var xd = diffCanvas.getContext("2d");\n'
-		+ '  x1.drawImage(a, 0, 0); x2.drawImage(b, 0, 0);\n'
-		+ '  var d1 = x1.getImageData(0, 0, w, h);\n'
-		+ '  var d2 = x2.getImageData(0, 0, w, h);\n'
-		+ '  var diff = xd.createImageData(w, h);\n'
-		+ '  var changed = 0;\n'
-		+ '  var limit = Math.round(${threshold} * 255);\n'
-		+ '  for (var i = 0; i < d1.data.length; i += 4) {\n'
-		+ '    var dr = Math.abs(d1.data[i] - d2.data[i]);\n'
-		+ '    var dg = Math.abs(d1.data[i+1] - d2.data[i+1]);\n'
-		+ '    var db = Math.abs(d1.data[i+2] - d2.data[i+2]);\n'
-		+ '    var da = Math.abs(d1.data[i+3] - d2.data[i+3]);\n'
-		+ '    var changedPx = Math.max(dr, dg, db, da) > limit;\n'
-		+ '    if (changedPx) {\n'
-		+ '      changed++;\n'
-		+ '      diff.data[i] = 255; diff.data[i+1] = 0; diff.data[i+2] = 0; diff.data[i+3] = 255;\n'
-		+ '    } else {\n'
-		+ '      var avg = Math.round((d2.data[i] + d2.data[i+1] + d2.data[i+2]) / 3);\n'
-		+ '      diff.data[i] = avg; diff.data[i+1] = avg; diff.data[i+2] = avg; diff.data[i+3] = 96;\n'
-		+ '    }\n'
-		+ '  }\n'
-		+ '  xd.putImageData(diff, 0, 0);\n'
-		+ '  return { ok:true, width:w, height:h, changedPixels:changed, totalPixels:w*h, ratio:(w*h?changed/(w*h):0), diffData:${include_diff_js} ? diffCanvas.toDataURL("image/png").split(",")[1] : "" };\n'
-		+ '})()'
+	return '(async function(){\n' +
+		'  var baselineSrc = "data:${baseline_mime};base64,${baseline_b64}";\n' +
+		'  var currentSrc = "data:image/png;base64,${current_b64}";\n' +
+		'  function load(src){ return new Promise(function(resolve,reject){ var img=new Image(); img.onload=function(){ resolve(img); }; img.onerror=function(){ reject(new Error("image decode failed")); }; img.src=src; }); }\n' +
+		'  var images = await Promise.all([load(baselineSrc), load(currentSrc)]);\n' +
+		'  var a = images[0];\n' + '  var b = images[1];\n' +
+		'  if (a.naturalWidth !== b.naturalWidth || a.naturalHeight !== b.naturalHeight) { return { ok:false, error:"dimension mismatch", width:b.naturalWidth, height:b.naturalHeight }; }\n' +
+		'  var w = a.naturalWidth;\n' + '  var h = a.naturalHeight;\n' +
+		'  var c1 = document.createElement("canvas"); c1.width = w; c1.height = h;\n' +
+		'  var c2 = document.createElement("canvas"); c2.width = w; c2.height = h;\n' +
+		'  var diffCanvas = document.createElement("canvas"); diffCanvas.width = w; diffCanvas.height = h;\n' +
+		'  var x1 = c1.getContext("2d"); var x2 = c2.getContext("2d"); var xd = diffCanvas.getContext("2d");\n' +
+		'  x1.drawImage(a, 0, 0); x2.drawImage(b, 0, 0);\n' +
+		'  var d1 = x1.getImageData(0, 0, w, h);\n' + '  var d2 = x2.getImageData(0, 0, w, h);\n' +
+		'  var diff = xd.createImageData(w, h);\n' + '  var changed = 0;\n' +
+		'  var limit = Math.round(${threshold} * 255);\n' +
+		'  for (var i = 0; i < d1.data.length; i += 4) {\n' +
+		'    var dr = Math.abs(d1.data[i] - d2.data[i]);\n' +
+		'    var dg = Math.abs(d1.data[i+1] - d2.data[i+1]);\n' +
+		'    var db = Math.abs(d1.data[i+2] - d2.data[i+2]);\n' +
+		'    var da = Math.abs(d1.data[i+3] - d2.data[i+3]);\n' +
+		'    var changedPx = Math.max(dr, dg, db, da) > limit;\n' + '    if (changedPx) {\n' +
+		'      changed++;\n' +
+		'      diff.data[i] = 255; diff.data[i+1] = 0; diff.data[i+2] = 0; diff.data[i+3] = 255;\n' +
+		'    } else {\n' + '      var avg = Math.round((d2.data[i] + d2.data[i+1] +
+		d2.data[i+2]) / 3);\n' +
+		'      diff.data[i] = avg; diff.data[i+1] = avg; diff.data[i+2] = avg; diff.data[i+3] = 96;\n' +
+		'    }\n' + '  }\n' + '  xd.putImageData(diff, 0, 0);\n' +
+		'  return { ok:true, width:w, height:h, changedPixels:changed, totalPixels:w*h, ratio:(w*h?changed/(w*h):0), diffData:${include_diff_js} ? diffCanvas.toDataURL("image/png").split(",")[1] : "" };\n' +
+		'})()'
 }
 
 fn run_screenshot_diff(mut sess CdpSession, baseline_b64 string, baseline_mime string, current_b64 string, threshold f64, output_path string) !ScreenshotDiffResult {
@@ -824,7 +846,10 @@ fn run_screenshot_diff(mut sess CdpSession, baseline_b64 string, baseline_mime s
 	result := eval_scoped_expression(mut sess, js, true)!
 	ok := cdp_extract_obj_key(result, '"ok":') == 'true'
 	if !ok {
-		return ScreenshotDiffResult{ ok: false, error: cdp_extract_str(result, 'error') }
+		return ScreenshotDiffResult{
+			ok:    false
+			error: cdp_extract_str(result, 'error')
+		}
 	}
 	diff_data := cdp_extract_str(result, 'diffData')
 	if output_path != '' && diff_data != '' {
@@ -845,10 +870,16 @@ fn run_screenshot_diff(mut sess CdpSession, baseline_b64 string, baseline_mime s
 // ─── pdf ────────────────────────────────────────────────────
 fn cmd_pdf(mut sess CdpSession, params string) string {
 	path := cdp_extract_str(params, 'path')
-	if path == '' { return 'ERROR:missing path' }
-	resp := sess.send_command('Page.printToPDF', '{"printBackground":true}') or { return 'ERROR:${err}' }
+	if path == '' {
+		return 'ERROR:missing path'
+	}
+	resp := sess.send_command('Page.printToPDF', '{"printBackground":true}') or {
+		return 'ERROR:${err}'
+	}
 	data := cdp_extract_str(resp.result, 'data')
-	if data == '' { return 'ERROR:no pdf data' }
+	if data == '' {
+		return 'ERROR:no pdf data'
+	}
 	raw_bytes := base64.decode(data)
 	os.write_file_array(path, raw_bytes) or { return 'ERROR:write failed: ${err}' }
 	return json_str(path)
@@ -856,21 +887,33 @@ fn cmd_pdf(mut sess CdpSession, params string) string {
 
 // ─── snapshot ───────────────────────────────────────────────
 fn cmd_snapshot(mut sess CdpSession, params string) string {
+	// 解析 raw 参数 - 使用安全的 JSON 解析
+	raw := cdp_extract_bool(params, 'raw')
+
 	resp := sess.send_command('Accessibility.getFullAXTree', '{}') or { return 'ERROR:${err}' }
 	nodes_json := cdp_extract_obj_key(resp.result, '"nodes":')
-	if nodes_json == '' { return 'ERROR:no AX tree returned' }
+	if nodes_json == '' {
+		return 'ERROR:no AX tree returned'
+	}
 
 	axref_clear(mut sess.axref)
 	mut out := '= Accessibility Snapshot =\n'
 	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref)
 	out += ax_out
-	cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref) or { '' }
+	cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref) or {
+		''
+	}
 	if cursor_out != '' {
 		if ax_out != '' && !ax_out.ends_with('\n') {
 			out += '\n'
 		}
 		out += '# Cursor-interactive elements:\n'
 		out += cursor_out
+	}
+
+	// raw 模式返回未编码的纯文本
+	if raw {
+		return out
 	}
 	return json_str(out)
 }
@@ -903,7 +946,10 @@ fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore) (s
 			pos++
 		}
 		i++
-		if i > 10000 { break } // 安全上限
+		if i > 10000 {
+			break
+		}
+		// 安全上限
 	}
 	return out, counter
 }
@@ -1022,8 +1068,8 @@ fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mu
 		out += '\n'
 		axref_set(mut store, ref_key, AxRef{
 			selector: selector
-			role: resolved_role
-			name: text
+			role:     resolved_role
+			name:     text
 		})
 	}
 	return out
@@ -1043,17 +1089,21 @@ fn ax_prop(node_str string, prop string) string {
 // ─── click ──────────────────────────────────────────────────
 fn cmd_click(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	run_element_action(mut sess, sel, build_click_action_body()) or {
 		pointer_action_for_selector(mut sess, sel, 'click') or { return 'ERROR:${err}' }
 		return 'null'
 	}
 	return 'null'
-	}
+}
 
 fn cmd_dblclick(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	run_element_action(mut sess, sel, build_dblclick_action_body()) or {
 		pointer_action_for_selector(mut sess, sel, 'dblclick') or { return 'ERROR:${err}' }
 		return 'null'
@@ -1064,15 +1114,21 @@ fn cmd_dblclick(mut sess CdpSession, params string) string {
 fn cmd_download(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	path := cdp_extract_str(params, 'path')
-	if sel == '' { return 'ERROR:missing selector' }
-	if path == '' { return 'ERROR:missing path' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
+	if path == '' {
+		return 'ERROR:missing path'
+	}
 	download_dir := unique_download_dir()
 	mode := ensure_download_behavior(mut sess, download_dir) or { return 'ERROR:${err}' }
 	final_path := if mode == 'dom' {
 		fetch_download_via_dom(mut sess, sel, path) or { return 'ERROR:${err}' }
 	} else {
 		apply_click_for_download(mut sess, sel) or { return 'ERROR:${err}' }
-		wait_for_download(mut sess, download_dir, path, 60 * time.second) or { return 'ERROR:${err}' }
+		wait_for_download(mut sess, download_dir, path, 60 * time.second) or {
+			return 'ERROR:${err}'
+		}
 	}
 	return '{"path":${json_str(final_path)}}'
 }
@@ -1084,7 +1140,9 @@ fn mouse_click(mut sess CdpSession, x f64, y f64) ! {
 // ─── hover ──────────────────────────────────────────────────
 fn cmd_hover(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	run_element_action(mut sess, sel, build_hover_action_body()) or {
 		pointer_action_for_selector(mut sess, sel, 'hover') or { return 'ERROR:${err}' }
 		return 'null'
@@ -1095,7 +1153,9 @@ fn cmd_hover(mut sess CdpSession, params string) string {
 // ─── focus ──────────────────────────────────────────────────
 fn cmd_focus(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	el := resolve_selector(mut sess, sel) or { return 'ERROR:${err}' }
 	sess.send_command('DOM.focus', '{"backendNodeId":${el.backend_node_id}}') or {
 		// fallback: Runtime.evaluate
@@ -1109,7 +1169,9 @@ fn cmd_focus(mut sess CdpSession, params string) string {
 fn cmd_fill(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	text := cdp_extract_str(params, 'text')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	run_element_action(mut sess, sel, build_fill_action_body(text)) or { return 'ERROR:${err}' }
 	return 'null'
 }
@@ -1118,7 +1180,9 @@ fn cmd_fill(mut sess CdpSession, params string) string {
 fn cmd_type_text(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	text := cdp_extract_str(params, 'text')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	run_element_action(mut sess, sel, build_type_action_body(text)) or { return 'ERROR:${err}' }
 	return 'null'
 }
@@ -1134,14 +1198,18 @@ fn cmd_keyboard(mut sess CdpSession, params string) string {
 			}
 			'null'
 		}
-		else { 'ERROR:unknown keyboard action: ${action}' }
+		else {
+			'ERROR:unknown keyboard action: ${action}'
+		}
 	}
 }
 
 // ─── press / keydown / keyup ─────────────────────────────────
 fn cmd_press(mut sess CdpSession, params string) string {
 	key := cdp_extract_str(params, 'key')
-	if key == '' { return 'ERROR:missing key' }
+	if key == '' {
+		return 'ERROR:missing key'
+	}
 	dispatch_key(mut sess, key, 'keyDown') or { return 'ERROR:${err}' }
 	dispatch_key(mut sess, key, 'keyUp') or { return 'ERROR:${err}' }
 	return 'null'
@@ -1149,14 +1217,18 @@ fn cmd_press(mut sess CdpSession, params string) string {
 
 fn cmd_keydown(mut sess CdpSession, params string) string {
 	key := cdp_extract_str(params, 'key')
-	if key == '' { return 'ERROR:missing key' }
+	if key == '' {
+		return 'ERROR:missing key'
+	}
 	dispatch_key(mut sess, key, 'keyDown') or { return 'ERROR:${err}' }
 	return 'null'
 }
 
 fn cmd_keyup(mut sess CdpSession, params string) string {
 	key := cdp_extract_str(params, 'key')
-	if key == '' { return 'ERROR:missing key' }
+	if key == '' {
+		return 'ERROR:missing key'
+	}
 	dispatch_key(mut sess, key, 'keyUp') or { return 'ERROR:${err}' }
 	return 'null'
 }
@@ -1170,11 +1242,11 @@ fn dispatch_key(mut sess CdpSession, key string, typ string) ! {
 		actual_key = parts.last()
 		for mod in parts[..parts.len - 1] {
 			modifiers |= match mod.to_lower() {
-				'alt'     { 1 }
+				'alt' { 1 }
 				'control', 'ctrl' { 4 }
 				'meta', 'command' { 8 }
-				'shift'   { 2 }
-				else      { 0 }
+				'shift' { 2 }
+				else { 0 }
 			}
 		}
 	}
@@ -1185,7 +1257,9 @@ fn dispatch_key(mut sess CdpSession, key string, typ string) ! {
 fn cmd_select(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	value := cdp_extract_str(params, 'value')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	js := build_element_scope_js(&sess, sel, 'if(!el) return false; el.value=${js_str(value)}; el.dispatchEvent(new Event("change",{bubbles:true})); return true;')
 	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 		return 'ERROR:${err}'
@@ -1196,14 +1270,18 @@ fn cmd_select(mut sess CdpSession, params string) string {
 // ─── check / uncheck ────────────────────────────────────────
 fn cmd_check(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	run_element_action(mut sess, sel, build_toggle_action_body(true)) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
 fn cmd_uncheck(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	run_element_action(mut sess, sel, build_toggle_action_body(false)) or { return 'ERROR:${err}' }
 	return 'null'
 }
@@ -1217,11 +1295,11 @@ fn cmd_scroll(mut sess CdpSession, params string) string {
 	mut dx := 0
 	mut dy := 0
 	match direction {
-		'up'    { dy = -px }
-		'down'  { dy = px }
-		'left'  { dx = -px }
+		'up' { dy = -px }
+		'down' { dy = px }
+		'left' { dx = -px }
 		'right' { dx = px }
-		else    { return 'ERROR:unknown direction: ${direction}' }
+		else { return 'ERROR:unknown direction: ${direction}' }
 	}
 
 	sel := cdp_extract_str(params, 'selector')
@@ -1241,7 +1319,9 @@ fn cmd_scroll(mut sess CdpSession, params string) string {
 
 fn cmd_scrollintoview(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	js := build_element_scope_js(&sess, sel, "el?.scrollIntoView({block:'center',inline:'center'})")
 	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 		return 'ERROR:${err}'
@@ -1253,7 +1333,9 @@ fn cmd_scrollintoview(mut sess CdpSession, params string) string {
 fn cmd_drag(mut sess CdpSession, params string) string {
 	src := cdp_extract_str(params, 'source')
 	tgt := cdp_extract_str(params, 'target')
-	if src == '' || tgt == '' { return 'ERROR:missing source or target' }
+	if src == '' || tgt == '' {
+		return 'ERROR:missing source or target'
+	}
 	src_el := resolve_selector(mut sess, src) or { return 'ERROR:src: ${err}' }
 	tgt_el := resolve_selector(mut sess, tgt) or { return 'ERROR:tgt: ${err}' }
 
@@ -1275,9 +1357,13 @@ fn cmd_drag(mut sess CdpSession, params string) string {
 fn cmd_upload(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	files_str := cdp_extract_str(params, 'files')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	files := files_str.split(',').map(it.trim_space()).filter(it != '')
-	if files.len == 0 { return 'ERROR:no files specified' }
+	if files.len == 0 {
+		return 'ERROR:no files specified'
+	}
 	files_json := '[' + files.map(json_str(it)).join(',') + ']'
 	object_id := resolve_object_id_by_selector(mut sess, sel) or { return 'ERROR:${err}' }
 	sess.send_command('DOM.setFileInputFiles', '{"objectId":${json_str(object_id)},"files":${files_json}}') or {
@@ -1292,13 +1378,25 @@ fn cmd_get(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 
 	js := match prop {
-		'text'   { build_element_scope_js(&sess, sel, 'return el?.textContent;') }
-		'html'   { build_element_scope_js(&sess, sel, 'return el?.innerHTML;') }
-		'value'  { build_element_scope_js(&sess, sel, 'return el?.value;') }
-		'title'  { 'document.title' }
-		'url'    { 'window.location.href' }
-		'count'  { build_elements_scope_js(&sess, sel, 'return els.length;') }
-		'attr'   {
+		'text' {
+			build_element_scope_js(&sess, sel, 'return el?.textContent;')
+		}
+		'html' {
+			build_element_scope_js(&sess, sel, 'return el?.innerHTML;')
+		}
+		'value' {
+			build_element_scope_js(&sess, sel, 'return el?.value;')
+		}
+		'title' {
+			'document.title'
+		}
+		'url' {
+			'window.location.href'
+		}
+		'count' {
+			build_elements_scope_js(&sess, sel, 'return els.length;')
+		}
+		'attr' {
 			attr := cdp_extract_str(params, 'attr')
 			build_element_scope_js(&sess, sel, 'return el?.getAttribute(${js_str(attr)});')
 		}
@@ -1308,7 +1406,9 @@ fn cmd_get(mut sess CdpSession, params string) string {
 		'styles' {
 			build_element_scope_js(&sess, sel, 'return el?JSON.stringify(Object.fromEntries(Object.entries(getComputedStyle(el)))):null;')
 		}
-		else { return 'ERROR:unknown property: ${prop}' }
+		else {
+			return 'ERROR:unknown property: ${prop}'
+		}
 	}
 
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
@@ -1322,13 +1422,15 @@ fn cmd_get(mut sess CdpSession, params string) string {
 fn cmd_is(mut sess CdpSession, params string) string {
 	state := cdp_extract_str(params, 'state')
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 
 	js := match state {
 		'visible' { build_element_scope_js(&sess, sel, "if(!el) return false; var r=el.getBoundingClientRect(); return r.width>0&&r.height>0&&getComputedStyle(el).visibility!=='hidden'&&getComputedStyle(el).display!=='none';") }
 		'enabled' { build_element_scope_js(&sess, sel, 'return !el?.disabled;') }
 		'checked' { build_element_scope_js(&sess, sel, 'return !!el?.checked;') }
-		else      { return 'ERROR:unknown state: ${state}' }
+		else { return 'ERROR:unknown state: ${state}' }
 	}
 
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
@@ -1396,8 +1498,12 @@ fn cmd_wait(mut sess CdpSession, params string) string {
 
 fn wait_load(mut sess CdpSession, state string) string {
 	event := match state {
-		'load'             { 'Page.loadEventFired' }
-		'domcontentloaded' { 'Page.domContentEventFired' }
+		'load' {
+			'Page.loadEventFired'
+		}
+		'domcontentloaded' {
+			'Page.domContentEventFired'
+		}
 		'networkidle' {
 			// 监听 Page.lifecycleEvent name=networkIdle
 			ch := sess.subscribe('Page.lifecycleEvent')
@@ -1406,20 +1512,28 @@ fn wait_load(mut sess CdpSession, state string) string {
 				select {
 					evt := <-ch {
 						name := cdp_extract_str(evt.params, 'name')
-						if name == 'networkIdle' { break }
+						if name == 'networkIdle' {
+							break
+						}
 					}
-					30 * time.second { return 'ERROR:timeout waiting for networkidle' }
+					30 * time.second {
+						return 'ERROR:timeout waiting for networkidle'
+					}
 				}
 			}
 			return 'null'
 		}
-		else { return 'ERROR:unknown load state: ${state}' }
+		else {
+			return 'ERROR:unknown load state: ${state}'
+		}
 	}
 	ch := sess.subscribe(event)
 	defer { sess.unsubscribe(event, ch) }
 	select {
-		_ := <-ch { }
-		30 * time.second { return 'ERROR:timeout waiting for ${state}' }
+		_ := <-ch {}
+		30 * time.second {
+			return 'ERROR:timeout waiting for ${state}'
+		}
 	}
 	return 'null'
 }
@@ -1427,10 +1541,14 @@ fn wait_load(mut sess CdpSession, state string) string {
 fn wait_url(mut sess CdpSession, pattern string) string {
 	deadline := time.now().add(30 * time.second)
 	for time.now() < deadline {
-		resp := sess.send_command('Runtime.evaluate', '{"expression":"window.location.href","returnByValue":true}') or { break }
+		resp := sess.send_command('Runtime.evaluate', '{"expression":"window.location.href","returnByValue":true}') or {
+			break
+		}
 		result := cdp_extract_obj_key(resp.result, '"result":')
 		url := cdp_extract_value_from_result(result)
-		if glob_match(pattern, url) { return 'null' }
+		if glob_match(pattern, url) {
+			return 'null'
+		}
 		time.sleep(200 * time.millisecond)
 	}
 	return 'ERROR:timeout waiting for url ${pattern}'
@@ -1440,10 +1558,14 @@ fn wait_text(mut sess CdpSession, text string) string {
 	deadline := time.now().add(30 * time.second)
 	for time.now() < deadline {
 		js := build_document_scope_js(&sess, 'return doc.body?.innerText;')
-		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or { break }
+		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
+			break
+		}
 		result := cdp_extract_obj_key(resp.result, '"result":')
 		body := cdp_extract_value_from_result(result)
-		if body.contains(text) { return 'null' }
+		if body.contains(text) {
+			return 'null'
+		}
 		time.sleep(200 * time.millisecond)
 	}
 	return 'ERROR:timeout waiting for text "${text}"'
@@ -1452,10 +1574,14 @@ fn wait_text(mut sess CdpSession, text string) string {
 fn wait_fn(mut sess CdpSession, expr string) string {
 	deadline := time.now().add(30 * time.second)
 	for time.now() < deadline {
-		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(expr)},"returnByValue":true}') or { break }
+		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(expr)},"returnByValue":true}') or {
+			break
+		}
 		result := cdp_extract_obj_key(resp.result, '"result":')
 		val := cdp_extract_value_from_result(result)
-		if val == 'true' { return 'null' }
+		if val == 'true' {
+			return 'null'
+		}
 		time.sleep(200 * time.millisecond)
 	}
 	return 'ERROR:timeout waiting for fn condition'
@@ -1465,9 +1591,13 @@ fn wait_selector(mut sess CdpSession, sel string) string {
 	deadline := time.now().add(30 * time.second)
 	for time.now() < deadline {
 		js := build_element_scope_js(&sess, sel, 'if(!el) return false; var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;')
-		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or { break }
+		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
+			break
+		}
 		result := cdp_extract_obj_key(resp.result, '"result":')
-		if cdp_extract_value_from_result(result) == 'true' { return 'null' }
+		if cdp_extract_value_from_result(result) == 'true' {
+			return 'null'
+		}
 		time.sleep(200 * time.millisecond)
 	}
 	return 'ERROR:timeout waiting for selector ${sel}'
@@ -1529,8 +1659,8 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 	}
 	selection_body := match locator {
 		'last' { 'return elements.length ? elements[elements.length - 1] : null;' }
-		'nth'  { 'return elements.length > ${index_js} ? elements[${index_js}] : null;' }
-		else   { 'return elements.length ? elements[0] : null;' }
+		'nth' { 'return elements.length > ${index_js} ? elements[${index_js}] : null;' }
+		else { 'return elements.length ? elements[0] : null;' }
 	}
 	return build_document_scope_js(sess, '
 		function normalizeText(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
@@ -1618,8 +1748,7 @@ fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, 
 		'hover' { build_hover_action_body() }
 		else { return 'ERROR:unknown action: ${action}' }
 	}
-	js := build_semantic_action_js(&sess, locator_js,
-		'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
+	js := build_semantic_action_js(&sess, locator_js, 'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
 	ok := eval_scoped_expression(mut sess, js, false) or {
 		pointer_action_for_locator_js(mut sess, locator_js, action) or { return 'ERROR:${err}' }
 		return 'null'
@@ -1655,19 +1784,27 @@ fn evaluate_semantic_result(mut sess CdpSession, js string, locator string, retu
 fn apply_action(mut sess CdpSession, el ResolvedElement, sel string, action string, value string) string {
 	match action {
 		'click' {
-			run_element_action(mut sess, sel, build_click_action_body()) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_click_action_body()) or {
+				return 'ERROR:${err}'
+			}
 			return 'null'
 		}
 		'fill' {
-			run_element_action(mut sess, sel, build_fill_action_body(value)) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_fill_action_body(value)) or {
+				return 'ERROR:${err}'
+			}
 			return 'null'
 		}
 		'type' {
-			run_element_action(mut sess, sel, build_type_action_body(value)) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_type_action_body(value)) or {
+				return 'ERROR:${err}'
+			}
 			return 'null'
 		}
 		'hover' {
-			run_element_action(mut sess, sel, build_hover_action_body()) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_hover_action_body()) or {
+				return 'ERROR:${err}'
+			}
 			return 'null'
 		}
 		'text' {
@@ -1683,14 +1820,20 @@ fn apply_action(mut sess CdpSession, el ResolvedElement, sel string, action stri
 			return 'null'
 		}
 		'check' {
-			run_element_action(mut sess, sel, build_toggle_action_body(true)) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_toggle_action_body(true)) or {
+				return 'ERROR:${err}'
+			}
 			return 'null'
 		}
 		'uncheck' {
-			run_element_action(mut sess, sel, build_toggle_action_body(false)) or { return 'ERROR:${err}' }
+			run_element_action(mut sess, sel, build_toggle_action_body(false)) or {
+				return 'ERROR:${err}'
+			}
 			return 'null'
 		}
-		else { return 'ERROR:unknown action: ${action}' }
+		else {
+			return 'ERROR:unknown action: ${action}'
+		}
 	}
 }
 
@@ -1704,9 +1847,11 @@ fn cmd_tab(mut sess CdpSession, params string) string {
 		}
 		'new' {
 			url := cdp_extract_str(params, 'url')
-			resp := sess.send_bridge_command('createTab', '{"url":${json_str(if url != '' { url } else { 'about:blank' })}}') or {
-				return 'ERROR:${err}'
-			}
+			resp := sess.send_bridge_command('createTab', '{"url":${json_str(if url != '' {
+				url
+			} else {
+				'about:blank'
+			})}}') or { return 'ERROR:${err}' }
 			axref_clear(mut sess.axref)
 			sess.current_frame_selector = ''
 			sess.enable_network_tracking() or {}
@@ -1715,7 +1860,9 @@ fn cmd_tab(mut sess CdpSession, params string) string {
 		'switch' {
 			tab_id := cdp_extract_int(params, '"tabId":')
 			window_id := cdp_extract_int(params, '"windowId":')
-			if tab_id == 0 { return 'ERROR:missing tabId' }
+			if tab_id == 0 {
+				return 'ERROR:missing tabId'
+			}
 			resp := sess.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}') or {
 				return 'ERROR:${err}'
 			}
@@ -1726,13 +1873,17 @@ fn cmd_tab(mut sess CdpSession, params string) string {
 		}
 		'close' {
 			tab_id := cdp_extract_int(params, '"tabId":')
-			if tab_id == 0 { return 'ERROR:missing tabId' }
+			if tab_id == 0 {
+				return 'ERROR:missing tabId'
+			}
 			resp := sess.send_bridge_command('closeTab', '{"tabId":${tab_id}}') or {
 				return 'ERROR:${err}'
 			}
 			return resp.result
 		}
-		else { return 'ERROR:unknown tab action: ${action}' }
+		else {
+			return 'ERROR:unknown tab action: ${action}'
+		}
 	}
 }
 
@@ -1741,15 +1892,19 @@ fn cmd_window(mut sess CdpSession, params string) string {
 	match action {
 		'new' {
 			url := cdp_extract_str(params, 'url')
-			resp := sess.send_bridge_command('createWindow', '{"url":${json_str(if url != '' { url } else { 'about:blank' })}}') or {
-				return 'ERROR:${err}'
-			}
+			resp := sess.send_bridge_command('createWindow', '{"url":${json_str(if url != '' {
+				url
+			} else {
+				'about:blank'
+			})}}') or { return 'ERROR:${err}' }
 			axref_clear(mut sess.axref)
 			sess.current_frame_selector = ''
 			sess.enable_network_tracking() or {}
 			return resp.result
 		}
-		else { return 'ERROR:unknown window action: ${action}' }
+		else {
+			return 'ERROR:unknown window action: ${action}'
+		}
 	}
 }
 
@@ -1784,7 +1939,9 @@ fn cmd_mouse(mut sess CdpSession, params string) string {
 				return 'ERROR:${err}'
 			}
 		}
-		else { return 'ERROR:unknown mouse action: ${action}' }
+		else {
+			return 'ERROR:unknown mouse action: ${action}'
+		}
 	}
 	return 'null'
 }
@@ -1795,7 +1952,8 @@ fn cmd_cookies(mut sess CdpSession, params string) string {
 	match action {
 		'', 'get' {
 			resp := sess.send_command('Network.getCookies', '{}') or { return 'ERROR:${err}' }
-			return cdp_extract_obj_key(resp.result, '"cookies":')
+			cookies_json := cdp_extract_obj_key(resp.result, '"cookies":')
+			return format_cookies_expires(cookies_json)
 		}
 		'set' {
 			name := cdp_extract_str(params, 'name')
@@ -1810,14 +1968,92 @@ fn cmd_cookies(mut sess CdpSession, params string) string {
 			sess.send_command('Network.clearBrowserCookies', '{}') or { return 'ERROR:${err}' }
 			return 'null'
 		}
-		else { return 'ERROR:unknown cookies action: ${action}' }
+		else {
+			return 'ERROR:unknown cookies action: ${action}'
+		}
 	}
+}
+
+// format_cookies_expires 将 Unix 时间戳转换为人类可读格式
+fn format_cookies_expires(cookies_json string) string {
+	mut result := cookies_json
+
+	// 1. 替换 session cookie (-1 或 -1.0)
+	result = result.replace('"expires":-1,', '"expires":"session",')
+	result = result.replace('"expires":-1}', '"expires":"session"}')
+	result = result.replace('"expires":-1.0,', '"expires":"session",')
+	result = result.replace('"expires":-1.0}', '"expires":"session"}')
+
+	// 2. 处理时间戳 - 循环直到没有变化
+	for {
+		mut found := false
+
+		mut search_pos := 0
+		for search_pos < result.len - 15 {
+			idx := result.index_after('"expires":', search_pos) or { break }
+
+			rest := result[idx + 10..]
+			if rest.len < 10 {
+				break
+			}
+
+			// 跳过已转换的
+			if rest.starts_with('"session"') || (rest.len >= 2 && rest[0] == `"` && rest[1] == `2`) {
+				search_pos = idx + 10
+				continue
+			}
+
+			// 提取时间戳
+			mut ts := ''
+			for i := 0; i < rest.len && i < 20; i++ {
+				c := rest[i]
+				if c >= `0` && c <= `9` {
+					ts += c.ascii_str()
+				} else if c == `.` && ts.len >= 10 {
+					ts += '.'
+				} else {
+					break
+				}
+			}
+
+			if ts.len < 10 {
+				search_pos = idx + 10
+				continue
+			}
+
+			ts_int := ts.int()
+			if ts_int < 1000000000 || ts_int > 2000000000 {
+				search_pos = idx + 10
+				continue
+			}
+
+			ts_end := idx + 10 + ts.len
+			if ts_end >= result.len || (result[ts_end] != `,` && result[ts_end] != `}`) {
+				search_pos = idx + 10
+				continue
+			}
+
+			exp_time := time.unix(ts_int)
+			exp_str := '${exp_time.year}-${int(exp_time.month):02}-${exp_time.day:02} ${exp_time.hour:02}:${exp_time.minute:02}'
+
+			old := '"expires":${ts}'
+			result = result.replace(old, '"expires":"${exp_str}"')
+			found = true
+			break
+		}
+
+		if !found {
+			break
+		}
+	}
+
+	return result
 }
 
 // ─── storage ────────────────────────────────────────────────
 fn cmd_storage(mut sess CdpSession, params string) string {
 	storage_type := cdp_extract_str(params, 'type') // 'local' or 'session'
-	action := cdp_extract_str(params, 'action')     // 'get', 'set', 'clear'
+	action := cdp_extract_str(params, 'action') // 'get', 'set', 'clear'
 	key := cdp_extract_str(params, 'key')
 	value := cdp_extract_str(params, 'value')
 
@@ -1826,18 +2062,20 @@ fn cmd_storage(mut sess CdpSession, params string) string {
 	js := match action {
 		'', 'get' {
 			if key != '' {
-				"${store}.getItem(${js_str(key)})"
+				'${store}.getItem(${js_str(key)})'
 			} else {
-				"JSON.stringify(Object.fromEntries(Object.keys(${store}).map(k=>[k,${store}.getItem(k)])))"
+				'JSON.stringify(Object.fromEntries(Object.keys(${store}).map(k=>[k,${store}.getItem(k)])))'
 			}
 		}
 		'set' {
-			"${store}.setItem(${js_str(key)},${js_str(value)})"
+			'${store}.setItem(${js_str(key)},${js_str(value)})'
 		}
 		'clear' {
-			"${store}.clear()"
+			'${store}.clear()'
 		}
-		else { return 'ERROR:unknown storage action: ${action}' }
+		else {
+			return 'ERROR:unknown storage action: ${action}'
+		}
 	}
 
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
@@ -1871,7 +2109,9 @@ fn cmd_network(mut sess CdpSession, params string) string {
 					select {
 						evt := <-ch {
 							request_id := cdp_extract_str(evt.params, 'requestId')
-							if request_id == '' { break }
+							if request_id == '' {
+								break
+							}
 							if abort {
 								sess.send_command('Fetch.failRequest', '{"requestId":${json_str(request_id)},"errorReason":"Aborted"}') or {}
 							} else if body != '' {
@@ -1880,7 +2120,9 @@ fn cmd_network(mut sess CdpSession, params string) string {
 								sess.send_command('Fetch.continueRequest', '{"requestId":${json_str(request_id)}}') or {}
 							}
 						}
-						else { break }
+						else {
+							break
+						}
 					}
 				}
 			}()
@@ -1890,7 +2132,9 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			sess.send_command('Fetch.disable', '{}') or { return 'ERROR:${err}' }
 			return 'null'
 		}
-		else { return 'ERROR:unknown network action: ${action}' }
+		else {
+			return 'ERROR:unknown network action: ${action}'
+		}
 	}
 }
 
@@ -1937,18 +2181,17 @@ fn cmd_dialog(mut sess CdpSession, params string) string {
 		}
 		'accept' {
 			sess.enable_page_events() or { return 'ERROR:${err}' }
-			handle_dialog_with_retry(mut sess,
-				'{"accept":true,"promptText":${json_str(text)}}') or {
+			handle_dialog_with_retry(mut sess, '{"accept":true,"promptText":${json_str(text)}}') or {
 				return 'ERROR:${err}'
 			}
 		}
 		'dismiss' {
 			sess.enable_page_events() or { return 'ERROR:${err}' }
-			handle_dialog_with_retry(mut sess, '{"accept":false}') or {
-				return 'ERROR:${err}'
-			}
+			handle_dialog_with_retry(mut sess, '{"accept":false}') or { return 'ERROR:${err}' }
 		}
-		else { return 'ERROR:unknown dialog action: ${action}' }
+		else {
+			return 'ERROR:unknown dialog action: ${action}'
+		}
 	}
 	return 'null'
 }
@@ -1972,7 +2215,9 @@ fn handle_dialog_with_retry(mut sess CdpSession, params string) ! {
 // ─── highlight ──────────────────────────────────────────────
 fn cmd_highlight(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
-	if sel == '' { return 'ERROR:missing selector' }
+	if sel == '' {
+		return 'ERROR:missing selector'
+	}
 	js := build_element_scope_js(&sess, sel, "if(!el) return; var old=el.style.outline; el.style.outline='3px solid #FF0080'; setTimeout(()=>el.style.outline=old,2000);")
 	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 		return 'ERROR:${err}'
@@ -1987,7 +2232,9 @@ fn cmd_console(mut sess CdpSession, params string) string {
 		sess.console_msgs.clear()
 		return 'null'
 	}
-	if sess.console_msgs.len == 0 { return '[]' }
+	if sess.console_msgs.len == 0 {
+		return '[]'
+	}
 	out := '[' + sess.console_msgs.map(it).join(',') + ']'
 	return out
 }
@@ -1998,7 +2245,9 @@ fn cmd_errors(mut sess CdpSession, params string) string {
 		sess.page_errors.clear()
 		return 'null'
 	}
-	if sess.page_errors.len == 0 { return '[]' }
+	if sess.page_errors.len == 0 {
+		return '[]'
+	}
 	return '[' + sess.page_errors.map(it).join(',') + ']'
 }
 
@@ -2015,14 +2264,20 @@ fn cmd_trace(mut sess CdpSession, params string) string {
 			return 'null'
 		}
 		'stop' {
-			out_path := if path != '' { path } else { os.join_path(os.temp_dir(), 'trace_${time.now().unix_milli()}.json') }
+			out_path := if path != '' {
+				path
+			} else {
+				os.join_path(os.temp_dir(), 'trace_${time.now().unix_milli()}.json')
+			}
 			ch := sess.subscribe('Tracing.tracingComplete')
 			defer { sess.unsubscribe('Tracing.tracingComplete', ch) }
 			sess.send_command('Tracing.end', '{}') or { return 'ERROR:${err}' }
 			select {
 				evt := <-ch {
 					stream := cdp_extract_str(evt.params, 'stream')
-					if stream == '' { return 'ERROR:trace stream missing' }
+					if stream == '' {
+						return 'ERROR:trace stream missing'
+					}
 					content := read_protocol_stream(mut sess, stream) or { return 'ERROR:${err}' }
 					os.write_file(out_path, content) or { return 'ERROR:write failed: ${err}' }
 				}
@@ -2032,7 +2287,9 @@ fn cmd_trace(mut sess CdpSession, params string) string {
 			}
 			return json_str(out_path)
 		}
-		else { return 'ERROR:unknown trace action: ${action}' }
+		else {
+			return 'ERROR:unknown trace action: ${action}'
+		}
 	}
 }
 
@@ -2048,12 +2305,18 @@ fn cmd_profiler(mut sess CdpSession, params string) string {
 		}
 		'stop' {
 			resp := sess.send_command('Profiler.stop', '{}') or { return 'ERROR:${err}' }
-			out_path := if path != '' { path } else { os.join_path(os.temp_dir(), 'profile_${time.now().unix_milli()}.json') }
+			out_path := if path != '' {
+				path
+			} else {
+				os.join_path(os.temp_dir(), 'profile_${time.now().unix_milli()}.json')
+			}
 			profile := cdp_extract_obj_key(resp.result, '"profile":')
 			os.write_file(out_path, profile) or { return 'ERROR:write failed: ${err}' }
 			return json_str(out_path)
 		}
-		else { return 'ERROR:unknown profiler action: ${action}' }
+		else {
+			return 'ERROR:unknown profiler action: ${action}'
+		}
 	}
 }
 
@@ -2067,24 +2330,20 @@ fn cmd_set(mut sess CdpSession, params string) string {
 			scale_str := cdp_extract_obj_key(params, '"scale":')
 			scale := if scale_str != '' { scale_str.f64() } else { 1.0 }
 			apply_device_preset(mut sess, DevicePreset{
-				name: 'custom viewport'
-				width: w
-				height: h
-				scale: scale
-				mobile: false
-				has_touch: false
+				name:       'custom viewport'
+				width:      w
+				height:     h
+				scale:      scale
+				mobile:     false
+				has_touch:  false
 				user_agent: ''
-			}) or {
-				return 'ERROR:${err}'
-			}
+			}) or { return 'ERROR:${err}' }
 			return 'null'
 		}
 		'device' {
 			name := cdp_extract_str(params, 'value')
 			preset := resolve_device_preset(name) or { return 'ERROR:${err}' }
-			apply_device_preset(mut sess, preset) or {
-				return 'ERROR:${err}'
-			}
+			apply_device_preset(mut sess, preset) or { return 'ERROR:${err}' }
 			return 'null'
 		}
 		'geo' {
@@ -2130,7 +2389,9 @@ fn cmd_set(mut sess CdpSession, params string) string {
 			}
 			return 'null'
 		}
-		else { return 'ERROR:unknown set property: ${prop}' }
+		else {
+			return 'ERROR:unknown set property: ${prop}'
+		}
 	}
 }
 
@@ -2138,16 +2399,48 @@ fn resolve_device_preset(name string) !DevicePreset {
 	normalized := name.to_lower().trim_space()
 	return match normalized {
 		'iphone 14' {
-			DevicePreset{ name: 'iPhone 14', width: 390, height: 844, scale: 3.0, mobile: true, has_touch: true, user_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' }
+			DevicePreset{
+				name:       'iPhone 14'
+				width:      390
+				height:     844
+				scale:      3.0
+				mobile:     true
+				has_touch:  true
+				user_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
+			}
 		}
 		'iphone 14 pro' {
-			DevicePreset{ name: 'iPhone 14 Pro', width: 393, height: 852, scale: 3.0, mobile: true, has_touch: true, user_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' }
+			DevicePreset{
+				name:       'iPhone 14 Pro'
+				width:      393
+				height:     852
+				scale:      3.0
+				mobile:     true
+				has_touch:  true
+				user_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
+			}
 		}
 		'pixel 7' {
-			DevicePreset{ name: 'Pixel 7', width: 412, height: 915, scale: 2.625, mobile: true, has_touch: true, user_agent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36' }
+			DevicePreset{
+				name:       'Pixel 7'
+				width:      412
+				height:     915
+				scale:      2.625
+				mobile:     true
+				has_touch:  true
+				user_agent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36'
+			}
 		}
 		'ipad mini' {
-			DevicePreset{ name: 'iPad mini', width: 768, height: 1024, scale: 2.0, mobile: true, has_touch: true, user_agent: 'Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' }
+			DevicePreset{
+				name:       'iPad mini'
+				width:      768
+				height:     1024
+				scale:      2.0
+				mobile:     true
+				has_touch:  true
+				user_agent: 'Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
+			}
 		}
 		else {
 			return error('unknown device preset: ${name}')
@@ -2157,7 +2450,11 @@ fn resolve_device_preset(name string) !DevicePreset {
 
 fn apply_device_preset(mut sess CdpSession, preset DevicePreset) ! {
 	sess.send_command('Emulation.setDeviceMetricsOverride', '{"width":${preset.width},"height":${preset.height},"deviceScaleFactor":${preset.scale},"mobile":${preset.mobile}}')!
-	sess.send_command('Emulation.setTouchEmulationEnabled', '{"enabled":${preset.has_touch},"maxTouchPoints":${if preset.has_touch { 5 } else { 1 }}}') or {}
+	sess.send_command('Emulation.setTouchEmulationEnabled', '{"enabled":${preset.has_touch},"maxTouchPoints":${if preset.has_touch {
+		5
+	} else {
+		1
+	}}}') or {}
 	if preset.user_agent != '' {
 		sess.send_command('Emulation.setUserAgentOverride', '{"userAgent":${json_str(preset.user_agent)}}')!
 	}
@@ -2186,7 +2483,9 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 			current := cmd_snapshot(mut sess, '{}').trim('"')
 			baseline_path := cdp_extract_str(params, 'baseline')
 			if baseline_path != '' {
-				baseline := os.read_file(baseline_path) or { return 'ERROR:cannot read baseline: ${err}' }
+				baseline := os.read_file(baseline_path) or {
+					return 'ERROR:cannot read baseline: ${err}'
+				}
 				diff := text_diff(baseline, current)
 				return '{"diff":${json_str(diff)},"current":${json_str(current)}}'
 			}
@@ -2197,7 +2496,9 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 			if baseline_path == '' {
 				return 'ERROR:missing baseline'
 			}
-			baseline_bytes := os.read_bytes(baseline_path) or { return 'ERROR:cannot read baseline: ${err}' }
+			baseline_bytes := os.read_bytes(baseline_path) or {
+				return 'ERROR:cannot read baseline: ${err}'
+			}
 			selector := cdp_extract_str(params, 'selector')
 			full := cdp_extract_str(params, 'full') == 'true'
 			threshold_obj := cdp_extract_obj_key(params, '"threshold":')
@@ -2206,9 +2507,8 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 			current_b64 := capture_screenshot_base64(mut sess, 'png', full, selector) or {
 				return 'ERROR:${err}'
 			}
-			result := run_screenshot_diff(mut sess, base64.encode(baseline_bytes), baseline_mime_type(baseline_path), current_b64, threshold, output_path) or {
-				return 'ERROR:${err}'
-			}
+			result := run_screenshot_diff(mut sess, base64.encode(baseline_bytes), baseline_mime_type(baseline_path),
+				current_b64, threshold, output_path) or { return 'ERROR:${err}' }
 			if !result.ok {
 				return 'ERROR:${result.error}'
 			}
@@ -2241,9 +2541,8 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 				screenshot2_b64 := capture_screenshot_base64(mut sess, 'png', full, '') or {
 					return 'ERROR:${err}'
 				}
-				screenshot_result := run_screenshot_diff(mut sess, screenshot1_b64, 'image/png', screenshot2_b64, 0.1, '') or {
-					return 'ERROR:${err}'
-				}
+				screenshot_result := run_screenshot_diff(mut sess, screenshot1_b64, 'image/png',
+					screenshot2_b64, 0.1, '') or { return 'ERROR:${err}' }
 				if !screenshot_result.ok {
 					return 'ERROR:${screenshot_result.error}'
 				}
@@ -2252,7 +2551,9 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 			result += '}'
 			return result
 		}
-		else         { return 'ERROR:unknown diff type: ${dtype}' }
+		else {
+			return 'ERROR:unknown diff type: ${dtype}'
+		}
 	}
 }
 
@@ -2265,12 +2566,16 @@ fn cmd_state(mut sess CdpSession, params string) string {
 
 	match action {
 		'save' {
-			if path == '' { return 'ERROR:missing path' }
+			if path == '' {
+				return 'ERROR:missing path'
+			}
 			// 获取 cookies
-			cookie_resp := sess.send_command('Network.getCookies', '{}') or { return 'ERROR:${err}' }
+			cookie_resp := sess.send_command('Network.getCookies', '{}') or {
+				return 'ERROR:${err}'
+			}
 			cookies := cdp_extract_obj_key(cookie_resp.result, '"cookies":')
 			// 获取 localStorage
-			ls_js := "JSON.stringify(Object.fromEntries(Object.keys(localStorage).map(k=>[k,localStorage.getItem(k)])))"
+			ls_js := 'JSON.stringify(Object.fromEntries(Object.keys(localStorage).map(k=>[k,localStorage.getItem(k)])))'
 			ls_resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(ls_js)},"returnByValue":true}') or {
 				ProtocolResponse{}
 			}
@@ -2307,11 +2612,17 @@ fn cmd_state(mut sess CdpSession, params string) string {
 		'rename' {
 			new_path := cdp_extract_str(params, 'newPath')
 			old := if os.is_abs_path(path) { path } else { os.join_path(state_dir, path) }
-			new := if os.is_abs_path(new_path) { new_path } else { os.join_path(state_dir, new_path) }
+			new := if os.is_abs_path(new_path) {
+				new_path
+			} else {
+				os.join_path(state_dir, new_path)
+			}
 			os.mv(old, new) or { return 'ERROR:${err}' }
 			return 'null'
 		}
-		else { return 'ERROR:unknown state action: ${action}' }
+		else {
+			return 'ERROR:unknown state action: ${action}'
+		}
 	}
 }
 
@@ -2319,16 +2630,27 @@ fn cmd_state(mut sess CdpSession, params string) string {
 
 // glob_match 简单通配符匹配（支持 * 和 **）
 fn glob_match(pattern string, s string) bool {
-	if pattern == '*' || pattern == '**' { return true }
-	if !pattern.contains('*') { return s == pattern }
+	if pattern == '*' || pattern == '**' {
+		return true
+	}
+	if !pattern.contains('*') {
+		return s == pattern
+	}
 	// 简单实现：将 ** 和 * 替换为正则等价处理
 	parts := pattern.split('*')
 	mut pos := 0
 	for i, part in parts {
-		if part == '' { continue }
+		if part == '' {
+			continue
+		}
 		idx := s.index_after_(part, pos)
-		if idx < 0 { return false }
-		if i == 0 && idx != 0 { return false } // 开头不匹配
+		if idx < 0 {
+			return false
+		}
+		if i == 0 && idx != 0 {
+			return false
+		}
+		// 开头不匹配
 		pos = idx + part.len
 	}
 	if !pattern.ends_with('*') && pos != s.len {
@@ -2347,11 +2669,11 @@ fn xpath_str(s string) string {
 
 // css_attr_val CSS 属性值（用引号包裹）
 fn css_attr_val(s string) string {
-	return '"${s.replace("\\", "\\\\").replace('"', '\\"')}"'
+	return '"${s.replace('\\', '\\\\').replace('"', '\\"')}"'
 }
 
 fn build_storage_restore_script(store_name string, payload_json string) string {
-	return "(function(){ try { var data=JSON.parse(${js_str(payload_json)}); ${store_name}.clear(); for (var key in data) { if (Object.prototype.hasOwnProperty.call(data, key)) { ${store_name}.setItem(key, data[key]); } } return true; } catch (e) { return String(e); } })()"
+	return '(function(){ try { var data=JSON.parse(${js_str(payload_json)}); ${store_name}.clear(); for (var key in data) { if (Object.prototype.hasOwnProperty.call(data, key)) { ${store_name}.setItem(key, data[key]); } } return true; } catch (e) { return String(e); } })()'
 }
 
 // text_diff 简单文本差异（逐行比较）

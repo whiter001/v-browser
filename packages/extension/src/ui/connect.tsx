@@ -14,18 +14,23 @@
  * limitations under the License.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { createRoot } from 'react-dom/client';
-import { Button, TabItem } from './tabItem';
-import { AuthTokenSection, getOrCreateAuthToken, getStoredAuthToken, seedAuthToken } from './authToken';
+import React, { useCallback, useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { Button, TabItem } from "./tabItem";
+import {
+  AuthTokenSection,
+  getOrCreateAuthToken,
+  getStoredAuthToken,
+  seedAuthToken,
+} from "./authToken";
 
-import type { TabInfo } from './tabItem';
+import type { TabInfo } from "./tabItem";
 
 type Status =
-  | { type: 'connecting'; message: string }
-  | { type: 'connected'; message: string }
-  | { type: 'error'; message: string }
-  | { type: 'error'; versionMismatch: { extensionVersion: string; } };
+  | { type: "connecting"; message: string }
+  | { type: "connected"; message: string }
+  | { type: "error"; message: string }
+  | { type: "error"; versionMismatch: { extensionVersion: string } };
 
 const SUPPORTED_PROTOCOL_VERSION = 1;
 
@@ -34,24 +39,26 @@ const ConnectApp: React.FC = () => {
   const [status, setStatus] = useState<Status | null>(null);
   const [showButtons, setShowButtons] = useState(true);
   const [showTabList, setShowTabList] = useState(true);
-  const [clientInfo, setClientInfo] = useState('unknown');
-  const [mcpRelayUrl, setMcpRelayUrl] = useState('');
+  const [clientInfo, setClientInfo] = useState("unknown");
+  const [mcpRelayUrl, setMcpRelayUrl] = useState("");
   const [newTab, setNewTab] = useState<boolean>(false);
 
   useEffect(() => {
     const runAsync = async () => {
       const params = new URLSearchParams(window.location.search);
-      const relayUrl = params.get('mcpRelayUrl');
+      const relayUrl = params.get("mcpRelayUrl");
 
       if (!relayUrl) {
-        handleReject('Missing mcpRelayUrl parameter in URL.');
+        handleReject("Missing mcpRelayUrl parameter in URL.");
         return;
       }
 
       try {
         const host = new URL(relayUrl).hostname;
-        if (host !== '127.0.0.1' && host !== '[::1]') {
-          handleReject(`MCP extension only allows loopback connections (127.0.0.1 or [::1]). Received host: ${host}`);
+        if (host !== "127.0.0.1" && host !== "[::1]") {
+          handleReject(
+            `MCP extension only allows loopback connections (127.0.0.1 or [::1]). Received host: ${host}`,
+          );
           return;
         }
       } catch (e) {
@@ -60,34 +67,37 @@ const ConnectApp: React.FC = () => {
       }
 
       try {
-        const client = JSON.parse(params.get('client') || '{}');
+        const clientStr = params.get("client") || "{}";
+        console.log("[Extension] client param:", clientStr);
+        const client = JSON.parse(clientStr);
         const info = `${client.name}/${client.version}`;
+        console.log("[Extension] parsed client info:", info);
         setClientInfo(info);
         setStatus({
-          type: 'connecting',
-          message: `🎭 Playwright MCP started from  "${info}" is trying to connect. Do you want to continue?`
+          type: "connecting",
+          message: `🎭 Playwright MCP started from  "${info}" is trying to connect. Do you want to continue?`,
         });
       } catch (e) {
-        setStatus({ type: 'error', message: 'Failed to parse client version.' });
+        setStatus({ type: "error", message: "Failed to parse client version." });
         return;
       }
 
-      const parsedVersion = parseInt(params.get('protocolVersion') ?? '', 10);
+      const parsedVersion = parseInt(params.get("protocolVersion") ?? "", 10);
       const requiredVersion = isNaN(parsedVersion) ? 1 : parsedVersion;
       if (requiredVersion > SUPPORTED_PROTOCOL_VERSION) {
         const extensionVersion = chrome.runtime.getManifest().version;
         setShowButtons(false);
         setShowTabList(false);
         setStatus({
-          type: 'error',
+          type: "error",
           versionMismatch: {
             extensionVersion,
-          }
+          },
         });
         return;
       }
 
-      const urlToken = params.get('token')?.trim() || '';
+      const urlToken = params.get("token")?.trim() || "";
       const storedToken = getStoredAuthToken();
       let expectedToken = storedToken;
       if (urlToken && urlToken !== storedToken) {
@@ -107,7 +117,7 @@ const ConnectApp: React.FC = () => {
       await connectToMCPRelay(relayUrlWithToken);
 
       // If this is a browser_navigate command, hide the tab list and show simple allow/reject
-      if (params.get('newTab') === 'true') {
+      if (params.get("newTab") === "true") {
         setNewTab(true);
         setShowTabList(false);
       } else {
@@ -120,56 +130,61 @@ const ConnectApp: React.FC = () => {
   const handleReject = useCallback((message: string) => {
     setShowButtons(false);
     setShowTabList(false);
-    setStatus({ type: 'error', message });
+    setStatus({ type: "error", message });
   }, []);
 
-  const connectToMCPRelay = useCallback(async (mcpRelayUrl: string) => {
-    const response = await chrome.runtime.sendMessage({ type: 'connectToMCPRelay', mcpRelayUrl  });
-    if (!response.success)
-      handleReject(response.error);
-  }, [handleReject]);
+  const connectToMCPRelay = useCallback(
+    async (mcpRelayUrl: string) => {
+      const response = await chrome.runtime.sendMessage({ type: "connectToMCPRelay", mcpRelayUrl });
+      if (!response.success) handleReject(response.error);
+    },
+    [handleReject],
+  );
 
   const loadTabs = useCallback(async () => {
-    const response = await chrome.runtime.sendMessage({ type: 'getTabs' });
-    if (response.success)
-      setTabs(response.tabs);
-    else
-      setStatus({ type: 'error', message: 'Failed to load tabs: ' + response.error });
+    const response = await chrome.runtime.sendMessage({ type: "getTabs" });
+    if (response.success) setTabs(response.tabs);
+    else setStatus({ type: "error", message: "Failed to load tabs: " + response.error });
   }, []);
 
-  const handleConnectToTab = useCallback(async (tab?: TabInfo, relayUrlOverride?: string) => {
-    setShowButtons(false);
-    setShowTabList(false);
+  const handleConnectToTab = useCallback(
+    async (tab?: TabInfo, relayUrlOverride?: string) => {
+      setShowButtons(false);
+      setShowTabList(false);
 
-    try {
-      const relayUrl = relayUrlOverride || mcpRelayUrl;
-      const response = await chrome.runtime.sendMessage({
-        type: 'connectToTab',
-        mcpRelayUrl: relayUrl,
-        tabId: tab?.id,
-        windowId: tab?.windowId,
-      });
+      try {
+        const relayUrl = relayUrlOverride || mcpRelayUrl;
+        const response = await chrome.runtime.sendMessage({
+          type: "connectToTab",
+          mcpRelayUrl: relayUrl,
+          tabId: tab?.id,
+          windowId: tab?.windowId,
+        });
 
-      if (response?.success) {
-        setStatus({ type: 'connected', message: `MCP client "${clientInfo}" connected.` });
-      } else {
+        if (response?.success) {
+          setStatus({ type: "connected", message: `MCP client "${clientInfo}" connected.` });
+          // Close the tab immediately
+          console.log("[Extension] Requesting background to close current tab");
+          chrome.runtime.sendMessage({ type: "closeTabFromConnect" });
+        } else {
+          setStatus({
+            type: "error",
+            message: response?.error || `MCP client "${clientInfo}" failed to connect.`,
+          });
+        }
+      } catch (e) {
         setStatus({
-          type: 'error',
-          message: response?.error || `MCP client "${clientInfo}" failed to connect.`
+          type: "error",
+          message: `MCP client "${clientInfo}" failed to connect: ${e}`,
         });
       }
-    } catch (e) {
-      setStatus({
-        type: 'error',
-        message: `MCP client "${clientInfo}" failed to connect: ${e}`
-      });
-    }
-  }, [clientInfo, mcpRelayUrl]);
+    },
+    [clientInfo, mcpRelayUrl],
+  );
 
   useEffect(() => {
     const listener = (message: any) => {
-      if (message.type === 'connectionTimeout')
-        handleReject('Connection timed out.');
+      if (message.type === "connectionTimeout") handleReject("Connection timed out.");
     };
     chrome.runtime.onMessage.addListener(listener);
     return () => {
@@ -178,24 +193,30 @@ const ConnectApp: React.FC = () => {
   }, [handleReject]);
 
   return (
-    <div className='app-container'>
-      <div className='content-wrapper'>
+    <div className="app-container">
+      <div className="content-wrapper">
         {status && (
-          <div className='status-container'>
+          <div className="status-container">
             <StatusBanner status={status} />
             {showButtons && (
-              <div className='button-container'>
+              <div className="button-container">
                 {newTab ? (
                   <>
-                    <Button variant='primary' onClick={() => handleConnectToTab()}>
+                    <Button variant="primary" onClick={() => handleConnectToTab()}>
                       Allow
                     </Button>
-                    <Button variant='reject' onClick={() => handleReject('Connection rejected. This tab can be closed.')}>
+                    <Button
+                      variant="reject"
+                      onClick={() => handleReject("Connection rejected. This tab can be closed.")}
+                    >
                       Reject
                     </Button>
                   </>
                 ) : (
-                  <Button variant='reject' onClick={() => handleReject('Connection rejected. This tab can be closed.')}>
+                  <Button
+                    variant="reject"
+                    onClick={() => handleReject("Connection rejected. This tab can be closed.")}
+                  >
                     Reject
                   </Button>
                 )}
@@ -204,22 +225,18 @@ const ConnectApp: React.FC = () => {
           </div>
         )}
 
-        {status?.type === 'connecting' && (
-          <AuthTokenSection />
-        )}
+        {status?.type === "connecting" && <AuthTokenSection />}
 
         {showTabList && (
           <div>
-            <div className='tab-section-title'>
-              Select page to expose to MCP server:
-            </div>
+            <div className="tab-section-title">Select page to expose to MCP server:</div>
             <div>
-              {tabs.map(tab => (
+              {tabs.map((tab) => (
                 <TabItem
                   key={tab.id}
                   tab={tab}
                   button={
-                    <Button variant='primary' onClick={() => handleConnectToTab(tab)}>
+                    <Button variant="primary" onClick={() => handleConnectToTab(tab)}>
                       Connect
                     </Button>
                   }
@@ -234,13 +251,17 @@ const ConnectApp: React.FC = () => {
 };
 
 const VersionMismatchError: React.FC<{ extensionVersion: string }> = ({ extensionVersion }) => {
-  const readmeUrl = 'https://github.com/microsoft/playwright-mcp/blob/main/extension/README.md';
-  const latestReleaseUrl = 'https://github.com/microsoft/playwright-mcp/releases/latest';
+  const readmeUrl = "https://github.com/microsoft/playwright-mcp/blob/main/extension/README.md";
+  const latestReleaseUrl = "https://github.com/microsoft/playwright-mcp/releases/latest";
   return (
     <div>
-      Playwright MCP version trying to connect requires newer extension version (current version: {extensionVersion}).{' '}
-      <a href={latestReleaseUrl}>Click here</a> to download latest version of the extension, then drag and drop it into the Chrome Extensions page.{' '}
-      See <a href={readmeUrl} target='_blank' rel='noopener noreferrer'>installation instructions</a> for more details.
+      Playwright MCP version trying to connect requires newer extension version (current version:{" "}
+      {extensionVersion}). <a href={latestReleaseUrl}>Click here</a> to download latest version of
+      the extension, then drag and drop it into the Chrome Extensions page. See{" "}
+      <a href={readmeUrl} target="_blank" rel="noopener noreferrer">
+        installation instructions
+      </a>{" "}
+      for more details.
     </div>
   );
 };
@@ -248,10 +269,8 @@ const VersionMismatchError: React.FC<{ extensionVersion: string }> = ({ extensio
 const StatusBanner: React.FC<{ status: Status }> = ({ status }) => {
   return (
     <div className={`status-banner ${status.type}`}>
-      {'versionMismatch' in status ? (
-        <VersionMismatchError
-          extensionVersion={status.versionMismatch.extensionVersion}
-        />
+      {"versionMismatch" in status ? (
+        <VersionMismatchError extensionVersion={status.versionMismatch.extensionVersion} />
       ) : (
         status.message
       )}
@@ -260,7 +279,7 @@ const StatusBanner: React.FC<{ status: Status }> = ({ status }) => {
 };
 
 // Initialize the React app
-const container = document.getElementById('root');
+const container = document.getElementById("root");
 if (container) {
   const root = createRoot(container);
   root.render(<ConnectApp />);
@@ -268,7 +287,6 @@ if (container) {
 
 function appendTokenToRelayUrl(relayUrl: string, token: string): string {
   const url = new URL(relayUrl);
-  if (token)
-    url.searchParams.set('token', token);
+  if (token) url.searchParams.set("token", token);
   return url.toString();
 }

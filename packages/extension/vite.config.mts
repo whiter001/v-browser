@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import { resolve } from 'node:path';
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import { viteStaticCopy } from 'vite-plugin-static-copy';
+import { resolve } from "node:path";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import { viteStaticCopy } from "vite-plugin-static-copy";
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -26,29 +26,29 @@ export default defineConfig({
     viteStaticCopy({
       targets: [
         {
-          src: '../../icons/*',
-          dest: 'icons'
+          src: "../../icons/*",
+          dest: "icons",
         },
         {
-          src: '../../manifest.json',
-          dest: '.'
-        }
-      ]
-    })
+          src: "../../manifest.json",
+          dest: ".",
+        },
+      ],
+    }),
   ],
-  root: resolve(__dirname, 'src/ui'),
+  root: resolve(__dirname, "src/ui"),
   build: {
-    outDir: resolve(__dirname, 'dist/'),
+    outDir: resolve(__dirname, "dist/"),
     emptyOutDir: false,
     minify: false,
     rollupOptions: {
-      input: ['src/ui/connect.html', 'src/ui/status.html'],
+      input: ["src/ui/connect.html", "src/ui/status.html"],
       output: {
         manualChunks: undefined,
-        entryFileNames: 'lib/ui/[name].js',
-        chunkFileNames: 'lib/ui/[name].js',
-        assetFileNames: 'lib/ui/[name].[ext]'
-      }
-    }
-  }
+        entryFileNames: "lib/ui/[name].js",
+        chunkFileNames: "lib/ui/[name].js",
+        assetFileNames: "lib/ui/[name].[ext]",
+      },
+    },
+  },
 });

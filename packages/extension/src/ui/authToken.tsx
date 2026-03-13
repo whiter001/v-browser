@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-import React, { useCallback, useState } from 'react';
-import { CopyToClipboard } from './copyToClipboard';
-import * as icons from './icons';
-import './authToken.css';
+import React, { useCallback, useState } from "react";
+import { CopyToClipboard } from "./copyToClipboard";
+import * as icons from "./icons";
+import "./authToken.css";
 
-const authTokenStorageKey = 'auth-token';
+const authTokenStorageKey = "auth-token";
 
 export const AuthTokenSection: React.FC<{}> = ({}) => {
   const [authToken, setAuthToken] = useState<string>(getOrCreateAuthToken);
@@ -36,36 +36,44 @@ export const AuthTokenSection: React.FC<{}> = ({}) => {
   }, [isExampleExpanded]);
 
   return (
-    <div className='auth-token-section'>
-      <div className='auth-token-description'>
+    <div className="auth-token-section">
+      <div className="auth-token-description">
         Set this environment variable to bypass the connection dialog:
       </div>
-      <div className='auth-token-container'>
-        <code className='auth-token-code'>{authTokenCode(authToken)}</code>
-        <button className='auth-token-refresh' title='Generate new token' aria-label='Generate new token'onClick={onRegenerateToken}>{icons.refresh()}</button>
+      <div className="auth-token-container">
+        <code className="auth-token-code">{authTokenCode(authToken)}</code>
+        <button
+          className="auth-token-refresh"
+          title="Generate new token"
+          aria-label="Generate new token"
+          onClick={onRegenerateToken}
+        >
+          {icons.refresh()}
+        </button>
         <CopyToClipboard value={authTokenCode(authToken)} />
       </div>
 
-      <div className='auth-token-example-section'>
+      <div className="auth-token-example-section">
         <button
-          className='auth-token-example-toggle'
+          className="auth-token-example-toggle"
           onClick={toggleExample}
           aria-expanded={isExampleExpanded}
-          title={isExampleExpanded ? 'Hide example config' : 'Show example config'}
+          title={isExampleExpanded ? "Hide example config" : "Show example config"}
         >
-          <span className={`auth-token-chevron ${isExampleExpanded ? 'expanded' : ''}`}>
+          <span className={`auth-token-chevron ${isExampleExpanded ? "expanded" : ""}`}>
             {icons.chevronDown()}
           </span>
           Example MCP server configuration
         </button>
 
         {isExampleExpanded && (
-          <div className='auth-token-example-content'>
-            <div className='auth-token-example-description'>
-              Add this configuration to your MCP client (e.g., VS Code) to connect to the Playwright MCP Bridge:
+          <div className="auth-token-example-content">
+            <div className="auth-token-example-description">
+              Add this configuration to your MCP client (e.g., VS Code) to connect to the Playwright
+              MCP Bridge:
             </div>
-            <div className='auth-token-example-config'>
-              <code className='auth-token-example-code'>{exampleConfig(authToken)}</code>
+            <div className="auth-token-example-config">
+              <code className="auth-token-example-code">{exampleConfig(authToken)}</code>
               <CopyToClipboard value={exampleConfig(authToken)} />
             </div>
           </div>
@@ -99,15 +107,18 @@ function generateAuthToken(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
   // Convert to base64 and make it URL-safe
-  return btoa(String.fromCharCode.apply(null, Array.from(array)))
-      .replace(/[+/=]/g, match => {
-        switch (match) {
-          case '+': return '-';
-          case '/': return '_';
-          case '=': return '';
-          default: return match;
-        }
-      });
+  return btoa(String.fromCharCode.apply(null, Array.from(array))).replace(/[+/=]/g, (match) => {
+    switch (match) {
+      case "+":
+        return "-";
+      case "/":
+        return "_";
+      case "=":
+        return "";
+      default:
+        return match;
+    }
+  });
 }
 
 export const getOrCreateAuthToken = (): string => {
@@ -117,16 +128,15 @@ export const getOrCreateAuthToken = (): string => {
     localStorage.setItem(authTokenStorageKey, token);
   }
   return token;
-}
+};
 
 export const getStoredAuthToken = (): string => {
-  return localStorage.getItem(authTokenStorageKey) || '';
+  return localStorage.getItem(authTokenStorageKey) || "";
 };
 
 export const seedAuthToken = (token: string): string => {
   const normalized = token.trim();
-  if (!normalized)
-    return getOrCreateAuthToken();
+  if (!normalized) return getOrCreateAuthToken();
   localStorage.setItem(authTokenStorageKey, normalized);
   return normalized;
 };

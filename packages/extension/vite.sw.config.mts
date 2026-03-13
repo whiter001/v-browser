@@ -14,18 +14,18 @@
  * limitations under the License.
  */
 
-import { resolve } from 'path';
-import { defineConfig } from 'vite';
+import { resolve } from "path";
+import { defineConfig } from "vite";
 
 export default defineConfig({
   build: {
     lib: {
-      entry: resolve(__dirname, 'src/background.ts'),
-      fileName: 'lib/background',
-      formats: ['es']
+      entry: resolve(__dirname, "src/background.ts"),
+      fileName: "lib/background",
+      formats: ["es"],
     },
-    outDir: 'dist',
+    outDir: "dist",
     emptyOutDir: false,
-    minify: false
-  }
+    minify: false,
+  },
 });

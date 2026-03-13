@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-import React, { useState, useEffect } from 'react';
-import { createRoot } from 'react-dom/client';
-import { Button, TabItem  } from './tabItem';
+import React, { useState, useEffect } from "react";
+import { createRoot } from "react-dom/client";
+import { Button, TabItem } from "./tabItem";
 
-import type { TabInfo } from './tabItem';
-import { AuthTokenSection, getOrCreateAuthToken } from './authToken';
+import type { TabInfo } from "./tabItem";
+import { AuthTokenSection, getOrCreateAuthToken } from "./authToken";
 
 interface ConnectionStatus {
   isConnected: boolean;
@@ -30,9 +30,9 @@ interface ConnectionStatus {
 }
 
 type SyncStatus =
-  | { type: 'idle' }
-  | { type: 'success'; message: string }
-  | { type: 'error'; message: string };
+  | { type: "idle" }
+  | { type: "success"; message: string }
+  | { type: "error"; message: string };
 
 const StatusApp: React.FC = () => {
   const [status, setStatus] = useState<ConnectionStatus>({
@@ -41,7 +41,7 @@ const StatusApp: React.FC = () => {
     extensionId: chrome.runtime.id,
     browserName: detectBrowserName(),
   });
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>({ type: 'idle' });
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({ type: "idle" });
 
   useEffect(() => {
     void loadStatus();
@@ -49,7 +49,9 @@ const StatusApp: React.FC = () => {
 
   const loadStatus = async () => {
     // Get current connection status from background script
-    const { connectedTabId, extensionId, browserName } = await chrome.runtime.sendMessage({ type: 'getConnectionStatus' });
+    const { connectedTabId, extensionId, browserName } = await chrome.runtime.sendMessage({
+      type: "getConnectionStatus",
+    });
     if (connectedTabId) {
       const tab = await chrome.tabs.get(connectedTabId);
       setStatus({
@@ -62,8 +64,8 @@ const StatusApp: React.FC = () => {
           windowId: tab.windowId!,
           title: tab.title!,
           url: tab.url!,
-          favIconUrl: tab.favIconUrl
-        }
+          favIconUrl: tab.favIconUrl,
+        },
       });
     } else {
       setStatus({
@@ -76,77 +78,78 @@ const StatusApp: React.FC = () => {
   };
 
   const syncExtensionInfo = async () => {
-    setSyncStatus({ type: 'idle' });
+    setSyncStatus({ type: "idle" });
     const relayUrl = buildRelayRegistrationUrl(getOrCreateAuthToken());
     const response = await chrome.runtime.sendMessage({
-      type: 'syncExtensionRegistration',
+      type: "syncExtensionRegistration",
       mcpRelayUrl: relayUrl,
     });
     if (response?.success) {
       setSyncStatus({
-        type: 'success',
+        type: "success",
         message: `Synchronized ${response.extensionId} to local server via ${response.via}.`,
       });
       await loadStatus();
       return;
     }
     setSyncStatus({
-      type: 'error',
-      message: response?.error || 'Failed to synchronize with local server.',
+      type: "error",
+      message: response?.error || "Failed to synchronize with local server.",
     });
   };
 
   const openConnectedTab = async () => {
-    if (!status.connectedTabId)
-      return;
+    if (!status.connectedTabId) return;
     await chrome.tabs.update(status.connectedTabId, { active: true });
-    window.close();
+    chrome.tabs.getCurrent((tab) => {
+      if (tab?.id) chrome.tabs.remove(tab.id);
+    });
   };
 
   const disconnect = async () => {
-    await chrome.runtime.sendMessage({ type: 'disconnect' });
-    window.close();
+    await chrome.runtime.sendMessage({ type: "disconnect" });
+    chrome.tabs.getCurrent((tab) => {
+      if (tab?.id) chrome.tabs.remove(tab.id);
+    });
   };
 
   return (
-    <div className='app-container'>
-      <div className='content-wrapper'>
-        <div className='info-grid'>
-          <div className='info-card'>
-            <div className='info-label'>Extension ID</div>
-            <div className='info-value info-code'>{status.extensionId}</div>
+    <div className="app-container">
+      <div className="content-wrapper">
+        <div className="info-grid">
+          <div className="info-card">
+            <div className="info-label">Extension ID</div>
+            <div className="info-value info-code">{status.extensionId}</div>
           </div>
-          <div className='info-card'>
-            <div className='info-label'>Browser</div>
-            <div className='info-value'>{status.browserName}</div>
+          <div className="info-card">
+            <div className="info-label">Browser</div>
+            <div className="info-value">{status.browserName}</div>
           </div>
         </div>
 
-        <div className='manual-sync-section'>
-          <div className='manual-sync-copy'>
+        <div className="manual-sync-section">
+          <div className="manual-sync-copy">
             Push the current extension identity to the local v-browser server.
           </div>
-          <Button variant='primary' onClick={syncExtensionInfo}>
+          <Button variant="primary" onClick={syncExtensionInfo}>
             Sync To Local Server
           </Button>
         </div>
 
-        {syncStatus.type !== 'idle' && (
-          <div className={`status-banner ${syncStatus.type === 'error' ? 'error' : 'connected'}`}>
+        {syncStatus.type !== "idle" && (
+          <div className={`status-banner ${syncStatus.type === "error" ? "error" : "connected"}`}>
             {syncStatus.message}
           </div>
         )}
 
         {status.isConnected && status.connectedTab ? (
           <div>
-            <div className='tab-section-title'>
-              Page with connected MCP client:
-            </div>
+            <div className="tab-section-title">Page with connected MCP client:</div>
             <div>
               <TabItem
                 tab={status.connectedTab}
                 button={
-                  <Button variant='primary' onClick={disconnect}>
+                  <Button variant="primary" onClick={disconnect}>
                     Disconnect
                   </Button>
                 }
@@ -155,9 +158,7 @@ const StatusApp: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className='status-banner'>
-            No MCP clients are currently connected.
-          </div>
+          <div className="status-banner">No MCP clients are currently connected.</div>
         )}
         <AuthTokenSection />
       </div>
@@ -166,7 +167,7 @@ const StatusApp: React.FC = () => {
 };
 
 // Initialize the React app
-const container = document.getElementById('root');
+const container = document.getElementById("root");
 if (container) {
   const root = createRoot(container);
   root.render(<StatusApp />);
@@ -183,18 +184,13 @@ function detectBrowserName(): string {
     };
   };
   const brands = navigatorWithBrands.userAgentData?.brands || [];
-  const brandMatch = brands.find(brand => !brand.brand.includes('Not'));
-  if (brandMatch?.brand)
-    return brandMatch.brand;
+  const brandMatch = brands.find((brand) => !brand.brand.includes("Not"));
+  if (brandMatch?.brand) return brandMatch.brand;
 
   const userAgent = navigator.userAgent;
-  if (userAgent.includes('Edg/'))
-    return 'Microsoft Edge';
-  if (userAgent.includes('Chromium/'))
-    return 'Chromium';
-  if (userAgent.includes('Chrome/'))
-    return 'Google Chrome';
-  if (userAgent.includes('Safari/'))
-    return 'Safari';
-  return 'Unknown browser';
+  if (userAgent.includes("Edg/")) return "Microsoft Edge";
+  if (userAgent.includes("Chromium/")) return "Chromium";
+  if (userAgent.includes("Chrome/")) return "Google Chrome";
+  if (userAgent.includes("Safari/")) return "Safari";
+  return "Unknown browser";
 }

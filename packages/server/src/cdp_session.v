@@ -22,7 +22,6 @@ struct EventSub {
 }
 
 struct TrackedNetworkRequest {
-
 mut:
 	request_id    string
 	url           string
@@ -38,14 +37,14 @@ mut:
 @[heap]
 struct CdpSession {
 mut:
-	next_id    int = 1
-	pending    map[int]chan ProtocolResponse
-	pending_mu sync.Mutex
-	send_fn    ?fn (string) !  // 向扩展 WS 发送 JSON 文本
-	event_subs map[string][]chan ProtocolResponse
-	event_mu   sync.Mutex
-	closed     bool
-	axref      AxRefStore // @eN 引用映射（snapshot 命令填充）
+	next_id                int = 1
+	pending                map[int]chan ProtocolResponse
+	pending_mu             sync.Mutex
+	send_fn                ?fn (string) ! // 向扩展 WS 发送 JSON 文本
+	event_subs             map[string][]chan ProtocolResponse
+	event_mu               sync.Mutex
+	closed                 bool
+	axref                  AxRefStore // @eN 引用映射（snapshot 命令填充）
 	current_frame_selector string
 	network_requests       map[string]TrackedNetworkRequest
 	network_request_order  []string
@@ -54,16 +53,16 @@ mut:
 	page_enabled           bool
 	page_mu                sync.Mutex
 	// 运行时缓存（debug 命令使用）
-	console_msgs []string
-	page_errors  []string
+	console_msgs  []string
+	page_errors   []string
 	dialog_events []string
 }
 
 fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 	return &CdpSession{
-		send_fn:    send_fn
-		pending:    map[int]chan ProtocolResponse{}
-		event_subs: map[string][]chan ProtocolResponse{}
+		send_fn:          send_fn
+		pending:          map[int]chan ProtocolResponse{}
+		event_subs:       map[string][]chan ProtocolResponse{}
 		network_requests: map[string]TrackedNetworkRequest{}
 	}
 }
@@ -116,7 +115,10 @@ fn (mut s CdpSession) send_bridge_command_to(method string, params_json string, 
 				s.pending.delete(id)
 				s.pending_mu.unlock()
 				select {
-					ch <- ProtocolResponse{ id: id, err: 'timeout' } {}
+					ch <- ProtocolResponse{
+						id:  id
+						err: 'timeout'
+					} {}
 					else {}
 				}
 			} else {
@@ -183,7 +185,10 @@ fn (mut s CdpSession) send_command_to(method string, params_json string, session
 				s.pending.delete(id)
 				s.pending_mu.unlock()
 				select {
-					ch <- ProtocolResponse{ id: id, err: 'timeout' } {}
+					ch <- ProtocolResponse{
+						id:  id
+						err: 'timeout'
+					} {}
 					else {}
 				}
 			} else {
@@ -217,7 +222,11 @@ fn (mut s CdpSession) send_command_to(method string, params_json string, session
 // attach_to_tab 发 attachToTab 命令，等扩展 attach chrome.debugger
 fn (mut s CdpSession) attach_to_tab() !string {
 	resp := s.send_bridge_command_to('attachToTab', '{}', cdp_attach_timeout) or {
-		return error(if err.msg().contains('timed out') { 'Extension connection timeout: no extension connected within 60s. Please install the v-browser extension and allow the connection.' } else { err.msg() })
+		return error(if err.msg().contains('timed out') {
+			'Extension connection timeout: no extension connected within 60s. Please install the v-browser extension and allow the connection.'
+		} else {
+			err.msg()
+		})
 	}
 	s.enable_page_events() or {}
 	s.enable_network_tracking() or {}
@@ -247,13 +256,20 @@ fn (mut s CdpSession) on_message(raw string) {
 			inner_params := cdp_extract_obj(resp.params, 'params')
 			if inner_method == 'Runtime.consoleAPICalled' {
 				s.console_msgs << inner_params
-				if s.console_msgs.len > 200 { s.console_msgs = s.console_msgs[1..] }
+				if s.console_msgs.len > 200 {
+					s.console_msgs = s.console_msgs[1..]
+				}
 			} else if inner_method == 'Runtime.exceptionThrown' {
 				s.page_errors << inner_params
-				if s.page_errors.len > 200 { s.page_errors = s.page_errors[1..] }
-			} else if inner_method == 'Page.javascriptDialogOpening' || inner_method == 'Page.javascriptDialogClosed' {
+				if s.page_errors.len > 200 {
+					s.page_errors = s.page_errors[1..]
+				}
+			} else if inner_method == 'Page.javascriptDialogOpening'
+				|| inner_method == 'Page.javascriptDialogClosed' {
 				s.dialog_events << '{"method":${json_str(inner_method)},"params":${inner_params}}'
-				if s.dialog_events.len > 50 { s.dialog_events = s.dialog_events[1..] }
+				if s.dialog_events.len > 50 {
+					s.dialog_events = s.dialog_events[1..]
+				}
 			} else if inner_method.starts_with('Network.') {
 				track_network_event(mut s, inner_method, inner_params)
 			}
@@ -269,7 +285,11 @@ fn (mut s CdpSession) on_message(raw string) {
 
 fn (mut s CdpSession) dispatch_event(method string, evt ProtocolResponse) {
 	s.event_mu.@lock()
-	subs := if method in s.event_subs { s.event_subs[method].clone() } else { []chan ProtocolResponse{} }
+	subs := if method in s.event_subs {
+		s.event_subs[method].clone()
+	} else {
+		[]chan ProtocolResponse{}
+	}
 	s.event_mu.unlock()
 	for sub in subs {
 		select {
@@ -297,7 +317,9 @@ fn (mut s CdpSession) unsubscribe(method string, ch chan ProtocolResponse) {
 	if method in s.event_subs {
 		mut filtered := []chan ProtocolResponse{}
 		for c in s.event_subs[method] {
-			if c != ch { filtered << c }
+			if c != ch {
+				filtered << c
+			}
 		}
 		s.event_subs[method] = filtered
 	}
@@ -307,7 +329,10 @@ fn (mut s CdpSession) close() {
 	s.pending_mu.@lock()
 	s.closed = true
 	for id, ch in s.pending {
-		ch <- ProtocolResponse{ id: id, err: 'session closed' }
+		ch <- ProtocolResponse{
+			id:  id
+			err: 'session closed'
+		}
 	}
 	s.pending.clear()
 	s.pending_mu.unlock()
@@ -364,7 +389,9 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 	}
 	s.network_mu.@lock()
 	mut entry := s.network_requests[request_id] or {
-		tracked := TrackedNetworkRequest{ request_id: request_id }
+		tracked := TrackedNetworkRequest{
+			request_id: request_id
+		}
 		s.network_request_order << request_id
 		tracked
 	}
@@ -428,7 +455,13 @@ fn cdp_parse_message(raw string) ProtocolResponse {
 	result := cdp_extract_obj_key(raw, '"result":')
 	err_str := cdp_extract_error(raw)
 	params := cdp_extract_obj_key(raw, '"params":')
-	return ProtocolResponse{ id: id, method: method, result: result, err: err_str, params: params }
+	return ProtocolResponse{
+		id:     id
+		method: method
+		result: result
+		err:    err_str
+		params: params
+	}
 }
 
 fn cdp_extract_int(s string, key string) int {
@@ -438,19 +471,49 @@ fn cdp_extract_int(s string, key string) int {
 	for end < rest.len && rest[end] in [`0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`, `-`] {
 		end++
 	}
-	if end == 0 { return 0 }
+	if end == 0 {
+		return 0
+	}
 	return rest[..end].int()
+}
+
+fn cdp_extract_bool(s string, key string) bool {
+	search := '"${key}":'
+	idx := s.index(search) or { return false }
+	rest := s[idx + search.len..].trim_left(' ')
+	// Check for true or false boolean value
+	if rest.starts_with('true') {
+		return true
+	}
+	if rest.starts_with('false') {
+		return false
+	}
+	// Handle string "true" or "false"
+	if rest.starts_with('"true"') {
+		return true
+	}
+	if rest.starts_with('"false"') {
+		return false
+	}
+	return false
 }
 
 fn cdp_extract_str(s string, key string) string {
 	search := '"${key}":'
 	idx := s.index(search) or { return '' }
 	rest := s[idx + search.len..].trim_left(' ')
-	if !rest.starts_with('"') { return '' }
+	if !rest.starts_with('"') {
+		return ''
+	}
 	mut j := 1
 	for j < rest.len {
-		if rest[j] == `\\` { j += 2; continue }
-		if rest[j] == `"` { return rest[1..j] }
+		if rest[j] == `\\` {
+			j += 2
+			continue
+		}
+		if rest[j] == `"` {
+			return rest[1..j]
+		}
 		j++
 	}
 	return ''
@@ -467,25 +530,38 @@ fn cdp_extract_obj(s string, key string) string {
 }
 
 fn cdp_extract_value(s string) string {
-	if s.len == 0 { return '' }
+	if s.len == 0 {
+		return ''
+	}
 	c := s[0]
-	if c == `{` || c == `[` { return cdp_balanced(s) }
+	if c == `{` || c == `[` {
+		return cdp_balanced(s)
+	}
 	if c == `"` {
 		mut j := 1
 		for j < s.len {
-			if s[j] == `\\` { j += 2; continue }
-			if s[j] == `"` { return s[..j + 1] }
+			if s[j] == `\\` {
+				j += 2
+				continue
+			}
+			if s[j] == `"` {
+				return s[..j + 1]
+			}
 			j++
 		}
 		return s
 	}
 	mut j := 0
-	for j < s.len && s[j] !in [`,`, `}`, `]`, ` `, `\n`, `\t`].map(u8(it)) { j++ }
+	for j < s.len && s[j] !in [`,`, `}`, `]`, ` `, `\n`, `\t`].map(u8(it)) {
+		j++
+	}
 	return s[..j]
 }
 
 fn cdp_balanced(s string) string {
-	if s.len == 0 { return '' }
+	if s.len == 0 {
+		return ''
+	}
 	open := s[0]
 	close := if open == `{` { u8(`}`) } else { u8(`]`) }
 	mut depth := 0
@@ -493,12 +569,24 @@ fn cdp_balanced(s string) string {
 	for i := 0; i < s.len; i++ {
 		c := s[i]
 		if in_str {
-			if c == `\\` { i++; continue }
-			if c == `"` { in_str = false }
+			if c == `\\` {
+				i++
+				continue
+			}
+			if c == `"` {
+				in_str = false
+			}
 		} else {
-			if c == `"` { in_str = true }
-			else if c == open { depth++ }
-			else if c == close { depth--; if depth == 0 { return s[..i + 1] } }
+			if c == `"` {
+				in_str = true
+			} else if c == open {
+				depth++
+			} else if c == close {
+				depth--
+				if depth == 0 {
+					return s[..i + 1]
+				}
+			}
 		}
 	}
 	return s
@@ -522,6 +610,7 @@ fn cdp_extract_error(s string) string {
 
 // json_str 简单字符串 JSON 编码
 fn json_str(s string) string {
-	escaped := s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+	escaped := s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r',
+		'\\r')
 	return '"${escaped}"'
 }

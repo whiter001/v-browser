@@ -171,7 +171,9 @@ fn cdp_extract_float(s string, key string) f64 {
 	idx := s.index(search) or { return 0.0 }
 	rest := s[idx + search.len..].trim_left(' ')
 	mut end := 0
-	for end < rest.len && rest[end] !in [`,`, `}`, `]`, ` `, `\n`].map(u8(it)) { end++ }
+	for end < rest.len && rest[end] !in [`,`, `}`, `]`, ` `, `\n`].map(u8(it)) {
+		end++
+	}
 	return rest[..end].f64()
 }
 

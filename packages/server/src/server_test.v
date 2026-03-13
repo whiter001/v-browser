@@ -111,7 +111,8 @@ fn test_parse_cli_to_ipc_download_routes_selector_and_path() {
 }
 
 fn test_parse_cli_to_ipc_diff_screenshot_variants() {
-	method, params := parse_cli_to_ipc('diff', ['screenshot', '--baseline', 'before.png', '-o', 'diff.png', '-t', '0.2', '--selector', '#hero', '--full'])
+	method, params := parse_cli_to_ipc('diff', ['screenshot', '--baseline', 'before.png', '-o',
+		'diff.png', '-t', '0.2', '--selector', '#hero', '--full'])
 	assert method == 'diff'
 	assert params.contains('"type":"screenshot"')
 	assert params.contains('"baseline":"before.png"')
@@ -122,7 +123,8 @@ fn test_parse_cli_to_ipc_diff_screenshot_variants() {
 }
 
 fn test_parse_cli_to_ipc_diff_url_variants() {
-	method, params := parse_cli_to_ipc('diff', ['url', 'https://a.test', 'https://b.test', '--screenshot', '--full', '--wait-until', 'networkidle'])
+	method, params := parse_cli_to_ipc('diff', ['url', 'https://a.test', 'https://b.test',
+		'--screenshot', '--full', '--wait-until', 'networkidle'])
 	assert method == 'diff'
 	assert params.contains('"type":"url"')
 	assert params.contains('"url1":"https://a.test"')

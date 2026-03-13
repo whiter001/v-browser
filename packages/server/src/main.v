@@ -28,13 +28,14 @@ fn main() {
 		return
 	}
 	mut json_output := false
+	mut raw_output := false
 	mut args := []string{}
 	for arg in raw_args {
-		if arg == '--json' {
-			json_output = true
-			continue
+		match arg {
+			'--json' { json_output = true }
+			'--raw', '-r' { raw_output = true }
+			else { args << arg }
 		}
-		args << arg
 	}
 	if args.len == 0 {
 		print_usage()
@@ -55,12 +56,17 @@ fn main() {
 	}
 
 	// 所有其他子命令转为 IPC 请求转发给 server
-	method, params := parse_cli_to_ipc(cmd, rest)
+	method, params := parse_cli_to_ipc(cmd, rest, raw_output)
 	result := send_ipc(method, params) or {
 		print_error(err.msg(), json_output)
 		exit(1)
 	}
-	println(format_output(result, json_output))
+	// CLI 模式自动解码 JSON 字符串
+	if !json_output && raw_output {
+		println(decode_json_string(result))
+	} else {
+		println(format_output(result, json_output))
+	}
 }
 
 fn handle_connect_command(args []string, json_output bool) {
@@ -325,7 +331,7 @@ fn is_extension_connected(status string) bool {
 
 // ─── CLI → IPC 参数解析 ──────────────────────────────────────
 // 将命令行参数转换为 (method, params_json) 对
-fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
+fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string) {
 	// 解析标志位
 	mut flags := map[string]string{}
 	mut positionals := []string{}
@@ -410,7 +416,8 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── 快照 ──
 		'snapshot', 'snap', 'ax' {
-			return 'snapshot', '{}'
+			raw := if raw_output { 'true' } else { 'false' }
+			return 'snapshot', '{"raw":${raw}}'
 		}
 		// ── 元素操作 ──
 		'click' {
@@ -702,7 +709,11 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 				flags['expression'] or { flags['expr'] or { '' } }
 			}
 			await_p := flags['await'] or { 'false' }
-			return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)},"base64":${json_str(if base64_flag != 'false' { 'true' } else { 'false' })}}'
+			return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)},"base64":${json_str(if base64_flag != 'false' {
+				'true'
+			} else {
+				'false'
+			})}}'
 		}
 		// ── tab ──
 		'tab' {

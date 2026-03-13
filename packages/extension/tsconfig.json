@@ -13,10 +13,6 @@
     "jsxImportSource": "react",
     "noEmit": true
   },
-  "include": [
-    "src",
-  ],
-  "exclude": [
-    "src/ui",
-  ]
+  "include": ["src"],
+  "exclude": ["src/ui"]
 }

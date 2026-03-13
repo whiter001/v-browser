@@ -18,7 +18,7 @@ export function debugLog(...args: unknown[]): void {
   const enabled = true;
   if (enabled) {
     // eslint-disable-next-line no-console
-    console.log('[Extension]', ...args);
+    console.log("[Extension]", ...args);
   }
 }
 
@@ -39,7 +39,11 @@ type ProtocolResponse = {
 export class RelayConnection {
   private _debuggee: chrome.debugger.Debuggee;
   private _ws: WebSocket;
-  private _eventListener: (source: chrome.debugger.DebuggerSession, method: string, params: any) => void;
+  private _eventListener: (
+    source: chrome.debugger.DebuggerSession,
+    method: string,
+    params: any,
+  ) => void;
   private _detachListener: (source: chrome.debugger.Debuggee, reason: string) => void;
   private _tabPromise: Promise<void>;
   private _tabPromiseResolve!: () => void;
@@ -50,8 +54,8 @@ export class RelayConnection {
   onTabIdChanged?: (tabId: number, previousTabId: number | null) => void | Promise<void>;
 
   constructor(ws: WebSocket) {
-    this._debuggee = { };
-    this._tabPromise = new Promise(resolve => this._tabPromiseResolve = resolve);
+    this._debuggee = {};
+    this._tabPromise = new Promise((resolve) => (this._tabPromiseResolve = resolve));
     this._ws = ws;
     this.sendExtensionRegistration();
     this._ws.onmessage = this._onMessage.bind(this);
@@ -71,7 +75,7 @@ export class RelayConnection {
 
   sendExtensionRegistration(extraParams?: Record<string, unknown>): void {
     this._sendMessage({
-      method: 'registerExtension',
+      method: "registerExtension",
       params: {
         extensionId: chrome.runtime.id,
         ...extraParams,
@@ -87,8 +91,7 @@ export class RelayConnection {
   }
 
   private _onClose() {
-    if (this._closed)
-      return;
+    if (this._closed) return;
     this._closed = true;
     chrome.debugger.onEvent.removeListener(this._eventListener);
     chrome.debugger.onDetach.removeListener(this._detachListener);
@@ -97,13 +100,16 @@ export class RelayConnection {
     this.onclose?.();
   }
 
-  private _onDebuggerEvent(source: chrome.debugger.DebuggerSession, method: string, params: any): void {
-    if (source.tabId !== this._debuggee.tabId)
-      return;
-    debugLog('Forwarding CDP event:', method, params);
+  private _onDebuggerEvent(
+    source: chrome.debugger.DebuggerSession,
+    method: string,
+    params: any,
+  ): void {
+    if (source.tabId !== this._debuggee.tabId) return;
+    debugLog("Forwarding CDP event:", method, params);
     const sessionId = source.sessionId;
     this._sendMessage({
-      method: 'forwardCDPEvent',
+      method: "forwardCDPEvent",
       params: {
         sessionId,
         method,
@@ -113,15 +119,14 @@ export class RelayConnection {
   }
 
   private _onDebuggerDetach(source: chrome.debugger.Debuggee, reason: string): void {
-    if (source.tabId !== this._debuggee.tabId)
-      return;
+    if (source.tabId !== this._debuggee.tabId) return;
     this._isAttached = false;
     this.close(`Debugger detached: ${reason}`);
-    this._debuggee = { };
+    this._debuggee = {};
   }
 
   private _onMessage(event: MessageEvent): void {
-    this._onMessageAsync(event).catch(e => debugLog('Error handling message:', e));
+    this._onMessageAsync(event).catch((e) => debugLog("Error handling message:", e));
   }
 
   private async _onMessageAsync(event: MessageEvent): Promise<void> {
@@ -129,12 +134,12 @@ export class RelayConnection {
     try {
       message = JSON.parse(event.data);
     } catch (error: any) {
-      debugLog('Error parsing message:', error);
+      debugLog("Error parsing message:", error);
       this._sendError(-32700, `Error parsing message: ${error.message}`);
       return;
     }
 
-    debugLog('Received message:', message);
+    debugLog("Received message:", message);
 
     const response: ProtocolResponse = {
       id: message.id,
@@ -142,101 +147,100 @@ export class RelayConnection {
     try {
       response.result = await this._handleCommand(message);
     } catch (error: any) {
-      debugLog('Error handling command:', error);
+      debugLog("Error handling command:", error);
       response.error = error.message;
     }
-    debugLog('Sending response:', response);
+    debugLog("Sending response:", response);
     this._sendMessage(response);
   }
 
   private async _handleCommand(message: ProtocolCommand): Promise<any> {
-    if (message.method === 'attachToTab') {
+    if (message.method === "attachToTab") {
       await this._tabPromise;
       return await this._attachDebuggerToTab(this._debuggee.tabId!);
     }
-    if (message.method === 'listTabs') {
+    if (message.method === "listTabs") {
       const tabs = await chrome.tabs.query({});
       return tabs
-        .filter(tab => tab.id && tab.windowId && tab.url && !['chrome:', 'edge:', 'devtools:'].some(scheme => tab.url!.startsWith(scheme)))
-        .map(tab => ({
+        .filter(
+          (tab) =>
+            tab.id &&
+            tab.windowId &&
+            tab.url &&
+            !["chrome:", "edge:", "devtools:"].some((scheme) => tab.url!.startsWith(scheme)),
+        )
+        .map((tab) => ({
           id: tab.id,
           windowId: tab.windowId,
-          title: tab.title || '',
-          url: tab.url || '',
+          title: tab.title || "",
+          url: tab.url || "",
           active: !!tab.active,
         }));
     }
-    if (message.method === 'createTab') {
-      const url = message.params?.url || 'about:blank';
+    if (message.method === "createTab") {
+      const url = message.params?.url || "about:blank";
       const tab = await chrome.tabs.create({ url, active: true });
-      if (!tab.id || !tab.windowId)
-        throw new Error('Created tab is missing tab identifiers');
+      if (!tab.id || !tab.windowId) throw new Error("Created tab is missing tab identifiers");
       const attached = await this._attachDebuggerToTab(tab.id, tab.windowId);
       return {
         tab: {
           id: tab.id,
           windowId: tab.windowId,
-          title: tab.title || '',
-          url: tab.url || '',
+          title: tab.title || "",
+          url: tab.url || "",
           active: !!tab.active,
         },
         ...attached,
       };
     }
-    if (message.method === 'createWindow') {
-      const url = message.params?.url || 'about:blank';
+    if (message.method === "createWindow") {
+      const url = message.params?.url || "about:blank";
       const created = await chrome.windows.create({ url, focused: true });
       const tab = created.tabs?.[0];
-      if (!created.id || !tab?.id)
-        throw new Error('Created window is missing tab identifiers');
+      if (!created.id || !tab?.id) throw new Error("Created window is missing tab identifiers");
       const attached = await this._attachDebuggerToTab(tab.id, created.id);
       return {
         windowId: created.id,
         tab: {
           id: tab.id,
           windowId: created.id,
-          title: tab.title || '',
-          url: tab.url || '',
+          title: tab.title || "",
+          url: tab.url || "",
           active: !!tab.active,
         },
         ...attached,
       };
     }
-    if (message.method === 'switchToTab') {
+    if (message.method === "switchToTab") {
       const tabId = Number(message.params?.tabId || 0);
       const windowId = Number(message.params?.windowId || 0) || undefined;
-      if (!tabId)
-        throw new Error('switchToTab requires tabId');
+      if (!tabId) throw new Error("switchToTab requires tabId");
       return await this._attachDebuggerToTab(tabId, windowId);
     }
-    if (message.method === 'closeTab') {
+    if (message.method === "closeTab") {
       const tabId = Number(message.params?.tabId || this._debuggee.tabId || 0);
-      if (!tabId)
-        throw new Error('closeTab requires tabId');
+      if (!tabId) throw new Error("closeTab requires tabId");
       if (this._debuggee.tabId === tabId && this._isAttached) {
         await chrome.debugger.detach(this._debuggee).catch(() => {});
         this._isAttached = false;
       }
       await chrome.tabs.remove(tabId);
-      if (this._debuggee.tabId === tabId)
-        this._debuggee = { };
+      if (this._debuggee.tabId === tabId) this._debuggee = {};
       return { closedTabId: tabId };
     }
     if (!this._debuggee.tabId)
-      throw new Error('No tab is connected. Please go to the Playwright MCP extension and select the tab you want to connect to.');
-    if (message.method === 'forwardCDPCommand') {
+      throw new Error(
+        "No tab is connected. Please go to the Playwright MCP extension and select the tab you want to connect to.",
+      );
+    if (message.method === "forwardCDPCommand") {
       const { sessionId, method, params } = message.params;
-      debugLog('CDP command:', method, params);
+      debugLog("CDP command:", method, params);
       const debuggerSession: chrome.debugger.DebuggerSession = {
         ...this._debuggee,
         sessionId,
       };
       // Forward CDP command to chrome.debugger
-      return await chrome.debugger.sendCommand(
-          debuggerSession,
-          method,
-          params
-      );
+      return await chrome.debugger.sendCommand(debuggerSession, method, params);
     }
     throw new Error(`Unknown relay command: ${message.method}`);
   }
@@ -248,20 +252,18 @@ export class RelayConnection {
 
     this._debuggee = { tabId };
     if (!this._isAttached || previousTabId !== tabId) {
-      debugLog('Attaching debugger to tab:', this._debuggee);
-      await chrome.debugger.attach(this._debuggee, '1.3');
+      debugLog("Attaching debugger to tab:", this._debuggee);
+      await chrome.debugger.attach(this._debuggee, "1.3");
       this._isAttached = true;
     }
 
     const updatedTab = await chrome.tabs.update(tabId, { active: true });
     const resolvedWindowId = windowId || updatedTab?.windowId;
-    if (resolvedWindowId)
-      await chrome.windows.update(resolvedWindowId, { focused: true });
+    if (resolvedWindowId) await chrome.windows.update(resolvedWindowId, { focused: true });
 
-    if (previousTabId !== tabId)
-      await this.onTabIdChanged?.(tabId, previousTabId);
+    if (previousTabId !== tabId) await this.onTabIdChanged?.(tabId, previousTabId);
 
-    const result: any = await chrome.debugger.sendCommand(this._debuggee, 'Target.getTargetInfo');
+    const result: any = await chrome.debugger.sendCommand(this._debuggee, "Target.getTargetInfo");
     return {
       tabId,
       windowId: resolvedWindowId,
@@ -279,7 +281,6 @@ export class RelayConnection {
   }
 
   private _sendMessage(message: any): void {
-    if (this._ws.readyState === WebSocket.OPEN)
-      this._ws.send(JSON.stringify(message));
+    if (this._ws.readyState === WebSocket.OPEN) this._ws.send(JSON.stringify(message));
   }
 }

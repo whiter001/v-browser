@@ -1,21 +1,17 @@
 {
   "name": "@v-browser/extension",
   "version": "0.0.1",
-  "description": "V-Browser Browser Extension",
   "private": true,
+  "description": "V-Browser Browser Extension",
+  "homepage": "https://github.com/your-repo/v-browser",
+  "license": "MIT",
+  "author": {
+    "name": "V-Browser Team"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/your-repo/v-browser.git"
   },
-  "homepage": "https://github.com/your-repo/v-browser",
-  "engines": {
-    "node": ">=22"
-  },
-  "author": {
-    "name": "V-Browser Team"
-  },
-  "license": "MIT",
-  "packageManager": "pnpm@10.30.3",
   "scripts": {
     "dev": "vite build --watch",
     "build": "tsc --project . && tsc --project tsconfig.ui.json && vite build && vite build --config vite.sw.config.mts",
@@ -35,5 +31,9 @@
     "typescript": "^5.8.2",
     "vite": "^8.0.0",
     "vite-plugin-static-copy": "^3.1.1"
-  }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.30.3"
 }

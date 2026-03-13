@@ -23,10 +23,7 @@ Configure Playwright MCP server to connect to the browser using the extension by
   "mcpServers": {
     "playwright-extension": {
       "command": "npx",
-      "args": [
-        "@playwright/mcp@latest",
-        "--extension"
-      ]
+      "args": ["@playwright/mcp@latest", "--extension"]
     }
   }
 }
@@ -53,10 +50,7 @@ By default, you'll need to approve each connection when the MCP server tries to 
   "mcpServers": {
     "playwright-extension": {
       "command": "npx",
-      "args": [
-        "@playwright/mcp@latest",
-        "--extension"
-      ],
+      "args": ["@playwright/mcp@latest", "--extension"],
       "env": {
         "PLAYWRIGHT_MCP_EXTENSION_TOKEN": "your-token-here"
       }
@@ -66,5 +60,3 @@ By default, you'll need to approve each connection when the MCP server tries to 
 ```
 
 This token is unique to your browser profile and provides secure authentication between the MCP server and the extension. Once configured, you won't need to manually approve connections each time.
-
-
