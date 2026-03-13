@@ -10,7 +10,7 @@
 //   v-browser screenshot [p]  — 截图
 //   v-browser snapshot        — accessibility 快照
 //   v-browser download <sel> <path> — 点击并等待下载完成
-//   v-browser eval <expr>     — 执行 JS 表达式
+//   v-browser eval <expr>     — 执行 JS 表达式（-b base64, --stdin）
 //   v-browser wait <ms|sel>   — 等待
 //   v-browser find --role button --name "OK" --click
 //   ...（其余命令见 commands.v）
@@ -683,13 +683,26 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── eval ──
 		'eval', 'js', 'execute', 'run' {
-			expr := flags['expression'] or {
-				flags['expr'] or {
-					if positionals.len > 0 { positionals[0] } else { '' }
-				}
+			stdin_val := flags['stdin'] or { 'false' }
+			is_stdin := stdin_val == 'true'
+			// 支持从 stdin 读取
+			if is_stdin {
+				expr := os.get_line().trim_space()
+				await_p := flags['await'] or { 'false' }
+				base64_flag := flags['b'] or { 'false' }
+				return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)},"base64":${json_str(base64_flag)}}'
+			}
+			// -b/--base64 时用 flags['b'] 作为表达式，否则用 positional
+			base64_flag := flags['b'] or { 'false' }
+			expr := if base64_flag != 'false' {
+				base64_flag
+			} else if positionals.len > 0 {
+				positionals[0]
+			} else {
+				flags['expression'] or { flags['expr'] or { '' } }
 			}
 			await_p := flags['await'] or { 'false' }
-			return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)}}'
+			return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)},"base64":${json_str(if base64_flag != 'false' { 'true' } else { 'false' })}}'
 		}
 		// ── tab ──
 		'tab' {
