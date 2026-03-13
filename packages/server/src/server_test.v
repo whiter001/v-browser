@@ -80,6 +80,14 @@ fn test_build_storage_restore_script_contains_store_and_payload() {
 	assert script.contains('token')
 }
 
+fn test_screenshot_diff_js_contains_expected_fields() {
+	js := screenshot_diff_js('Zm9v', 'image/png', 'YmFy', 0.1, true)
+	assert js.contains('changedPixels')
+	assert js.contains('totalPixels')
+	assert js.contains('diffData')
+	assert js.contains('data:image/png;base64,YmFy')
+}
+
 fn test_parse_cli_to_ipc_wait_variants() {
 	method_ms, params_ms := parse_cli_to_ipc('wait', ['1500'])
 	assert method_ms == 'wait'
@@ -88,6 +96,40 @@ fn test_parse_cli_to_ipc_wait_variants() {
 	method_sel, params_sel := parse_cli_to_ipc('wait', ['#app'])
 	assert method_sel == 'wait'
 	assert params_sel == '{"selector":"#app"}'
+}
+
+fn test_parse_cli_to_ipc_wait_download_variant() {
+	method, params := parse_cli_to_ipc('wait', ['--download', './report.pdf', '--timeout', '45000'])
+	assert method == 'wait'
+	assert params == '{"download":"./report.pdf","timeout":45000}'
+}
+
+fn test_parse_cli_to_ipc_download_routes_selector_and_path() {
+	method, params := parse_cli_to_ipc('download', ['#export', './report.csv'])
+	assert method == 'download'
+	assert params == '{"selector":"#export","path":"./report.csv"}'
+}
+
+fn test_parse_cli_to_ipc_diff_screenshot_variants() {
+	method, params := parse_cli_to_ipc('diff', ['screenshot', '--baseline', 'before.png', '-o', 'diff.png', '-t', '0.2', '--selector', '#hero', '--full'])
+	assert method == 'diff'
+	assert params.contains('"type":"screenshot"')
+	assert params.contains('"baseline":"before.png"')
+	assert params.contains('"output":"diff.png"')
+	assert params.contains('"threshold":0.2')
+	assert params.contains('"selector":"#hero"')
+	assert params.contains('"full":"true"')
+}
+
+fn test_parse_cli_to_ipc_diff_url_variants() {
+	method, params := parse_cli_to_ipc('diff', ['url', 'https://a.test', 'https://b.test', '--screenshot', '--full', '--wait-until', 'networkidle'])
+	assert method == 'diff'
+	assert params.contains('"type":"url"')
+	assert params.contains('"url1":"https://a.test"')
+	assert params.contains('"url2":"https://b.test"')
+	assert params.contains('"screenshot":"true"')
+	assert params.contains('"full":"true"')
+	assert params.contains('"waitUntil":"networkidle"')
 }
 
 fn test_parse_cli_to_ipc_find_builds_semantic_request() {

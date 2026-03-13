@@ -1,1 +1,1 @@
-fixture upload sample
+sample upload payload for v-browser fixture

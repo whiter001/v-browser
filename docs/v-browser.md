@@ -53,6 +53,7 @@ v-browser close
 | `v-browser open <url>`                 | 导航到 URL（别名: goto, navigate）                 |
 | `v-browser click <sel>`                | 点击元素（`--new-tab` 在新标签页打开）             |
 | `v-browser dblclick <sel>`             | 双击元素                                           |
+| `v-browser download <sel> <path>`      | 点击元素并等待下载完成                             |
 | `v-browser focus <sel>`                | 聚焦元素                                           |
 | `v-browser type <sel> <text>`          | 输入文本到元素                                     |
 | `v-browser fill <sel> <text>`          | 清空并填充                                         |
@@ -150,6 +151,7 @@ v-browser wait --text "Welcome"   # 等待文本出现
 v-browser wait --url "**/dash"    # 等待 URL 匹配
 v-browser wait --load networkidle  # 等待加载状态
 v-browser wait --fn "window.ready === true"  # 等待 JS 条件
+v-browser wait --download ./file.zip --timeout 30000  # 等待下载完成并保存到指定路径
 ```
 
 **加载状态:** `load`, `domcontentloaded`, `networkidle`
@@ -251,8 +253,6 @@ v-browser dialog dismiss          # 关闭
 ---
 
 ## 差异对比
-
-当前仅 `diff snapshot` 可用，`diff screenshot` 和 `diff url` 尚未实现。
 
 ```bash
 # 快照对比

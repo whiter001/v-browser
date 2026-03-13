@@ -9,6 +9,7 @@
 //   v-browser press <key>     — 按下按键
 //   v-browser screenshot [p]  — 截图
 //   v-browser snapshot        — accessibility 快照
+//   v-browser download <sel> <path> — 点击并等待下载完成
 //   v-browser eval <expr>     — 执行 JS 表达式
 //   v-browser wait <ms|sel>   — 等待
 //   v-browser find --role button --name "OK" --click
@@ -428,6 +429,17 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 			}
 			return 'dblclick', '{"selector":${json_str(sel)}}'
 		}
+		'download' {
+			sel := flags['selector'] or {
+				flags['sel'] or {
+					if positionals.len > 0 { positionals[0] } else { '' }
+				}
+			}
+			path := flags['path'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
+			return 'download', '{"selector":${json_str(sel)},"path":${json_str(path)}}'
+		}
 		'hover' {
 			sel := flags['selector'] or {
 				if positionals.len > 0 { positionals[0] } else { '' }
@@ -565,6 +577,12 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 		}
 		// ── 等待 ──
 		'wait' {
+			download_path := flags['download'] or { flags['d'] or { '' } }
+			if download_path != '' || 'download' in flags || 'd' in flags {
+				timeout := flags['timeout'] or { '30000' }
+				resolved_download_path := if download_path == 'true' { '' } else { download_path }
+				return 'wait', '{"download":${json_str(resolved_download_path)},"timeout":${timeout}}'
+			}
 			if positionals.len > 0 {
 				arg := positionals[0]
 				// 纯数字 → ms
@@ -894,10 +912,42 @@ fn parse_cli_to_ipc(cmd string, args []string) (string, string) {
 			dtype := flags['type'] or {
 				if positionals.len > 0 { positionals[0] } else { 'snapshot' }
 			}
-			baseline := flags['baseline'] or {
-				if positionals.len > 1 { positionals[1] } else { '' }
+			match dtype {
+				'screenshot' {
+					baseline := flags['baseline'] or {
+						if positionals.len > 1 { positionals[1] } else { '' }
+					}
+					output := flags['output'] or { flags['o'] or { '' } }
+					threshold := flags['threshold'] or { flags['t'] or { '0.1' } }
+					selector := flags['selector'] or { flags['s'] or { '' } }
+					full := flags['full'] or { 'false' }
+					return 'diff', '{"type":"screenshot","baseline":${json_str(baseline)},"output":${json_str(output)},"threshold":${threshold},"selector":${json_str(selector)},"full":${json_str(full)}}'
+				}
+				'url' {
+					url1 := flags['url1'] or {
+						if positionals.len > 1 { positionals[1] } else { '' }
+					}
+					url2 := flags['url2'] or {
+						if positionals.len > 2 { positionals[2] } else { '' }
+					}
+					screenshot := flags['screenshot'] or { 'false' }
+					full := flags['full'] or { 'false' }
+					wait_until := flags['wait-until'] or { 'load' }
+					selector := flags['selector'] or { flags['s'] or { '' } }
+					compact := flags['compact'] or { 'false' }
+					max_depth := flags['depth'] or { flags['d'] or { '0' } }
+					return 'diff', '{"type":"url","url1":${json_str(url1)},"url2":${json_str(url2)},"screenshot":${json_str(screenshot)},"full":${json_str(full)},"waitUntil":${json_str(wait_until)},"selector":${json_str(selector)},"compact":${json_str(compact)},"maxDepth":${max_depth}}'
+				}
+				else {
+					baseline := flags['baseline'] or {
+						if positionals.len > 1 { positionals[1] } else { '' }
+					}
+					selector := flags['selector'] or { flags['s'] or { '' } }
+					compact := flags['compact'] or { 'false' }
+					max_depth := flags['depth'] or { flags['d'] or { '0' } }
+					return 'diff', '{"type":${json_str(dtype)},"baseline":${json_str(baseline)},"selector":${json_str(selector)},"compact":${json_str(compact)},"maxDepth":${max_depth}}'
+				}
 			}
-			return 'diff', '{"type":${json_str(dtype)},"baseline":${json_str(baseline)}}'
 		}
 		// ── state ──
 		'state' {
@@ -956,7 +1006,7 @@ fn send_ipc(method string, params string) !string {
 		return error('cannot connect to v-browser server on port ${port}: ${err}')
 	}
 	defer { conn.close() or {} }
-	conn.set_read_timeout(60 * time.second)
+	conn.set_read_timeout(180 * time.second)
 
 	// 发送请求
 	req := IpcRequest{
@@ -1009,6 +1059,7 @@ fn print_usage() {
   v-browser eval <expr>         执行 JS 表达式
   v-browser click <selector>    点击元素
   v-browser dblclick <selector> 双击元素
+	v-browser download <sel> <path> 点击并等待下载完成
   v-browser hover <selector>    鼠标悬停
   v-browser focus <selector>    聚焦元素
   v-browser fill <sel> <text>   清空并填入文本
@@ -1023,7 +1074,7 @@ fn print_usage() {
   v-browser get <prop> [sel]    获取属性 (text/html/value/title/url/count/attr/box)
   v-browser text <selector>     获取元素文本
   v-browser is <state> <sel>    检查状态 (visible/enabled/checked)
-  v-browser wait <ms|sel>       等待 (毫秒 / 选择器 / --load / --url / --text / --fn)
+	v-browser wait <ms|sel>       等待 (毫秒 / 选择器 / --load / --url / --text / --fn / --download)
   v-browser find --role button --name "OK" --click  语义定位
   v-browser tab list/new/close  标签页管理
   v-browser mouse <action> <x> <y>  鼠标原始操作
@@ -1035,7 +1086,9 @@ fn print_usage() {
   v-browser console / errors        查看控制台/错误
   v-browser trace start/stop        性能追踪
   v-browser set viewport --width 1280 --height 800  设置视口
-  v-browser diff snapshot [--baseline file]  快照对比
+	v-browser diff snapshot [--baseline file]  快照对比
+	v-browser diff screenshot --baseline file  截图像素对比
+	v-browser diff url <url1> <url2>           URL 对比
   v-browser state save/load/list    浏览器状态持久化
 
 选项:

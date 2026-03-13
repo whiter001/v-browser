@@ -8,13 +8,23 @@ SERVER_BIN="$SERVER_DIR/v-browser"
 TEST_UI_BIN="$SCRIPT_DIR/test-ui"
 LAB_URL="http://127.0.0.1:48280/lab.html"
 EXTENSION_ID_FILE="$HOME/.v-browser/extension_id"
+IPC_SOCK_FILE="$HOME/.v-browser/server.sock"
 
 TEST_UI_PID=""
+SERVER_PID=""
+TMP_DIR=""
 
 cleanup() {
+  if [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" >/dev/null 2>&1 || true
+    wait "$SERVER_PID" >/dev/null 2>&1 || true
+  fi
   if [ -n "$TEST_UI_PID" ]; then
     kill "$TEST_UI_PID" >/dev/null 2>&1 || true
     wait "$TEST_UI_PID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
   fi
 }
 
@@ -45,7 +55,9 @@ assert_contains() {
 
 ensure_server_bin() {
   if [ -x "$SERVER_BIN" ]; then
-    return
+    if ! find "$SERVER_DIR/src" -type f -newer "$SERVER_BIN" | grep -q . 2>/dev/null; then
+      return
+    fi
   fi
   log 'Building packages/server/v-browser'
   (cd "$SERVER_DIR" && v run ./build.vsh)
@@ -53,7 +65,9 @@ ensure_server_bin() {
 
 ensure_test_ui_bin() {
   if [ -x "$TEST_UI_BIN" ]; then
-    return
+    if ! find "$SCRIPT_DIR/src" "$SCRIPT_DIR/static" -type f -newer "$TEST_UI_BIN" | grep -q . 2>/dev/null; then
+      return
+    fi
   fi
   log 'Building packages/test-ui/test-ui'
   (cd "$SCRIPT_DIR" && sh ./build.sh)
@@ -77,12 +91,69 @@ run_cli() {
   (cd "$SERVER_DIR" && "$SERVER_BIN" "$@")
 }
 
+restart_server_daemon() {
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -f "$SERVER_BIN server" >/dev/null 2>&1 || true
+  fi
+  rm -f "$IPC_SOCK_FILE"
+  sleep 0.4
+}
+
+start_server_process() {
+  restart_server_daemon
+  log 'Starting explicit v-browser server process'
+  "$SERVER_BIN" server >/tmp/v-browser-server.log 2>&1 &
+  SERVER_PID=$!
+  attempts=0
+  while [ "$attempts" -lt 50 ]; do
+    if [ -f "$IPC_SOCK_FILE" ]; then
+      return
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.2
+  done
+  fail 'Timed out waiting for v-browser server to become ready'
+}
+
 assert_result_equals() {
   selector=$1
   expected=$2
   output=$(run_cli --json get text "$selector")
   assert_contains "$output" '"ok":true' "Command get text $selector failed"
   assert_contains "$output" "\"result\":\"$expected\"" "Unexpected text for $selector"
+}
+
+assert_file_exists() {
+  file_path=$1
+  message=$2
+  if [ ! -f "$file_path" ]; then
+    fail "$message"
+  fi
+}
+
+assert_file_contains() {
+  file_path=$1
+  needle=$2
+  message=$3
+  assert_file_exists "$file_path" "$message"
+  if ! grep -F "$needle" "$file_path" >/dev/null 2>&1; then
+    printf '[smoke] ERROR: %s\n' "$message" >&2
+    printf '[smoke] File contents:\n' >&2
+    cat "$file_path" >&2
+    exit 1
+  fi
+}
+
+assert_json_field_positive() {
+  payload=$1
+  field=$2
+  message=$3
+  value=$(printf '%s' "$payload" | sed -n "s/.*\"$field\":\([0-9][0-9]*\).*/\1/p" | head -n 1)
+  if [ -z "$value" ] || [ "$value" -le 0 ]; then
+    printf '[smoke] ERROR: %s\n' "$message" >&2
+    printf '[smoke] Actual output: %s\n' "$payload" >&2
+    exit 1
+  fi
 }
 
 ensure_connected() {
@@ -120,6 +191,8 @@ extract_ref_for_label() {
 
 ensure_server_bin
 ensure_test_ui_bin
+TMP_DIR=$(mktemp -d /tmp/v-browser-smoke.XXXXXX)
+start_server_process
 
 if curl -fsS "http://127.0.0.1:48280/" >/dev/null 2>&1; then
   log 'Reusing existing test-ui instance on :48280'
@@ -134,6 +207,7 @@ ensure_connected
 
 log 'Opening fixture lab in connected browser tab'
 run_cli open "$LAB_URL" >/dev/null
+run_cli wait --text 'Async content is ready' >/dev/null
 title_output=$(run_cli --json get title)
 assert_contains "$title_output" '"result":"v-browser Fixture Lab"' 'Fixture lab did not open correctly'
 
@@ -158,5 +232,43 @@ if ! run_cli click "$custom_ref" >/dev/null 2>&1; then
   run_cli click '#customCardAction' >/dev/null
 fi
 assert_result_equals '#heroStatus' 'custom card activated'
+
+log 'Verifying download command'
+ensure_connected
+download_path="$TMP_DIR/download-command.txt"
+download_output=$(run_cli --json download '#downloadSampleLink' "$download_path")
+assert_contains "$download_output" '"ok":true' 'download command failed'
+assert_contains "$download_output" 'download-command.txt' 'download command did not report output path'
+assert_file_contains "$download_path" 'sample upload payload for v-browser fixture' 'download command did not save expected file contents'
+
+log 'Verifying wait --download command'
+ensure_connected
+wait_download_path="$TMP_DIR/wait-download.txt"
+run_cli eval "setTimeout(() => document.querySelector('#downloadSampleLink').click(), 150)" >/dev/null
+wait_download_output=$(run_cli --json wait --download "$wait_download_path" --timeout 5000)
+assert_contains "$wait_download_output" '"ok":true' 'wait --download command failed'
+assert_contains "$wait_download_output" 'wait-download.txt' 'wait --download did not report output path'
+assert_file_contains "$wait_download_path" 'sample upload payload for v-browser fixture' 'wait --download did not save expected file contents'
+
+log 'Verifying diff screenshot command'
+ensure_connected
+run_cli open "$LAB_URL" >/dev/null
+run_cli wait --text 'Async content is ready' >/dev/null
+baseline_png="$TMP_DIR/baseline.png"
+diff_png="$TMP_DIR/diff.png"
+run_cli screenshot "$baseline_png" >/dev/null
+run_cli click '#primaryAction' >/dev/null
+diff_screenshot_output=$(run_cli --json diff screenshot --baseline "$baseline_png" -o "$diff_png")
+assert_contains "$diff_screenshot_output" '"ok":true' 'diff screenshot command failed'
+assert_file_exists "$diff_png" 'diff screenshot did not create diff image'
+assert_json_field_positive "$diff_screenshot_output" 'changedPixels' 'diff screenshot did not detect any changed pixels'
+
+log 'Verifying diff url command'
+ensure_connected
+diff_url_output=$(run_cli --json diff url "$LAB_URL" 'http://127.0.0.1:48280/iframe.html' --screenshot --selector 'main' --compact --depth 4)
+assert_contains "$diff_url_output" '"ok":true' 'diff url command failed'
+assert_contains "$diff_url_output" '"snapshot":' 'diff url output did not include snapshot diff'
+assert_contains "$diff_url_output" '"screenshot":' 'diff url output did not include screenshot diff'
+assert_json_field_positive "$diff_url_output" 'changedPixels' 'diff url screenshot diff did not detect any changed pixels'
 
 log 'CLI smoke completed successfully'

@@ -16,6 +16,27 @@ struct DevicePreset {
 	user_agent string
 }
 
+struct DownloadEventState {
+
+mut:
+	guid               string
+	suggested_filename string
+	url                string
+	file_path          string
+	state              string
+}
+
+struct ScreenshotDiffResult {
+	ok            bool
+	error         string
+	width         int
+	height        int
+	changed_pixels int
+	total_pixels   int
+	ratio         f64
+	diff_data     string
+}
+
 // dispatch_command 命令路由
 fn dispatch_command(mut sess CdpSession, method string, params string) string {
 	return match method {
@@ -27,6 +48,7 @@ fn dispatch_command(mut sess CdpSession, method string, params string) string {
 		'pdf'            { cmd_pdf(mut sess, params) }
 		'click'          { cmd_click(mut sess, params) }
 		'dblclick'       { cmd_dblclick(mut sess, params) }
+		'download'       { cmd_download(mut sess, params) }
 		'fill'           { cmd_fill(mut sess, params) }
 		'type'           { cmd_type_text(mut sess, params) }
 		'press', 'key'   { cmd_press(mut sess, params) }
@@ -310,6 +332,516 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 	return json_str(out_path)
 }
 
+fn capture_screenshot_base64(mut sess CdpSession, format string, full bool, selector string) !string {
+	mut p := '{"format":"${format}"'
+	if selector != '' {
+		mut el := resolve_selector(mut sess, selector)!
+		scroll_resolved_element_into_view(mut sess, selector, el)!
+		el = resolve_selector(mut sess, selector) or { el }
+		clip_x := el.x - el.width / 2
+		clip_y := el.y - el.height / 2
+		p += ',"clip":{"x":${clip_x},"y":${clip_y},"width":${el.width},"height":${el.height},"scale":1}'
+		p += ',"captureBeyondViewport":true'
+	} else {
+		p += ',"captureBeyondViewport":${full}'
+	}
+	p += '}'
+	resp := sess.send_command('Page.captureScreenshot', p)!
+	data := cdp_extract_str(resp.result, 'data')
+	if data == '' {
+		return error('no screenshot data returned')
+	}
+	return data
+}
+
+fn ensure_download_behavior(mut sess CdpSession, download_dir string) !string {
+	os.mkdir_all(download_dir)!
+	browser_params := '{"behavior":"allow","downloadPath":${json_str(download_dir)},"eventsEnabled":true}'
+	sess.send_command('Browser.setDownloadBehavior', browser_params) or {
+		sess.send_command('Page.setDownloadBehavior', '{"behavior":"allow","downloadPath":${json_str(download_dir)}}') or {
+			install_dom_download_capture(mut sess)!
+			return 'dom'
+		}
+		return 'native'
+	}
+	return 'native'
+}
+
+fn unique_download_dir() string {
+	return os.join_path(os.temp_dir(), 'v_browser_download_${time.now().unix_milli()}')
+}
+
+fn apply_click_for_download(mut sess CdpSession, sel string) ! {
+	run_element_action(mut sess, sel, build_click_action_body()) or {
+		pointer_action_for_selector(mut sess, sel, 'click')!
+		return
+	}
+}
+
+fn update_download_event_state(mut state DownloadEventState, evt ProtocolResponse) bool {
+	guid := cdp_extract_str(evt.params, 'guid')
+	if guid != '' && state.guid != '' && guid != state.guid {
+		return false
+	}
+	if guid != '' {
+		state.guid = guid
+	}
+	suggested := cdp_extract_str(evt.params, 'suggestedFilename')
+	if suggested != '' {
+		state.suggested_filename = suggested
+	}
+	url := cdp_extract_str(evt.params, 'url')
+	if url != '' {
+		state.url = url
+	}
+	file_path := cdp_extract_str(evt.params, 'filePath')
+	if file_path != '' {
+		state.file_path = file_path
+	}
+	event_state := cdp_extract_str(evt.params, 'state')
+	if event_state != '' {
+		state.state = event_state
+	}
+	return true
+}
+
+fn resolve_downloaded_file_path(download_dir string, state DownloadEventState) !string {
+	if state.file_path != '' && os.exists(state.file_path) {
+		return state.file_path
+	}
+	mut candidates := []string{}
+	if state.suggested_filename != '' {
+		candidates << os.join_path(download_dir, state.suggested_filename)
+	}
+	if state.guid != '' {
+		candidates << os.join_path(download_dir, state.guid)
+	}
+	for candidate in candidates {
+		if os.exists(candidate) {
+			return candidate
+		}
+	}
+	entries := os.ls(download_dir) or { []string{} }
+	if entries.len == 1 {
+		return os.join_path(download_dir, entries[0])
+	}
+	if entries.len > 1 && state.suggested_filename != '' {
+		for entry in entries {
+			if entry.starts_with(state.suggested_filename) {
+				return os.join_path(download_dir, entry)
+			}
+		}
+	}
+	return error('download completed but file was not found in ${download_dir}')
+}
+
+fn detect_completed_download_in_dir(download_dir string) string {
+	entries := os.ls(download_dir) or { return '' }
+	for entry in entries {
+		if entry.ends_with('.crdownload') || entry.ends_with('.tmp') {
+			continue
+		}
+		path := os.join_path(download_dir, entry)
+		if os.is_file(path) {
+			return path
+		}
+	}
+	return ''
+}
+
+fn install_dom_download_capture(mut sess CdpSession) ! {
+	js := build_document_scope_js(&sess, '
+		if (win.__vBrowserDownloadCaptureInstalled) return true;
+		win.__vBrowserDownloadCaptureInstalled = true;
+		win.__vBrowserDownloadQueue = win.__vBrowserDownloadQueue || [];
+		function queueAnchorDownload(anchor) {
+			if (!anchor) return;
+			var href = anchor.href || anchor.getAttribute("href");
+			if (!href) return;
+			var url = new URL(href, doc.baseURI).href;
+			var filename = anchor.getAttribute("download") || url.split("/").pop() || "download";
+			fetch(url, { credentials: "include" })
+				.then(function(response) {
+					if (!response.ok) throw new Error("HTTP " + response.status);
+					return response.arrayBuffer();
+				})
+				.then(function(buffer) {
+					var bytes = new Uint8Array(buffer);
+					var chunks = [];
+					for (var i = 0; i < bytes.length; i += 0x8000) {
+						chunks.push(String.fromCharCode.apply(null, Array.from(bytes.slice(i, i + 0x8000))));
+					}
+					win.__vBrowserDownloadQueue.push({ ok: true, url: url, filename: filename, data: btoa(chunks.join("")) });
+				})
+				.catch(function(err) {
+					win.__vBrowserDownloadQueue.push({ ok: false, url: url, filename: filename, error: String(err) });
+				});
+		}
+		if (!win.__vBrowserOriginalAnchorClick && win.HTMLAnchorElement && win.HTMLAnchorElement.prototype) {
+			win.__vBrowserOriginalAnchorClick = win.HTMLAnchorElement.prototype.click;
+			win.HTMLAnchorElement.prototype.click = function() {
+				if (this && this.getAttribute && this.hasAttribute("download")) {
+					queueAnchorDownload(this);
+					return;
+				}
+				return win.__vBrowserOriginalAnchorClick.call(this);
+			};
+		}
+		doc.addEventListener("click", function(event) {
+			var target = event.target;
+			if (!target || !target.closest) return;
+			var anchor = target.closest("a[download]");
+			if (!anchor) return;
+			event.preventDefault();
+			queueAnchorDownload(anchor);
+		}, true);
+		return true;
+	')
+	eval_scoped_expression(mut sess, js, false)!
+}
+
+fn pull_dom_download_capture(mut sess CdpSession) !string {
+	js := build_document_scope_js(&sess, 'var queue = win.__vBrowserDownloadQueue || []; if (queue.length === 0) return null; return JSON.stringify(queue.shift());')
+	return eval_scoped_expression(mut sess, js, false)!
+}
+
+fn write_dom_download_result(raw string, target_path string) !string {
+	if raw == '' || raw == 'null' {
+		return error('no DOM download payload available')
+	}
+	mut payload := raw.trim_space()
+	if payload.contains('\\"') {
+		payload = payload.replace('\\"', '"').replace('\\\\', '\\')
+	}
+	ok := cdp_extract_obj_key(payload, '"ok":') == 'true'
+	if !ok {
+		message := cdp_extract_str(payload, 'error')
+		return error(if message != '' { message } else { 'download payload reported failure' })
+	}
+	filename := cdp_extract_str(payload, 'filename')
+	data := cdp_extract_str(payload, 'data')
+	if data == '' {
+		return error('download payload missing data')
+	}
+	out_path := if target_path != '' {
+		target_path
+	} else {
+		os.join_path(os.temp_dir(), if filename != '' { filename } else { 'download.bin' })
+	}
+	parent_dir := os.dir(out_path)
+	if parent_dir != '' {
+		os.mkdir_all(parent_dir)!
+	}
+	os.write_file_array(out_path, base64.decode(data))!
+	return out_path
+}
+
+fn fetch_download_via_dom(mut sess CdpSession, sel string, target_path string) !string {
+	js := build_element_scope_js(&sess, sel, '
+		if (!el) return JSON.stringify({ ok: false, error: "element not found" });
+		var href = el.href || el.getAttribute("href");
+		if (!href) return JSON.stringify({ ok: false, error: "element has no href" });
+		var url = new URL(href, doc.baseURI).href;
+		var filename = el.getAttribute("download") || url.split("/").pop() || "download";
+		return fetch(url, { credentials: "include" })
+			.then(function(response) {
+				if (!response.ok) throw new Error("HTTP " + response.status);
+				return response.arrayBuffer();
+			})
+			.then(function(buffer) {
+				var bytes = new Uint8Array(buffer);
+				var chunks = [];
+				for (var i = 0; i < bytes.length; i += 0x8000) {
+					chunks.push(String.fromCharCode.apply(null, Array.from(bytes.slice(i, i + 0x8000))));
+				}
+				return JSON.stringify({ ok: true, url: url, filename: filename, data: btoa(chunks.join("")) });
+			})
+			.catch(function(err) {
+				return JSON.stringify({ ok: false, url: url, filename: filename, error: String(err) });
+			});
+	')
+	raw := eval_scoped_expression(mut sess, js, true)!
+	return write_dom_download_result(raw, target_path)
+}
+
+fn wait_for_dom_download(mut sess CdpSession, target_path string, timeout time.Duration) !string {
+	deadline := time.now().add(timeout)
+	for time.now() < deadline {
+		raw := pull_dom_download_capture(mut sess) or { '' }
+		if raw != '' && raw != 'null' {
+			return write_dom_download_result(raw, target_path)!
+		}
+		time.sleep(200 * time.millisecond)
+	}
+	return error('timeout waiting for download')
+}
+
+fn finalize_download_path(source_path string, target_path string) !string {
+	if target_path == '' {
+		return source_path
+	}
+	if source_path == target_path {
+		return source_path
+	}
+	parent_dir := os.dir(target_path)
+	if parent_dir != '' {
+		os.mkdir_all(parent_dir)!
+	}
+	if os.exists(target_path) {
+		os.rm(target_path)!
+	}
+	os.mv(source_path, target_path)!
+	return target_path
+}
+
+fn wait_for_download(mut sess CdpSession, download_dir string, target_path string, timeout time.Duration) !string {
+	begin_browser := sess.subscribe('Browser.downloadWillBegin')
+	begin_page := sess.subscribe('Page.downloadWillBegin')
+	progress_browser := sess.subscribe('Browser.downloadProgress')
+	progress_page := sess.subscribe('Page.downloadProgress')
+	defer {
+		sess.unsubscribe('Browser.downloadWillBegin', begin_browser)
+		sess.unsubscribe('Page.downloadWillBegin', begin_page)
+		sess.unsubscribe('Browser.downloadProgress', progress_browser)
+		sess.unsubscribe('Page.downloadProgress', progress_page)
+	}
+
+	mut state := DownloadEventState{}
+	deadline := time.now().add(timeout)
+	for time.now() < deadline {
+		select {
+			evt := <-begin_browser {
+				update_download_event_state(mut state, evt)
+			}
+			evt := <-begin_page {
+				update_download_event_state(mut state, evt)
+			}
+			evt := <-progress_browser {
+				if !update_download_event_state(mut state, evt) {
+					continue
+				}
+				if state.state == 'completed' {
+					resolved := resolve_downloaded_file_path(download_dir, state)!
+					return finalize_download_path(resolved, target_path)!
+				}
+				if state.state == 'canceled' {
+					return error('download canceled')
+				}
+			}
+			evt := <-progress_page {
+				if !update_download_event_state(mut state, evt) {
+					continue
+				}
+				if state.state == 'completed' {
+					resolved := resolve_downloaded_file_path(download_dir, state)!
+					return finalize_download_path(resolved, target_path)!
+				}
+				if state.state == 'canceled' {
+					return error('download canceled')
+				}
+			}
+			250 * time.millisecond {}
+		}
+		fallback_path := detect_completed_download_in_dir(download_dir)
+		if fallback_path != '' {
+			return finalize_download_path(fallback_path, target_path)!
+		}
+	}
+	return error('timeout waiting for download')
+}
+
+fn build_dom_snapshot_js(sess &CdpSession, selector string, compact bool, max_depth int) string {
+	selector_expr := if selector == '' {
+		'doc.body || doc.documentElement'
+	} else if selector.starts_with('//') || selector.starts_with('(//') {
+		'doc.evaluate(${js_str(selector)}, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue'
+	} else {
+		'doc.querySelector(${js_str(selector)})'
+	}
+	compact_js := if compact { 'true' } else { 'false' }
+	depth_limit := if max_depth > 0 { max_depth } else { 8 }
+	return build_document_scope_js(sess, '
+		var root = ${selector_expr};
+		if (!root) return "";
+		function normalizeText(value) {
+			return String(value || "").replace(/\\s+/g, " ").trim();
+		}
+		function describe(el, depth) {
+			var tag = (el.tagName || "node").toLowerCase();
+			var label = tag;
+			if (!${compact_js}) {
+				if (el.id) label += "#" + el.id;
+				var cls = Array.from(el.classList || []).filter(Boolean).slice(0, 2);
+				if (cls.length) label += "." + cls.join(".");
+			}
+			var role = normalizeText(el.getAttribute && el.getAttribute("role"));
+			var text = normalizeText(el.getAttribute && (el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("alt") || el.getAttribute("placeholder") || el.getAttribute("value")) || "");
+			if (!text && el.children.length === 0) {
+				text = normalizeText(el.textContent || "");
+			}
+			if (text.length > 80) text = text.slice(0, 77) + "...";
+			var line = "  ".repeat(depth) + label;
+			if (role) line += " [" + role + "]";
+			if (text) line += " " + JSON.stringify(text);
+			return line;
+		}
+		var lines = [];
+		function visit(node, depth) {
+			if (!node || depth > ${depth_limit}) return;
+			if (node.nodeType !== Node.ELEMENT_NODE) return;
+			lines.push(describe(node, depth));
+			for (var i = 0; i < node.children.length; i++) visit(node.children[i], depth + 1);
+		}
+		visit(root, 0);
+		return lines.join("\\n");
+	')
+}
+
+fn capture_dom_snapshot(mut sess CdpSession, selector string, compact bool, max_depth int) !string {
+	js := build_dom_snapshot_js(&sess, selector, compact, max_depth)
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
+	result := cdp_extract_obj_key(resp.result, '"result":')
+	return cdp_extract_value_from_result(result)
+}
+
+fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
+	match state {
+		'', 'load' {
+			ch := sess.subscribe('Page.loadEventFired')
+			defer { sess.unsubscribe('Page.loadEventFired', ch) }
+			select {
+				_ := <-ch {}
+				30 * time.second { return error('timeout waiting for load') }
+			}
+		}
+		'domcontentloaded' {
+			ch := sess.subscribe('Page.domContentEventFired')
+			defer { sess.unsubscribe('Page.domContentEventFired', ch) }
+			select {
+				_ := <-ch {}
+				30 * time.second { return error('timeout waiting for domcontentloaded') }
+			}
+		}
+		'networkidle' {
+			ch := sess.subscribe('Page.lifecycleEvent')
+			defer { sess.unsubscribe('Page.lifecycleEvent', ch) }
+			for {
+				select {
+					evt := <-ch {
+						if cdp_extract_str(evt.params, 'name') == 'networkIdle' {
+							return
+						}
+					}
+					30 * time.second { return error('timeout waiting for networkidle') }
+				}
+			}
+		}
+		else {
+			return error('unknown waitUntil state: ${state}')
+		}
+	}
+}
+
+fn navigate_and_wait(mut sess CdpSession, url string, state string) ! {
+	mut event := 'Page.loadEventFired'
+	if state == 'domcontentloaded' {
+		event = 'Page.domContentEventFired'
+	} else if state == 'networkidle' {
+		event = 'Page.lifecycleEvent'
+	}
+	ch := sess.subscribe(event)
+	defer { sess.unsubscribe(event, ch) }
+	sess.send_command('Page.navigate', '{"url":${json_str(url)}}')!
+	if state == 'networkidle' {
+		for {
+			select {
+				evt := <-ch {
+					if cdp_extract_str(evt.params, 'name') == 'networkIdle' {
+						return
+					}
+				}
+				30 * time.second { return error('timeout waiting for networkidle') }
+			}
+		}
+	}
+	select {
+		_ := <-ch {}
+		30 * time.second { return error('timeout waiting for ${state}') }
+	}
+}
+
+fn baseline_mime_type(path string) string {
+	lower := path.to_lower()
+	if lower.ends_with('.jpg') || lower.ends_with('.jpeg') {
+		return 'image/jpeg'
+	}
+	return 'image/png'
+}
+
+fn screenshot_diff_js(baseline_b64 string, baseline_mime string, current_b64 string, threshold f64, include_diff bool) string {
+	include_diff_js := if include_diff { 'true' } else { 'false' }
+	return '(async function(){\n'
+		+ '  var baselineSrc = "data:${baseline_mime};base64,${baseline_b64}";\n'
+		+ '  var currentSrc = "data:image/png;base64,${current_b64}";\n'
+		+ '  function load(src){ return new Promise(function(resolve,reject){ var img=new Image(); img.onload=function(){ resolve(img); }; img.onerror=function(){ reject(new Error("image decode failed")); }; img.src=src; }); }\n'
+		+ '  var images = await Promise.all([load(baselineSrc), load(currentSrc)]);\n'
+		+ '  var a = images[0];\n'
+		+ '  var b = images[1];\n'
+		+ '  if (a.naturalWidth !== b.naturalWidth || a.naturalHeight !== b.naturalHeight) { return { ok:false, error:"dimension mismatch", width:b.naturalWidth, height:b.naturalHeight }; }\n'
+		+ '  var w = a.naturalWidth;\n'
+		+ '  var h = a.naturalHeight;\n'
+		+ '  var c1 = document.createElement("canvas"); c1.width = w; c1.height = h;\n'
+		+ '  var c2 = document.createElement("canvas"); c2.width = w; c2.height = h;\n'
+		+ '  var diffCanvas = document.createElement("canvas"); diffCanvas.width = w; diffCanvas.height = h;\n'
+		+ '  var x1 = c1.getContext("2d"); var x2 = c2.getContext("2d"); var xd = diffCanvas.getContext("2d");\n'
+		+ '  x1.drawImage(a, 0, 0); x2.drawImage(b, 0, 0);\n'
+		+ '  var d1 = x1.getImageData(0, 0, w, h);\n'
+		+ '  var d2 = x2.getImageData(0, 0, w, h);\n'
+		+ '  var diff = xd.createImageData(w, h);\n'
+		+ '  var changed = 0;\n'
+		+ '  var limit = Math.round(${threshold} * 255);\n'
+		+ '  for (var i = 0; i < d1.data.length; i += 4) {\n'
+		+ '    var dr = Math.abs(d1.data[i] - d2.data[i]);\n'
+		+ '    var dg = Math.abs(d1.data[i+1] - d2.data[i+1]);\n'
+		+ '    var db = Math.abs(d1.data[i+2] - d2.data[i+2]);\n'
+		+ '    var da = Math.abs(d1.data[i+3] - d2.data[i+3]);\n'
+		+ '    var changedPx = Math.max(dr, dg, db, da) > limit;\n'
+		+ '    if (changedPx) {\n'
+		+ '      changed++;\n'
+		+ '      diff.data[i] = 255; diff.data[i+1] = 0; diff.data[i+2] = 0; diff.data[i+3] = 255;\n'
+		+ '    } else {\n'
+		+ '      var avg = Math.round((d2.data[i] + d2.data[i+1] + d2.data[i+2]) / 3);\n'
+		+ '      diff.data[i] = avg; diff.data[i+1] = avg; diff.data[i+2] = avg; diff.data[i+3] = 96;\n'
+		+ '    }\n'
+		+ '  }\n'
+		+ '  xd.putImageData(diff, 0, 0);\n'
+		+ '  return { ok:true, width:w, height:h, changedPixels:changed, totalPixels:w*h, ratio:(w*h?changed/(w*h):0), diffData:${include_diff_js} ? diffCanvas.toDataURL("image/png").split(",")[1] : "" };\n'
+		+ '})()'
+}
+
+fn run_screenshot_diff(mut sess CdpSession, baseline_b64 string, baseline_mime string, current_b64 string, threshold f64, output_path string) !ScreenshotDiffResult {
+	js := screenshot_diff_js(baseline_b64, baseline_mime, current_b64, threshold, output_path != '')
+	result := eval_scoped_expression(mut sess, js, true)!
+	ok := cdp_extract_obj_key(result, '"ok":') == 'true'
+	if !ok {
+		return ScreenshotDiffResult{ ok: false, error: cdp_extract_str(result, 'error') }
+	}
+	diff_data := cdp_extract_str(result, 'diffData')
+	if output_path != '' && diff_data != '' {
+		os.mkdir_all(os.dir(output_path)) or {}
+		os.write_file_array(output_path, base64.decode(diff_data))!
+	}
+	return ScreenshotDiffResult{
+		ok:             true
+		width:          cdp_extract_int(result, '"width":')
+		height:         cdp_extract_int(result, '"height":')
+		changed_pixels: cdp_extract_int(result, '"changedPixels":')
+		total_pixels:   cdp_extract_int(result, '"totalPixels":')
+		ratio:          cdp_extract_float(result, 'ratio')
+		diff_data:      diff_data
+	}
+}
+
 // ─── pdf ────────────────────────────────────────────────────
 fn cmd_pdf(mut sess CdpSession, params string) string {
 	path := cdp_extract_str(params, 'path')
@@ -527,6 +1059,22 @@ fn cmd_dblclick(mut sess CdpSession, params string) string {
 		return 'null'
 	}
 	return 'null'
+}
+
+fn cmd_download(mut sess CdpSession, params string) string {
+	sel := cdp_extract_str(params, 'selector')
+	path := cdp_extract_str(params, 'path')
+	if sel == '' { return 'ERROR:missing selector' }
+	if path == '' { return 'ERROR:missing path' }
+	download_dir := unique_download_dir()
+	mode := ensure_download_behavior(mut sess, download_dir) or { return 'ERROR:${err}' }
+	final_path := if mode == 'dom' {
+		fetch_download_via_dom(mut sess, sel, path) or { return 'ERROR:${err}' }
+	} else {
+		apply_click_for_download(mut sess, sel) or { return 'ERROR:${err}' }
+		wait_for_download(mut sess, download_dir, path, 60 * time.second) or { return 'ERROR:${err}' }
+	}
+	return '{"path":${json_str(final_path)}}'
 }
 
 fn mouse_click(mut sess CdpSession, x f64, y f64) ! {
@@ -799,6 +1347,24 @@ fn cmd_wait(mut sess CdpSession, params string) string {
 		ms := ms_str.int()
 		time.sleep(ms * time.millisecond)
 		return 'null'
+	}
+	// wait --download
+	download_path := cdp_extract_str(params, 'download')
+	timeout_ms := cdp_extract_int(params, '"timeout":')
+	if download_path != '' || timeout_ms > 0 {
+		download_dir := unique_download_dir()
+		timeout := if timeout_ms > 0 { timeout_ms } else { 30000 }
+		mode := ensure_download_behavior(mut sess, download_dir) or { return 'ERROR:${err}' }
+		final_path := if mode == 'dom' {
+			wait_for_dom_download(mut sess, download_path, timeout * time.millisecond) or {
+				return 'ERROR:${err}'
+			}
+		} else {
+			wait_for_download(mut sess, download_dir, download_path, timeout * time.millisecond) or {
+				return 'ERROR:${err}'
+			}
+		}
+		return json_str(final_path)
 	}
 	// wait --load
 	load := cdp_extract_str(params, 'load')
@@ -1617,17 +2183,75 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 	dtype := cdp_extract_str(params, 'type')
 	match dtype {
 		'snapshot' {
-			current := cmd_snapshot(mut sess, '{}')
+			current := cmd_snapshot(mut sess, '{}').trim('"')
 			baseline_path := cdp_extract_str(params, 'baseline')
 			if baseline_path != '' {
 				baseline := os.read_file(baseline_path) or { return 'ERROR:cannot read baseline: ${err}' }
-				diff := text_diff(baseline, current.trim('"'))
-				return json_str(diff)
+				diff := text_diff(baseline, current)
+				return '{"diff":${json_str(diff)},"current":${json_str(current)}}'
 			}
-			return current
+			return json_str(current)
 		}
-		'screenshot' { return cmd_not_impl('diff screenshot') }
-		'url'        { return cmd_not_impl('diff url') }
+		'screenshot' {
+			baseline_path := cdp_extract_str(params, 'baseline')
+			if baseline_path == '' {
+				return 'ERROR:missing baseline'
+			}
+			baseline_bytes := os.read_bytes(baseline_path) or { return 'ERROR:cannot read baseline: ${err}' }
+			selector := cdp_extract_str(params, 'selector')
+			full := cdp_extract_str(params, 'full') == 'true'
+			threshold_obj := cdp_extract_obj_key(params, '"threshold":')
+			threshold := if threshold_obj != '' { threshold_obj.f64() } else { 0.1 }
+			output_path := cdp_extract_str(params, 'output')
+			current_b64 := capture_screenshot_base64(mut sess, 'png', full, selector) or {
+				return 'ERROR:${err}'
+			}
+			result := run_screenshot_diff(mut sess, base64.encode(baseline_bytes), baseline_mime_type(baseline_path), current_b64, threshold, output_path) or {
+				return 'ERROR:${err}'
+			}
+			if !result.ok {
+				return 'ERROR:${result.error}'
+			}
+			return '{"width":${result.width},"height":${result.height},"changedPixels":${result.changed_pixels},"totalPixels":${result.total_pixels},"ratio":${result.ratio},"output":${json_str(output_path)}}'
+		}
+		'url' {
+			url1 := cdp_extract_str(params, 'url1')
+			url2 := cdp_extract_str(params, 'url2')
+			if url1 == '' || url2 == '' {
+				return 'ERROR:diff url requires url1 and url2'
+			}
+			wait_until := cdp_extract_str(params, 'waitUntil')
+			with_screenshot := cdp_extract_str(params, 'screenshot') == 'true'
+			full := cdp_extract_str(params, 'full') == 'true'
+
+			navigate_and_wait(mut sess, url1, wait_until) or { return 'ERROR:${err}' }
+			snapshot1 := cmd_snapshot(mut sess, '{}').trim('"')
+			mut screenshot1_b64 := ''
+			if with_screenshot {
+				screenshot1_b64 = capture_screenshot_base64(mut sess, 'png', full, '') or {
+					return 'ERROR:${err}'
+				}
+			}
+
+			navigate_and_wait(mut sess, url2, wait_until) or { return 'ERROR:${err}' }
+			snapshot2 := cmd_snapshot(mut sess, '{}').trim('"')
+			snapshot_diff := text_diff(snapshot1, snapshot2)
+			mut result := '{"url1":${json_str(url1)},"url2":${json_str(url2)},"snapshot":{"diff":${json_str(snapshot_diff)},"before":${json_str(snapshot1)},"after":${json_str(snapshot2)}}'
+			if with_screenshot {
+				screenshot2_b64 := capture_screenshot_base64(mut sess, 'png', full, '') or {
+					return 'ERROR:${err}'
+				}
+				screenshot_result := run_screenshot_diff(mut sess, screenshot1_b64, 'image/png', screenshot2_b64, 0.1, '') or {
+					return 'ERROR:${err}'
+				}
+				if !screenshot_result.ok {
+					return 'ERROR:${screenshot_result.error}'
+				}
+				result += ',"screenshot":{"width":${screenshot_result.width},"height":${screenshot_result.height},"changedPixels":${screenshot_result.changed_pixels},"totalPixels":${screenshot_result.total_pixels},"ratio":${screenshot_result.ratio}}'
+			}
+			result += '}'
+			return result
+		}
 		else         { return 'ERROR:unknown diff type: ${dtype}' }
 	}
 }
