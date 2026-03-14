@@ -10,6 +10,16 @@ node_modules/
 *.a
 *.obj
 *.lib
+*.d
+*.pdb
+*.exe~
+*.dylib~
+*.so~
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
 
 # Build outputs
 dist/

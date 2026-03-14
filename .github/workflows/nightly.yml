@@ -3,11 +3,12 @@ name: Nightly Build
 on:
   schedule:
     - cron: "0 0 * * *"
- 
-workflow_dispatch:
+  workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write
+  id-token: write
 
 env:
   PROJECT_NAME: v-browser
@@ -152,6 +153,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: nightly
+          force: true
 
       - name: Generate release body
         id: release_body

@@ -5,6 +5,16 @@ dist/
 *.dll
 *.so
 *.dylib
+*.bin
+*.o
+*.obj
+*.lib
+*.pdb
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
 
 # OS files
 .DS_Store
