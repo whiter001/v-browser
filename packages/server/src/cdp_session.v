@@ -4,6 +4,7 @@
 //   - 接收扩展推送的 CDP 事件并分发给订阅者
 module main
 
+import x.json2 as json
 import sync
 import time
 
@@ -512,11 +513,25 @@ fn cdp_extract_str(s string, key string) string {
 			continue
 		}
 		if rest[j] == `"` {
-			return rest[1..j]
+			return decode_json_string_literal(rest[..j + 1])
 		}
 		j++
 	}
 	return ''
+}
+
+fn decode_json_string_literal(raw string) string {
+	trimmed := raw.trim_space()
+	if trimmed.len == 0 {
+		return ''
+	}
+	wrapped := if trimmed.starts_with('"') { trimmed } else { '"${trimmed}"' }
+	return json.decode[string](wrapped) or {
+		if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len >= 2 {
+			return trimmed[1..trimmed.len - 1]
+		}
+		return trimmed
+	}
 }
 
 fn cdp_extract_obj_key(s string, key string) string {

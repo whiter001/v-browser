@@ -170,6 +170,53 @@ v-browser close
 
 ---
 
+## 剪贴板操作
+
+v-browser 没有直接的剪贴板命令，但可以通过 `eval` + `press` 组合实现复制粘贴功能。
+
+### 复制内容到剪贴板
+
+```bash
+# 将指定文本写入剪贴板
+v-browser eval "navigator.clipboard.writeText('要复制的内容')"
+
+# 从页面元素获取内容并复制
+v-browser eval "navigator.clipboard.writeText(document.querySelector('.content').innerText)"
+```
+
+### 从剪贴板粘贴
+
+```bash
+# 先聚焦目标输入框
+v-browser focus "textareaSelector"
+
+# 模拟 Ctrl+V / Cmd+V 粘贴
+v-browser press "Control+v"    # Linux/Windows
+v-browser press "Meta+v"       # macOS
+```
+
+### 跨页面复制粘贴示例
+
+```bash
+# 1. 在源页面获取内容并复制到剪贴板
+v-browser open "https://example.com/source"
+v-browser eval "navigator.clipboard.writeText(document.querySelector('.content').innerText)"
+
+# 2. 切换到目标页面并粘贴
+v-browser open "https://example.com/editor"
+v-browser focus "textarea"
+v-browser press "Meta+v"
+```
+
+### 相关命令
+
+- `v-browser eval <js>` - 执行 JavaScript，可用于访问 `navigator.clipboard`
+- `v-browser press <key>` - 模拟按键组合
+- `v-browser keyboard type <text>` - 模拟真实按键输入
+- `v-browser tab` - 标签页操作（切换标签页）
+
+---
+
 ## 获取信息
 
 ```bash

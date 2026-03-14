@@ -5,19 +5,19 @@ import time
 fn noop_send(_ string) ! {}
 
 fn test_parse_cli_to_ipc_connect_routes_to_connect() {
-	method, params := parse_cli_to_ipc('connect', [])
+	method, params := parse_cli_to_ipc('connect', []string{}, false)
 	assert method == 'connect'
 	assert params == '{}'
 }
 
 fn test_parse_cli_to_ipc_frame_routes_selector() {
-	method, params := parse_cli_to_ipc('frame', ['#child'])
+	method, params := parse_cli_to_ipc('frame', ['#child'], false)
 	assert method == 'frame'
 	assert params == '{"selector":"#child"}'
 }
 
 fn test_parse_cli_to_ipc_set_device_routes_value() {
-	method, params := parse_cli_to_ipc('set', ['device', 'iPhone', '14'])
+	method, params := parse_cli_to_ipc('set', ['device', 'iPhone', '14'], false)
 	assert method == 'set'
 	assert params == '{"property":"device","value":"iPhone 14"}'
 }
@@ -89,30 +89,30 @@ fn test_screenshot_diff_js_contains_expected_fields() {
 }
 
 fn test_parse_cli_to_ipc_wait_variants() {
-	method_ms, params_ms := parse_cli_to_ipc('wait', ['1500'])
+	method_ms, params_ms := parse_cli_to_ipc('wait', ['1500'], false)
 	assert method_ms == 'wait'
 	assert params_ms == '{"ms":1500}'
 
-	method_sel, params_sel := parse_cli_to_ipc('wait', ['#app'])
+	method_sel, params_sel := parse_cli_to_ipc('wait', ['#app'], false)
 	assert method_sel == 'wait'
 	assert params_sel == '{"selector":"#app"}'
 }
 
 fn test_parse_cli_to_ipc_wait_download_variant() {
-	method, params := parse_cli_to_ipc('wait', ['--download', './report.pdf', '--timeout', '45000'])
+	method, params := parse_cli_to_ipc('wait', ['--download', './report.pdf', '--timeout', '45000'], false)
 	assert method == 'wait'
 	assert params == '{"download":"./report.pdf","timeout":45000}'
 }
 
 fn test_parse_cli_to_ipc_download_routes_selector_and_path() {
-	method, params := parse_cli_to_ipc('download', ['#export', './report.csv'])
+	method, params := parse_cli_to_ipc('download', ['#export', './report.csv'], false)
 	assert method == 'download'
 	assert params == '{"selector":"#export","path":"./report.csv"}'
 }
 
 fn test_parse_cli_to_ipc_diff_screenshot_variants() {
 	method, params := parse_cli_to_ipc('diff', ['screenshot', '--baseline', 'before.png', '-o',
-		'diff.png', '-t', '0.2', '--selector', '#hero', '--full'])
+		'diff.png', '-t', '0.2', '--selector', '#hero', '--full'], false)
 	assert method == 'diff'
 	assert params.contains('"type":"screenshot"')
 	assert params.contains('"baseline":"before.png"')
@@ -124,7 +124,7 @@ fn test_parse_cli_to_ipc_diff_screenshot_variants() {
 
 fn test_parse_cli_to_ipc_diff_url_variants() {
 	method, params := parse_cli_to_ipc('diff', ['url', 'https://a.test', 'https://b.test',
-		'--screenshot', '--full', '--wait-until', 'networkidle'])
+		'--screenshot', '--full', '--wait-until', 'networkidle'], false)
 	assert method == 'diff'
 	assert params.contains('"type":"url"')
 	assert params.contains('"url1":"https://a.test"')
@@ -135,7 +135,7 @@ fn test_parse_cli_to_ipc_diff_url_variants() {
 }
 
 fn test_parse_cli_to_ipc_find_builds_semantic_request() {
-	method, params := parse_cli_to_ipc('find', ['--role', 'button', '--name', 'Save', '--click'])
+	method, params := parse_cli_to_ipc('find', ['--role', 'button', '--name', 'Save', '--click'], false)
 	assert method == 'find'
 	assert params.contains('"locator":"role"')
 	assert params.contains('"query":"button"')
@@ -144,7 +144,7 @@ fn test_parse_cli_to_ipc_find_builds_semantic_request() {
 }
 
 fn test_parse_cli_to_ipc_find_supports_positional_nth() {
-	method, params := parse_cli_to_ipc('find', ['nth', '2', '.item', 'text'])
+	method, params := parse_cli_to_ipc('find', ['nth', '2', '.item', 'text'], false)
 	assert method == 'find'
 	assert params.contains('"locator":"nth"')
 	assert params.contains('"query":".item"')
@@ -153,7 +153,7 @@ fn test_parse_cli_to_ipc_find_supports_positional_nth() {
 }
 
 fn test_parse_cli_to_ipc_find_supports_positional_alt_fill() {
-	method, params := parse_cli_to_ipc('find', ['alt', 'Hero', 'click'])
+	method, params := parse_cli_to_ipc('find', ['alt', 'Hero', 'click'], false)
 	assert method == 'find'
 	assert params.contains('"locator":"alt"')
 	assert params.contains('"query":"Hero"')
@@ -161,11 +161,11 @@ fn test_parse_cli_to_ipc_find_supports_positional_alt_fill() {
 }
 
 fn test_parse_cli_to_ipc_tab_switch_and_window_new() {
-	method_tab, params_tab := parse_cli_to_ipc('tab', ['switch', '12'])
+	method_tab, params_tab := parse_cli_to_ipc('tab', ['switch', '12'], false)
 	assert method_tab == 'tab'
 	assert params_tab == '{"action":"switch","tabId":12,"windowId":0}'
 
-	method_window, params_window := parse_cli_to_ipc('window', ['new', 'https://example.com'])
+	method_window, params_window := parse_cli_to_ipc('window', ['new', 'https://example.com'], false)
 	assert method_window == 'window'
 	assert params_window == '{"action":"new","url":"https://example.com"}'
 }

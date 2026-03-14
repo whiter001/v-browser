@@ -126,7 +126,7 @@ fn evaluate_bool_js(mut sess CdpSession, js string) !bool {
 
 fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) !string {
 	encoded_expr := base64.encode_str(expr)
-	scoped_expr := build_scoped_runtime_js(&sess, 'return window.eval(window.atob(${js_str(encoded_expr)}));')
+	scoped_expr := build_scoped_runtime_js(&sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
 	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":${await_promise}}'
 	resp := sess.send_command('Runtime.evaluate', p)!
 	result := cdp_extract_obj_key(resp.result, '"result":')
@@ -1659,7 +1659,7 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 			'var all=Array.from(doc.querySelectorAll("*")); elements=all.filter(el=>roleOf(el)===${query_js}&&matchesName(el, ${name_js}, ${exact_js}));'
 		}
 		'text' {
-			'var all=Array.from(doc.querySelectorAll("*")); elements=all.filter(el=>matchesText(el.innerText||el.textContent||"", ${query_js}, ${exact_js}));'
+			'var all=Array.from(doc.querySelectorAll("*")); elements=all.filter(el=>matchesText(el.innerText||el.textContent||"", ${query_js}, ${exact_js})).map(el=>closestActionable(el)).filter(Boolean).filter((el, idx, arr)=>arr.indexOf(el)===idx);'
 		}
 		'label' {
 			'var labels=Array.from(doc.querySelectorAll("label")); elements=labels.map(label=>{ if(!matchesText(label.innerText||label.textContent||"", ${query_js}, ${exact_js})) return null; return label.control || label.querySelector("input, textarea, select, button"); }).filter(Boolean);'
@@ -1690,6 +1690,27 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 	}
 	return build_document_scope_js(sess, '
 		function normalizeText(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
+		function isActionable(el) {
+			if (!el) return false;
+			var tag = (el.tagName || "").toLowerCase();
+			if (["a", "button", "summary", "option"].includes(tag)) return true;
+			if (tag === "input") return (el.getAttribute("type") || "text").toLowerCase() !== "hidden";
+			if (["textarea", "select"].includes(tag)) return true;
+			var role = (el.getAttribute("role") || "").toLowerCase();
+			if (["button", "link", "checkbox", "radio", "switch", "tab", "menuitem", "option"].includes(role)) return true;
+			if (typeof el.onclick === "function") return true;
+			if (el.hasAttribute("href") || el.hasAttribute("data-testid") || el.hasAttribute("aria-controls") || el.hasAttribute("aria-haspopup")) return true;
+			if (typeof el.tabIndex === "number" && el.tabIndex >= 0) return true;
+			return false;
+		}
+		function closestActionable(el) {
+			var current = el;
+			while (current && current !== doc.body) {
+				if (isActionable(current)) return current;
+				current = current.parentElement;
+			}
+			return el;
+		}
 		function matchesText(actual, expected, exactMatch) {
 			var left = normalizeText(actual);
 			var right = normalizeText(expected);

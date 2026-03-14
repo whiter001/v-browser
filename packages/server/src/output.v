@@ -27,103 +27,15 @@ fn decode_json_string(s string) string {
 	trimmed := s.trim_space()
 	// 如果是 JSON 包装格式，提取 result 字段
 	if trimmed.starts_with('{"ok":true,"result":') {
-		// 提取 result 部分
-		start := trimmed.index('"result":') or { return s }
-		rest := trimmed[start + 9..] // 跳过 "result": 这9个字符
-		// 找到值的开始位置
-		if rest.starts_with('"') {
-			// 这是一个字符串，需要解码
-			mut result := ''
-			for i := 1; i < rest.len; i++ {
-				c := rest[i]
-				if c == `\\` && i + 1 < rest.len {
-					// 转义字符
-					next := rest[i + 1]
-					match next {
-						`n` { result += '\n' }
-						`r` { result += '\r' }
-						`t` { result += '\t' }
-						`"` { result += '"' }
-						`\\` { result += '\\' }
-						`/` { result += '/' }
-						`b` { result += '\b' }
-						`f` { result += '\f' }
-						`u` {
-							// Unicode 转义序列 \uXXXX
-							if i + 5 < rest.len {
-								hex_str := rest[i + 2..i + 6]
-								if hex_str.len == 4 {
-									mut code := u16(0)
-									for j := 0; j < 4; j++ {
-										code = code << 4 | u16(hex_char_to_int(hex_str[j]))
-									}
-									result += rune(code).str()
-									i += 4
-									continue
-								}
-							}
-							// 无效的 Unicode 转义，保留原样
-							result += '\\u'
-						}
-						else {
-							// 未知转义字符，保留反斜杠和字符
-							result += '\\'
-							result += rest[i + 1].ascii_str()
-						}
-					}
-					i++
-				} else if c == `"` {
-					return result
-				} else {
-					result += rest[i].ascii_str()
-				}
-			}
+		result := cdp_extract_obj_key(trimmed, '"result":')
+		if result.starts_with('"') {
+			return decode_json_string_literal(result)
 		}
+		return result
 	}
 	// 尝试直接解析为 JSON 字符串
 	if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len > 1 {
-		mut result := ''
-		for i := 1; i < trimmed.len - 1; i++ {
-			if trimmed[i] == `\\` && i + 1 < trimmed.len - 1 {
-				next := trimmed[i + 1]
-				match next {
-					`n` { result += '\n' }
-					`r` { result += '\r' }
-					`t` { result += '\t' }
-					`"` { result += '"' }
-					`\\` { result += '\\' }
-					`/` { result += '/' }
-					`b` { result += '\b' }
-					`f` { result += '\f' }
-					`u` {
-						// Unicode 转义序列 \uXXXX
-						if i + 5 < trimmed.len - 1 {
-							hex_str := trimmed[i + 2..i + 6]
-							if hex_str.len == 4 {
-								mut code := u16(0)
-								for j := 0; j < 4; j++ {
-									code = code << 4 | u16(hex_char_to_int(hex_str[j]))
-								}
-								result += rune(code).str()
-								i += 4
-								continue
-							}
-						}
-						// 无效的 Unicode 转义，保留原样
-						result += '\\u'
-					}
-					else {
-						// 未知转义字符，保留反斜杠和字符
-						result += '\\'
-						result += trimmed[i + 1].ascii_str()
-					}
-				}
-				i++
-			} else {
-				result += trimmed[i].ascii_str()
-			}
-		}
-		return result
+		return decode_json_string_literal(trimmed)
 	}
 	return s
 }
