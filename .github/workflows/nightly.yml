@@ -73,7 +73,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: v-browser-extension
-          path: v-browser-extension.zip
+          path: packages/v-browser-extension.zip
           if-no-files-found: error
 
   build:
