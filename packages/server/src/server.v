@@ -93,6 +93,10 @@ fn server_task_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.task')
 }
 
+fn server_pid_path() string {
+	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.pid')
+}
+
 // ExtensionConn 代表一个已连接的扩展 + 对应 CDP session
 @[heap]
 struct ExtensionConn {
@@ -118,12 +122,14 @@ mut:
 	ext_conn ?&ExtensionConn
 	ext_mu   sync.Mutex
 	token    string
+	running  bool
 }
 
 fn new_server() !&VBrowserServer {
 	token := load_or_create_token()!
 	return &VBrowserServer{
-		token: token
+		token:   token
+		running: true
 	}
 }
 
@@ -131,12 +137,15 @@ fn new_server() !&VBrowserServer {
 fn (mut s VBrowserServer) start() ! {
 	dir := os.dir(ipc_sock_path())
 	os.mkdir_all(dir) or {}
+	os.write_file(server_pid_path(), '${os.getpid()}') or {}
 
 	// IPC server 在后台 goroutine 运行
 	spawn s.run_ipc_server()
 
 	// WebSocket relay 在主 goroutine 运行
 	s.run_ws_server()!
+	os.rm(ipc_sock_path()) or {}
+	os.rm(server_pid_path()) or {}
 }
 
 fn (mut s VBrowserServer) run_ws_server() ! {
@@ -222,10 +231,18 @@ fn (mut s VBrowserServer) run_ipc_server() {
 	os.mkdir_all(os.dir(ipc_sock_path())) or {}
 	os.write_file(ipc_sock_path(), '${ipc}') or {}
 
-	for {
-		mut conn := listener.accept() or { continue }
+	for s.running {
+		mut conn := listener.accept() or {
+			if s.running {
+				continue
+			}
+			break
+		}
 		spawn s.handle_ipc_client(mut conn)
 	}
+	// 清理 socket 文件
+	os.rm(ipc_sock_path()) or {}
+	srv_log('IPC server stopped.')
 }
 
 fn (mut s VBrowserServer) handle_ipc_client(mut conn net.TcpConn) {
@@ -283,6 +300,15 @@ fn (mut s VBrowserServer) dispatch(req IpcRequest) IpcResponse {
 			result: attached
 		}
 	}
+	// shutdown 命令：让 server 优雅退出
+	if req.method == 'shutdown' {
+		s.running = false
+		spawn shutdown_server_process()
+		return IpcResponse{
+			id:     req.id
+			result: '{"ok":true}'
+		}
+	}
 
 	// 获取 session
 	s.ext_mu.@lock()
@@ -308,6 +334,13 @@ fn (mut s VBrowserServer) dispatch(req IpcRequest) IpcResponse {
 		id:     req.id
 		result: result
 	}
+}
+
+fn shutdown_server_process() {
+	time.sleep(150 * time.millisecond)
+	os.rm(ipc_sock_path()) or {}
+	os.rm(server_pid_path()) or {}
+	exit(0)
 }
 
 // attach_session 在扩展连接后发 attachToTab（被 `v-browser connect` 命令触发）

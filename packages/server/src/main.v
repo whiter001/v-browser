@@ -47,6 +47,34 @@ fn main() {
 
 	// 特殊：server 子命令本地处理，不需要 IPC
 	if cmd == 'server' || cmd == 'daemon' {
+		if rest.len > 0 {
+			match rest[0] {
+				'stop' {
+					handle_server_stop(json_output, false, true) or {
+						print_error(err.msg(), json_output)
+						exit(1)
+					}
+					return
+				}
+				'restart' {
+					handle_server_stop(json_output, true, false) or {
+						print_error(err.msg(), json_output)
+						exit(1)
+					}
+					start_server_daemon() or {
+						print_error('failed to restart server: ${err}', json_output)
+						exit(1)
+					}
+					wait_for_server_ready() or {
+						print_error('failed to restart server: ${err}', json_output)
+						exit(1)
+					}
+					eprintln('[v-browser] Server restarted.')
+					return
+				}
+				else {}
+			}
+		}
 		run_server()
 		return
 	}
@@ -113,6 +141,10 @@ fn ensure_server_running() ! {
 		return
 	}
 	start_server_daemon()!
+	wait_for_server_ready()!
+}
+
+fn wait_for_server_ready() ! {
 	deadline := time.now().add(8 * time.second)
 	for time.now() < deadline {
 		if can_reach_ipc_server() {
@@ -169,6 +201,152 @@ fn background_server_diagnostics_hint() string {
 		return 'pueue log ${task_id}'
 	}
 	return server_log_path()
+}
+
+// ─── 停止服务 ────────────────────────────────────────────────
+fn handle_server_stop(json_output bool, allow_missing bool, emit_output bool) !bool {
+	pid := read_server_pid()
+	mut found_running_server := pid > 0 && is_process_running(pid)
+	mut stop_mode := ''
+
+	if can_reach_ipc_server() {
+		found_running_server = true
+		shutdown_result := send_ipc_without_start('shutdown', '{}') or { '' }
+		if shutdown_result != '' {
+			if wait_for_server_shutdown(pid, 5 * time.second) {
+				cleanup_server_runtime_state()
+				if emit_output {
+					report_server_stop('server shutdown via IPC', json_output)
+				}
+				return true
+			}
+			stop_mode = 'IPC shutdown timed out'
+		}
+	}
+
+	if pid > 0 && is_process_running(pid) {
+		found_running_server = true
+		if terminate_process(pid) && wait_for_server_shutdown(pid, 5 * time.second) {
+			cleanup_server_runtime_state()
+			if emit_output {
+				report_server_stop('server killed', json_output)
+			}
+			return true
+		}
+		stop_mode = 'pid termination failed'
+	}
+
+	if kill_server_by_ports() && wait_for_server_shutdown(0, 5 * time.second) {
+		cleanup_server_runtime_state()
+		if emit_output {
+			report_server_stop('server killed', json_output)
+		}
+		return true
+	}
+
+	if !found_running_server {
+		cleanup_server_runtime_state()
+		if allow_missing {
+			return false
+		}
+		return error('no running server found')
+	}
+
+	err_msg := if stop_mode != '' { 'failed to stop v-browser server: ${stop_mode}' } else { 'failed to stop v-browser server' }
+	return error(err_msg)
+}
+
+fn report_server_stop(message string, json_output bool) {
+	if json_output {
+		println('{"ok":true,"result":${json_str(message)}}')
+	} else {
+		eprintln('[v-browser] ${message}.')
+	}
+}
+
+fn cleanup_server_runtime_state() {
+	for path in [ipc_sock_path(), server_pid_path()] {
+		os.rm(path) or {}
+	}
+	task_id := (os.read_file(server_task_path()) or { '' }).trim_space()
+	if task_id != '' {
+		os.execute('pueue remove ${task_id}')
+	}
+	os.write_file(server_task_path(), '') or {}
+}
+
+fn read_server_pid() int {
+	pid_str := os.read_file(server_pid_path()) or { return 0 }
+	return pid_str.trim_space().int()
+}
+
+fn is_process_running(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	$if windows {
+		result := os.execute('tasklist /FI "PID eq ${pid}" /NH')
+		return result.exit_code == 0 && result.output.contains('${pid}')
+	} $else {
+		result := os.execute('kill -0 ${pid} 2>/dev/null')
+		return result.exit_code == 0
+	}
+}
+
+fn terminate_process(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	$if windows {
+		result := os.execute('taskkill /PID ${pid} /T /F')
+		return result.exit_code == 0
+	} $else {
+		result := os.execute('kill -TERM ${pid} 2>/dev/null')
+		return result.exit_code == 0
+	}
+}
+
+fn kill_server_by_ports() bool {
+	$if windows {
+		return false
+	} $else {
+		result := os.execute('lsof -ti:${configured_relay_port()} -ti:${configured_ipc_port()} 2>/dev/null | sort -u')
+		if result.exit_code != 0 || result.output.trim_space() == '' {
+			return false
+		}
+		mut killed := false
+		for line in result.output.split_into_lines() {
+			pid := line.trim_space().int()
+			if terminate_process(pid) {
+				killed = true
+			}
+		}
+		return killed
+	}
+}
+
+fn wait_for_server_shutdown(pid int, timeout time.Duration) bool {
+	deadline := time.now().add(timeout)
+	for time.now() < deadline {
+		if server_is_stopped(pid) {
+			return true
+		}
+		time.sleep(100 * time.millisecond)
+	}
+	return server_is_stopped(pid)
+}
+
+fn server_is_stopped(pid int) bool {
+	if pid > 0 && is_process_running(pid) {
+		return false
+	}
+	return !is_port_listening(configured_relay_port()) && !is_port_listening(configured_ipc_port())
+}
+
+fn is_port_listening(port int) bool {
+	mut conn := net.dial_tcp('127.0.0.1:${port}') or { return false }
+	conn.close() or {}
+	return true
 }
 
 // ─── 启动服务 ────────────────────────────────────────────────
@@ -647,6 +825,8 @@ fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string)
 			}
 			mut query := flags[loc_key] or { '' }
 			mut index := flags['index'] or { '' }
+			debug_mode := if flags.keys().contains('debug') { 'true' } else { 'false' }
+			list_mode := if flags.keys().contains('list') { 'true' } else { 'false' }
 			mut action_pos := 1
 			if query == '' && positionals.len > 1 {
 				match loc_key {
@@ -691,7 +871,7 @@ fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string)
 			}
 			exact := if flags.keys().contains('exact') { 'true' } else { 'false' }
 			name_filter := flags['name'] or { '' }
-			return 'find', '{"locator":${json_str(loc_key)},"query":${json_str(query)},"action":${json_str(action)},"value":${json_str(value)},"exact":${json_str(exact)},"name":${json_str(name_filter)},"index":${json_str(index)}}'
+			return 'find', '{"locator":${json_str(loc_key)},"query":${json_str(query)},"action":${json_str(action)},"value":${json_str(value)},"exact":${json_str(exact)},"name":${json_str(name_filter)},"index":${json_str(index)},"debug":${json_str(debug_mode)},"list":${json_str(list_mode)}}'
 		}
 		// ── eval ──
 		'eval', 'js', 'execute', 'run' {
@@ -1020,7 +1200,19 @@ fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string)
 
 // ─── IPC 客户端 ──────────────────────────────────────────────
 fn send_ipc(method string, params string) !string {
-	ensure_server_running()!
+	return send_ipc_internal(method, params, true)
+}
+
+fn send_ipc_without_start(method string, params string) !string {
+	return send_ipc_internal(method, params, false)
+}
+
+fn send_ipc_internal(method string, params string, auto_start bool) !string {
+	if auto_start {
+		ensure_server_running()!
+	} else if !can_reach_ipc_server() {
+		return error('v-browser server is not running. Start it with: v-browser server')
+	}
 	// 读取 server port
 	port_str := os.read_file(ipc_sock_path()) or {
 		return error('v-browser server is not running. Start it with: v-browser server')
@@ -1077,7 +1269,9 @@ fn print_usage() {
 	println('v-browser — Chrome 自动化 CLI (CDP 协议)
 
 用法:
-  v-browser server              启动中继 WebSocket 服务 (ws://127.0.0.1:47978)
+  v-browser server              启动中继 WebSocket 服务
+  v-browser server stop         停止中继服务
+  v-browser server restart      重启中继服务
   v-browser status              检查服务状态
   v-browser open <url>          导航到 URL
   v-browser close               关闭标签页

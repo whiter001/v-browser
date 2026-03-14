@@ -1,5 +1,7 @@
 module main
 
+import os
+import net
 import time
 
 fn noop_send(_ string) ! {}
@@ -160,6 +162,24 @@ fn test_parse_cli_to_ipc_find_supports_positional_alt_fill() {
 	assert params.contains('"action":"click"')
 }
 
+fn test_parse_cli_to_ipc_find_supports_text_debug_mode() {
+	method, params := parse_cli_to_ipc('find', ['text', 'Nightly Build', '--debug'], false)
+	assert method == 'find'
+	assert params.contains('"locator":"text"')
+	assert params.contains('"query":"Nightly Build"')
+	assert params.contains('"debug":"true"')
+	assert params.contains('"list":"false"')
+}
+
+fn test_parse_cli_to_ipc_find_supports_text_list_and_index() {
+	method, params := parse_cli_to_ipc('find', ['text', 'Nightly Build', '--list', '--index', '2'], false)
+	assert method == 'find'
+	assert params.contains('"locator":"text"')
+	assert params.contains('"query":"Nightly Build"')
+	assert params.contains('"list":"true"')
+	assert params.contains('"index":"2"')
+}
+
 fn test_parse_cli_to_ipc_tab_switch_and_window_new() {
 	method_tab, params_tab := parse_cli_to_ipc('tab', ['switch', '12'], false)
 	assert method_tab == 'tab'
@@ -315,6 +335,194 @@ fn test_extract_query_param_and_validate_extension_token() {
 	assert validate_extension_token('/?token=match', 'match')
 	assert !validate_extension_token('/?token=mismatch', 'match')
 	assert !validate_extension_token('/connect', 'match')
+}
+
+fn test_server_stop_integration_stops_running_server() {
+	$if windows {
+		assert true
+		return
+	}
+	bin_path := build_integration_cli_binary() or { panic(err) }
+	test_home := new_integration_test_home('stop')
+	relay_port, ipc_port := integration_ports(1)
+	defer {
+		cleanup_integration_server(bin_path, test_home, relay_port, ipc_port)
+		os.rmdir_all(test_home) or {}
+	}
+
+	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or { panic(err) }
+	assert orig_pid > 0
+	assert is_integration_process_running(orig_pid)
+
+	stop_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} server stop')
+	assert stop_result.exit_code == 0
+	assert stop_result.output.contains('server shutdown via IPC') || stop_result.output.contains('server killed')
+	assert wait_for_integration_server_stop(orig_pid, relay_port, ipc_port, 5 * time.second)
+	assert !is_integration_process_running(orig_pid)
+	assert !os.exists(os.join_path(test_home, '.v-browser', 'server.pid'))
+}
+
+fn test_server_restart_integration_replaces_running_server() {
+	$if windows {
+		assert true
+		return
+	}
+	bin_path := build_integration_cli_binary() or { panic(err) }
+	test_home := new_integration_test_home('restart')
+	relay_port, ipc_port := integration_ports(2)
+	defer {
+		cleanup_integration_server(bin_path, test_home, relay_port, ipc_port)
+		os.rmdir_all(test_home) or {}
+	}
+
+	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or { panic(err) }
+	assert orig_pid > 0
+
+	restart_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} server restart')
+	assert restart_result.exit_code == 0
+	assert restart_result.output.contains('Server restarted.')
+
+	new_pid := wait_for_server_pid_file(test_home, orig_pid, 8 * time.second)
+	assert new_pid > 0
+	assert new_pid != orig_pid
+	assert !is_integration_process_running(orig_pid)
+	assert is_integration_process_running(new_pid)
+	assert wait_for_integration_port_state(relay_port, true, 5 * time.second)
+	assert wait_for_integration_port_state(ipc_port, true, 5 * time.second)
+	assert can_reach_integration_ipc(ipc_port)
+	cleanup_integration_server(bin_path, test_home, relay_port, ipc_port)
+	assert wait_for_integration_server_stop(new_pid, relay_port, ipc_port, 5 * time.second)
+}
+
+fn test_server_stop_integration_returns_error_when_server_missing() {
+	$if windows {
+		assert true
+		return
+	}
+	bin_path := build_integration_cli_binary() or { panic(err) }
+	test_home := new_integration_test_home('stop-missing')
+	relay_port, ipc_port := integration_ports(3)
+	defer { os.rmdir_all(test_home) or {} }
+
+	stop_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} server stop')
+	assert stop_result.exit_code != 0
+	assert stop_result.output.contains('no running server found')
+}
+
+fn build_integration_cli_binary() !string {
+	bin_path := os.join_path(os.temp_dir(), 'v-browser-integration-${os.getpid()}')
+	if os.exists(bin_path) {
+		return bin_path
+	}
+	src_dir := os.real_path(os.dir(@FILE))
+	result := os.execute('v -o ${shell_quote(bin_path)} ${shell_quote(src_dir)}')
+	if result.exit_code != 0 {
+		return error('failed to build integration CLI binary: ${result.output}')
+	}
+	return bin_path
+}
+
+fn new_integration_test_home(name string) string {
+	stamp := time.now().unix()
+	home := os.join_path(os.temp_dir(), 'v-browser-it-${name}-${os.getpid()}-${stamp}')
+	os.mkdir_all(home) or { panic(err) }
+	return home
+}
+
+fn integration_ports(seed int) (int, int) {
+	base := 53000 + ((os.getpid() % 1000) * 6) + (seed * 2)
+	return base, base + 1
+}
+
+fn integration_env_prefix(home string, relay_port int, ipc_port int) string {
+	return 'env V_BROWSER_HOME=${shell_quote(home)} V_BROWSER_RELAY_PORT=${shell_quote('${relay_port}')} V_BROWSER_IPC_PORT=${shell_quote('${ipc_port}')}'
+}
+
+fn start_integration_server(bin_path string, home string, relay_port int, ipc_port int) !int {
+	log_path := os.join_path(home, 'server.log')
+	result := os.execute('${integration_env_prefix(home, relay_port, ipc_port)} nohup ${shell_quote(bin_path)} server > ${shell_quote(log_path)} 2>&1 & echo $!')
+	if result.exit_code != 0 {
+		return error('failed to start integration server: ${result.output}')
+	}
+	pid := wait_for_server_pid_file(home, 0, 8 * time.second)
+	if pid <= 0 {
+		return error('integration server did not write server.pid')
+	}
+	if !wait_for_integration_port_state(relay_port, true, 5 * time.second) {
+		return error('integration relay port did not start listening')
+	}
+	if !wait_for_integration_port_state(ipc_port, true, 5 * time.second) {
+		return error('integration IPC port did not start listening')
+	}
+	return pid
+}
+
+fn wait_for_server_pid_file(home string, previous_pid int, timeout time.Duration) int {
+	pid_path := os.join_path(home, '.v-browser', 'server.pid')
+	deadline := time.now().add(timeout)
+	for time.now() < deadline {
+		pid_str := os.read_file(pid_path) or {
+			time.sleep(100 * time.millisecond)
+			continue
+		}
+		pid := pid_str.trim_space().int()
+		if pid > 0 && pid != previous_pid {
+			return pid
+		}
+		time.sleep(100 * time.millisecond)
+	}
+	return 0
+}
+
+fn wait_for_integration_port_state(port int, should_listen bool, timeout time.Duration) bool {
+	deadline := time.now().add(timeout)
+	for time.now() < deadline {
+		listening := can_reach_integration_ipc(port)
+		if listening == should_listen {
+			return true
+		}
+		time.sleep(100 * time.millisecond)
+	}
+	return can_reach_integration_ipc(port) == should_listen
+}
+
+fn wait_for_integration_server_stop(pid int, relay_port int, ipc_port int, timeout time.Duration) bool {
+	deadline := time.now().add(timeout)
+	for time.now() < deadline {
+		if !is_integration_process_running(pid) && !can_reach_integration_ipc(relay_port)
+			&& !can_reach_integration_ipc(ipc_port) {
+			return true
+		}
+		time.sleep(100 * time.millisecond)
+	}
+	return !is_integration_process_running(pid) && !can_reach_integration_ipc(relay_port)
+		&& !can_reach_integration_ipc(ipc_port)
+}
+
+fn can_reach_integration_ipc(port int) bool {
+	mut conn := net.dial_tcp('127.0.0.1:${port}') or { return false }
+	conn.close() or {}
+	return true
+}
+
+fn is_integration_process_running(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	result := os.execute('kill -0 ${pid} 2>/dev/null')
+	return result.exit_code == 0
+}
+
+fn cleanup_integration_server(bin_path string, home string, relay_port int, ipc_port int) {
+	stop_result := os.execute('${integration_env_prefix(home, relay_port, ipc_port)} ${shell_quote(bin_path)} server stop')
+	if stop_result.exit_code == 0 {
+		return
+	}
+	pid_path := os.join_path(home, '.v-browser', 'server.pid')
+	pid := (os.read_file(pid_path) or { '' }).trim_space().int()
+	if pid > 0 {
+		os.execute('kill -TERM ${pid} 2>/dev/null')
+	}
 }
 
 fn test_build_document_scope_js_wraps_frame_context() {

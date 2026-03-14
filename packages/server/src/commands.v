@@ -1637,7 +1637,10 @@ fn cmd_find(mut sess CdpSession, params string) string {
 	value := cdp_extract_str(params, 'value')
 	exact := cdp_extract_str(params, 'exact') == 'true'
 	name_filter := cdp_extract_str(params, 'name')
-	index := cdp_extract_str(params, 'index').int()
+	index_str := cdp_extract_str(params, 'index')
+	index := if index_str != '' { index_str.int() } else { -1 }
+	debug_mode := cdp_extract_str(params, 'debug') == 'true'
+	list_mode := cdp_extract_str(params, 'list') == 'true'
 
 	if locator == '' {
 		return 'ERROR:missing locator'
@@ -1645,21 +1648,170 @@ fn cmd_find(mut sess CdpSession, params string) string {
 	if query == '' && locator !in ['first', 'last'] {
 		return 'ERROR:missing semantic query'
 	}
+	if debug_mode && list_mode {
+		return 'ERROR:--debug and --list cannot be used together'
+	}
+	if debug_mode || list_mode {
+		if locator != 'text' {
+			return 'ERROR:--debug and --list currently support only find text'
+		}
+		mode := if debug_mode { 'debug' } else { 'list' }
+		limit := if debug_mode { 5 } else { 0 }
+		return semantic_text_candidates_report(mut sess, query, exact, index, limit, mode)
+	}
 	js := build_semantic_locator_js(&sess, locator, query, exact, name_filter, index)
 	return exec_semantic_action(mut sess, js, locator, action, value)
+}
+
+fn semantic_text_candidates_report(mut sess CdpSession, query string, exact bool, selected_index int, limit int, mode string) string {
+	js := build_semantic_text_report_js(&sess, query, exact, selected_index, limit, mode)
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
+		return 'ERROR:${err}'
+	}
+	result := cdp_extract_obj_key(resp.result, '"result":')
+	value := cdp_extract_value_from_result(result)
+	if value == 'null' || value == 'undefined' {
+		return '未找到候选'
+	}
+	return value
+}
+
+fn build_semantic_text_report_js(sess &CdpSession, query string, exact bool, selected_index int, limit int, mode string) string {
+	query_js := js_str(query)
+	selected_index_js := '${selected_index}'
+	limit_js := '${limit}'
+	mode_js := js_str(mode)
+	exact_js := if exact { 'true' } else { 'false' }
+	return build_document_scope_js(sess, '
+		function normalizeText(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
+		function matchesText(actual, expected, exactMatch) {
+			var left = normalizeText(actual);
+			var right = normalizeText(expected);
+			if (!right) return false;
+			return exactMatch ? left === right : left.toLowerCase().includes(right.toLowerCase());
+		}
+		function isActionable(el) {
+			if (!el) return false;
+			var tag = (el.tagName || "").toLowerCase();
+			if (["a", "button", "summary", "option"].includes(tag)) return true;
+			if (tag === "input") return (el.getAttribute("type") || "text").toLowerCase() !== "hidden";
+			if (["textarea", "select"].includes(tag)) return true;
+			var role = (el.getAttribute("role") || "").toLowerCase();
+			if (["button", "link", "checkbox", "radio", "switch", "tab", "menuitem", "option"].includes(role)) return true;
+			if (typeof el.onclick === "function") return true;
+			if (el.hasAttribute("href") || el.hasAttribute("data-testid") || el.hasAttribute("aria-controls") || el.hasAttribute("aria-haspopup")) return true;
+			if (typeof el.tabIndex === "number" && el.tabIndex >= 0) return true;
+			return false;
+		}
+		function candidateText(el) {
+			return normalizeText(el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("alt") || "");
+		}
+		function matchesText(actual, expected, exactMatch) {
+			var left = normalizeText(actual);
+			var right = normalizeText(expected);
+			if (!right) return false;
+			return exactMatch ? left === right : left.toLowerCase().includes(right.toLowerCase());
+		}
+		function roleOf(el) {
+			if (!el) return "";
+			var explicit = el.getAttribute("role");
+			if (explicit) return explicit;
+			var tag = (el.tagName || "").toLowerCase();
+			if (tag === "button") return "button";
+			if (tag === "a" && el.hasAttribute("href")) return "link";
+			if (tag === "img") return "img";
+			if (tag === "select") return "combobox";
+			if (tag === "textarea") return "textbox";
+			if (tag === "input") {
+				var type = (el.getAttribute("type") || "text").toLowerCase();
+				if (type === "checkbox") return "checkbox";
+				if (type === "radio") return "radio";
+				if (["button", "submit", "reset"].includes(type)) return "button";
+				return "textbox";
+			}
+			return "";
+		}
+		function selectorPart(el) {
+			var tag = (el.tagName || "div").toLowerCase();
+			if (el.id) return tag + "#" + el.id;
+			var part = tag;
+			var classNames = Array.from(el.classList || []).slice(0, 2);
+			if (classNames.length) part += "." + classNames.join(".");
+			var parent = el.parentElement;
+			if (!parent) return part;
+			var siblings = Array.from(parent.children).filter(function(child) {
+				return (child.tagName || "").toLowerCase() === tag;
+			});
+			if (siblings.length > 1) part += ":nth-of-type(" + (siblings.indexOf(el) + 1) + ")";
+			return part;
+		}
+		function selectorOf(el) {
+			if (!el) return "";
+			var parts = [];
+			var current = el;
+			var depth = 0;
+			while (current && current.nodeType === 1 && current !== doc.body && depth < 3) {
+				var tag = (current.tagName || "div").toLowerCase();
+				var ident = current.id ? (tag + "#" + current.id) : tag;
+				parts.unshift(ident);
+				if (current.id) break;
+				current = current.parentElement;
+				depth += 1;
+			}
+			return parts.join(" > ");
+		}
+		function describeNode(el) {
+			if (!el) return "-";
+			var tag = (el.tagName || "node").toLowerCase();
+			var id = el.id ? "#" + el.id : "";
+			var classes = Array.from(el.classList || []).slice(0, 2);
+			var classPart = classes.length ? "." + classes.join(".") : "";
+			var role = roleOf(el);
+			var extras = [];
+			if (role) extras.push("role=" + role);
+			if (el.hasAttribute("href")) extras.push("href=" + el.getAttribute("href"));
+			return "<" + tag + id + classPart + (extras.length ? " " + extras.join(" ") : "") + ">";
+		}
+		function inspectCandidate(target, idx) {
+			if (!target || !isActionable(target)) return null;
+			return {
+				index: idx,
+				selected: idx === ${selected_index_js},
+				matchText: candidateText(target),
+				sourceNode: describeNode(target),
+				targetNode: describeNode(target),
+				text: candidateText(target),
+				href: target.getAttribute("href") || "",
+				role: roleOf(target),
+				selector: selectorOf(target)
+			};
+		}
+		var expected = ${query_js};
+		var exactMatch = ${exact_js};
+		var candidates = Array.from(doc.querySelectorAll("a[href], button, summary, [role=button], [role=link]")).filter(function(el) {
+			if (!isActionable(el)) return false;
+			return matchesText(candidateText(el), expected, exactMatch);
+		}).map(function(el, idx) {
+			return inspectCandidate(el, idx);
+		}).filter(Boolean);
+		if (${mode_js} === "debug") {
+			return JSON.stringify(candidates.slice(0, ${limit_js}), null, 2);
+		}
+		return JSON.stringify(candidates, null, 2);
+	')
 }
 
 fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exact bool, name_filter string, index int) string {
 	query_js := js_str(query)
 	name_js := js_str(name_filter)
-	index_js := if index > 0 { '${index}' } else { '0' }
+	index_js := '${index}'
 	exact_js := if exact { 'true' } else { 'false' }
 	locator_body := match locator {
 		'role' {
 			'var all=Array.from(doc.querySelectorAll("*")); elements=all.filter(el=>roleOf(el)===${query_js}&&matchesName(el, ${name_js}, ${exact_js}));'
 		}
 		'text' {
-			'var all=Array.from(doc.querySelectorAll("*")); elements=all.filter(el=>matchesText(el.innerText||el.textContent||"", ${query_js}, ${exact_js})).map(el=>closestActionable(el)).filter(Boolean).filter((el, idx, arr)=>arr.indexOf(el)===idx);'
+			'var all=Array.from(doc.querySelectorAll("*")); var actionableMatches=all.filter(el=>isActionable(el)&&matchesText(candidateText(el), ${query_js}, ${exact_js})).filter(el=>!hasMatchingDescendant(el, ${query_js}, ${exact_js})); elements=(actionableMatches.length?actionableMatches:all.filter(el=>matchesText(candidateText(el), ${query_js}, ${exact_js})).filter(el=>!hasMatchingDescendant(el, ${query_js}, ${exact_js})).map(el=>closestActionable(el, ${query_js}, ${exact_js}))).filter(Boolean).filter((el, idx, arr)=>arr.indexOf(el)===idx);'
 		}
 		'label' {
 			'var labels=Array.from(doc.querySelectorAll("label")); elements=labels.map(label=>{ if(!matchesText(label.innerText||label.textContent||"", ${query_js}, ${exact_js})) return null; return label.control || label.querySelector("input, textarea, select, button"); }).filter(Boolean);'
@@ -1684,12 +1836,27 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 		}
 	}
 	selection_body := match locator {
-		'last' { 'return elements.length ? elements[elements.length - 1] : null;' }
+		'last' {
+			if index >= 0 {
+				'return elements.length > ${index_js} ? elements[${index_js}] : null;'
+			} else {
+				'return elements.length ? elements[elements.length - 1] : null;'
+			}
+		}
 		'nth' { 'return elements.length > ${index_js} ? elements[${index_js}] : null;' }
-		else { 'return elements.length ? elements[0] : null;' }
+		else {
+			if index >= 0 {
+				'return elements.length > ${index_js} ? elements[${index_js}] : null;'
+			} else {
+				'return elements.length ? elements[0] : null;'
+			}
+		}
 	}
 	return build_document_scope_js(sess, '
 		function normalizeText(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
+		function candidateText(el) {
+			return normalizeText(el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("alt") || "");
+		}
 		function isActionable(el) {
 			if (!el) return false;
 			var tag = (el.tagName || "").toLowerCase();
@@ -1703,11 +1870,26 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 			if (typeof el.tabIndex === "number" && el.tabIndex >= 0) return true;
 			return false;
 		}
-		function closestActionable(el) {
+		function hasMatchingDescendant(el, expected, exactMatch) {
+			var descendants = Array.from(el.querySelectorAll("*"));
+			return descendants.some(function(child) {
+				return matchesText(candidateText(child), expected, exactMatch);
+			});
+		}
+		function closestActionable(el, expected, exactMatch) {
 			var current = el;
 			while (current && current !== doc.body) {
 				if (isActionable(current)) return current;
 				current = current.parentElement;
+			}
+			var descendants = Array.from(el.querySelectorAll("*"));
+			for (var i = 0; i < descendants.length; i++) {
+				var candidate = descendants[i];
+				if (!isActionable(candidate)) continue;
+				if (matchesText(candidateText(candidate), expected, exactMatch)) return candidate;
+			}
+			for (var j = 0; j < descendants.length; j++) {
+				if (isActionable(descendants[j])) return descendants[j];
 			}
 			return el;
 		}
@@ -1790,6 +1972,24 @@ fn exec_semantic_action(mut sess CdpSession, locator_js string, locator string, 
 }
 
 fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, locator string) string {
+	if action in ['click', 'hover'] {
+		pointer_action_for_locator_js(mut sess, locator_js, action) or {
+			body := match action {
+				'click' { build_click_action_body() }
+				'hover' { build_hover_action_body() }
+				else { return 'ERROR:unknown action: ${action}' }
+			}
+			js := build_semantic_action_js(&sess, locator_js, 'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
+			ok := eval_scoped_expression(mut sess, js, false) or {
+				return 'ERROR:${err}'
+			}
+			if ok != 'true' {
+				return 'ERROR:element not found: ${locator}'
+			}
+			return 'null'
+		}
+		return 'null'
+	}
 	body := match action {
 		'click' { build_click_action_body() }
 		'hover' { build_hover_action_body() }

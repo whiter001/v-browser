@@ -264,12 +264,18 @@ v-browser find nth <n> <sel> <action> [value]     # 第 n 个匹配（从 0 开�
 
 - `--name <name>` - 按可访问名称过滤角色
 - `--exact` - 要求精确文本匹配
+- `--debug` - 仅用于 `find text`，输出前 5 个候选的匹配文本、源节点、解析目标、href、role、selector
+- `--list` - 仅用于 `find text`，列出所有候选可点击元素及其序号
+- `--index <n>` - 选择第 n 个候选（从 0 开始），适合处理多个同名文本链接
 
 **示例:**
 
 ```bash
 v-browser find role button click --name "Submit"
 v-browser find text "Sign In" click
+v-browser find text "Nightly Build" --debug
+v-browser find text "Nightly Build" --list
+v-browser find text "Nightly Build" --index 2 click
 v-browser find label "Email" fill "test@test.com"
 v-browser find alt "Hero banner" click
 v-browser find first ".item" click
