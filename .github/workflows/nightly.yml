@@ -38,6 +38,42 @@ jobs:
           cd packages/server
           v -enable-globals test ./src
 
+  extension:
+    name: Build extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: cd packages/extension && pnpm install
+
+      - name: Build extension
+        run: cd packages/extension && pnpm run build
+
+      - name: Package extension
+        run: |
+          cd packages/extension
+          zip -r ../v-browser-extension.zip dist/ manifest.json icons/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v-browser-extension
+          path: v-browser-extension.zip
+          if-no-files-found: error
+
   build:
     name: Build ${{ matrix.target }}
     needs: verify
@@ -95,14 +131,20 @@ jobs:
 
   release:
     name: Publish nightly release
-    needs: build
+    needs: [build, extension]
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
+      - name: Download binary artifacts
         uses: actions/download-artifact@v4
         with:
           path: nightly-assets
           merge-multiple: true
+
+      - name: Download extension artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: v-browser-extension
+          path: .
 
       - name: Update nightly tag
         uses: richardsimko/update-tag@v1
@@ -138,6 +180,7 @@ jobs:
             echo '- `v-browser-linux-x86_64.zip`'
             echo '- `v-browser-windows-x86_64.zip`'
             echo '- `v-browser-darwin-arm64.zip`'
+            echo '- `v-browser-extension.zip` (Browser Extension)'
             echo
             echo '### Verification performed'
             echo
@@ -156,7 +199,7 @@ jobs:
       - name: Publish nightly release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: nightly-assets/*.zip
+          artifacts: "nightly-assets/*.zip,v-browser-extension.zip"
           tag: nightly
           name: v-browser nightly build
           body: ${{ steps.release_body.outputs.BODY }}
