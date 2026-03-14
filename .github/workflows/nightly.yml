@@ -104,30 +104,26 @@ jobs:
           check-latest: true
 
       - name: Build binary
-        shell: pwsh
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Force -Path bin | Out-Null
-          $binaryPath = "bin/${env:BINARY_NAME}${{ matrix.bin_ext }}"
+          mkdir -p bin
+          binary_path="bin/${BINARY_NAME}${{ matrix.bin_ext }}"
           cd packages/server
-          v -enable-globals -o $binaryPath ./src
+          v -enable-globals -o "$binary_path" ./src
 
       - name: Package artifact
-        shell: pwsh
-        env:
-          ARTIFACT_NAME: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
+        shell: bash
         run: |
-          $artifactDir = "$env:ARTIFACT_NAME"
-          $binaryName = "${env:BINARY_NAME}${{ matrix.bin_ext }}"
-          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-          Copy-Item "bin/$binaryName" "$artifactDir/"
-          Compress-Archive -Path "$artifactDir/*" -DestinationPath "$artifactDir.zip" -Force
+          artifact_dir="${PROJECT_NAME}-${{ matrix.target }}"
+          binary_name="${BINARY_NAME}${{ matrix.bin_ext }}"
+          mkdir -p "$artifact_dir"
+          cp "bin/$binary_name" "$artifact_dir/"
+          zip -r "$artifact_dir.zip" "$artifact_dir"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        env:
-          ARTIFACT_NAME: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
         with:
-          name: ${{ env.ARTIFACT_NAME }}
+          name: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
           path: ${{ env.ARTIFACT_NAME }}.zip
           if-no-files-found: error
 

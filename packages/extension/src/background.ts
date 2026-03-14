@@ -155,7 +155,7 @@ class TabShareExtension {
       return { tabId: requestedTabId, windowId: requestedWindowId };
 
     const tabs = await chrome.tabs.query({ lastFocusedWindow: true });
-    const candidate = tabs.find((tab) => {
+    const candidate = tabs.findLast((tab) => {
       if (!tab.id || !tab.windowId || !tab.url) return false;
       if (tab.id === sender.tab?.id) return false;
       return (

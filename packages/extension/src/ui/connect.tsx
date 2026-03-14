@@ -66,16 +66,18 @@ const ConnectApp: React.FC = () => {
         return;
       }
 
+      let clientInfoValue = "unknown";
+
       try {
         const clientStr = params.get("client") || "{}";
         console.log("[Extension] client param:", clientStr);
         const client = JSON.parse(clientStr);
-        const info = `${client.name}/${client.version}`;
-        console.log("[Extension] parsed client info:", info);
-        setClientInfo(info);
+        clientInfoValue = `${client.name}/${client.version}`;
+        console.log("[Extension] parsed client info:", clientInfoValue);
+        setClientInfo(clientInfoValue);
         setStatus({
           type: "connecting",
-          message: `🎭 Playwright MCP started from  "${info}" is trying to connect. Do you want to continue?`,
+          message: `🎭 Playwright MCP started from  "${clientInfoValue}" is trying to connect. Do you want to continue?`,
         });
       } catch (e) {
         setStatus({ type: "error", message: "Failed to parse client version." });
@@ -110,7 +112,7 @@ const ConnectApp: React.FC = () => {
 
       if (urlToken) {
         await connectToMCPRelay(relayUrlWithToken);
-        await handleConnectToTab(undefined, relayUrlWithToken);
+        await handleConnectToTab(undefined, relayUrlWithToken, clientInfoValue);
         return;
       }
 
@@ -148,9 +150,11 @@ const ConnectApp: React.FC = () => {
   }, []);
 
   const handleConnectToTab = useCallback(
-    async (tab?: TabInfo, relayUrlOverride?: string) => {
+    async (tab?: TabInfo, relayUrlOverride?: string, clientInfoOverride?: string) => {
       setShowButtons(false);
       setShowTabList(false);
+
+      const currentClientInfo = clientInfoOverride || clientInfo;
 
       try {
         const relayUrl = relayUrlOverride || mcpRelayUrl;
@@ -162,20 +166,20 @@ const ConnectApp: React.FC = () => {
         });
 
         if (response?.success) {
-          setStatus({ type: "connected", message: `MCP client "${clientInfo}" connected.` });
+          setStatus({ type: "connected", message: `MCP client "${currentClientInfo}" connected.` });
           // Close the tab immediately
           console.log("[Extension] Requesting background to close current tab");
           chrome.runtime.sendMessage({ type: "closeTabFromConnect" });
         } else {
           setStatus({
             type: "error",
-            message: response?.error || `MCP client "${clientInfo}" failed to connect.`,
+            message: response?.error || `MCP client "${currentClientInfo}" failed to connect.`,
           });
         }
       } catch (e) {
         setStatus({
           type: "error",
-          message: `MCP client "${clientInfo}" failed to connect: ${e}`,
+          message: `MCP client "${currentClientInfo}" failed to connect: ${e}`,
         });
       }
     },
