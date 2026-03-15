@@ -3,14 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "V-Browser: A modular browser interaction bridge",
+  "keywords": [
+    "automation",
+    "browser",
+    "playwright",
+    "vlang"
+  ],
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/your-repo/v-browser.git"
-  },
-  "engines": {
-    "node": ">=22",
-    "v": ">=0.5.1",
-    "pnpm": ">=8"
   },
   "scripts": {
     "lint": "oxlint .",
@@ -22,11 +24,9 @@
     "dev:server": "cd packages/server && v run src/main.v",
     "clean": "rm -rf packages/extension/dist packages/server/v-browser.exe"
   },
-  "keywords": [
-    "browser",
-    "automation",
-    "playwright",
-    "vlang"
-  ],
-  "license": "MIT"
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=8",
+    "v": ">=0.5.1"
+  }
 }

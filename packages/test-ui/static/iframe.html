@@ -1,32 +1,34 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>v-browser Iframe Fixture</title>
-  <link rel="stylesheet" href="/styles.css">
-</head>
-<body class="iframe-body">
-  <main class="iframe-shell">
-    <p class="eyebrow">Same Origin Frame</p>
-    <h1 class="iframe-title">Iframe Fixture</h1>
-    <label class="field">
-      <span>Frame Input</span>
-      <input id="frameInput" type="text" placeholder="Inside iframe" data-testid="frame-input">
-    </label>
-    <button id="frameButton" class="button primary" type="button" data-testid="frame-button">Activate Frame Button</button>
-    <p id="frameState" class="fixture-note" data-testid="frame-state">frame: idle</p>
-  </main>
-  <script>
-    const frameButton = document.getElementById('frameButton');
-    const frameState = document.getElementById('frameState');
-    const frameInput = document.getElementById('frameInput');
-    frameButton.addEventListener('click', () => {
-      frameState.textContent = 'frame: button clicked';
-    });
-    frameInput.addEventListener('input', () => {
-      frameState.textContent = `frame: ${frameInput.value || 'typing'}`;
-    });
-  </script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>v-browser Iframe Fixture</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="iframe-body">
+    <main class="iframe-shell">
+      <p class="eyebrow">Same Origin Frame</p>
+      <h1 class="iframe-title">Iframe Fixture</h1>
+      <label class="field">
+        <span>Frame Input</span>
+        <input id="frameInput" type="text" placeholder="Inside iframe" data-testid="frame-input" />
+      </label>
+      <button id="frameButton" class="button primary" type="button" data-testid="frame-button">
+        Activate Frame Button
+      </button>
+      <p id="frameState" class="fixture-note" data-testid="frame-state">frame: idle</p>
+    </main>
+    <script>
+      const frameButton = document.getElementById("frameButton");
+      const frameState = document.getElementById("frameState");
+      const frameInput = document.getElementById("frameInput");
+      frameButton.addEventListener("click", () => {
+        frameState.textContent = "frame: button clicked";
+      });
+      frameInput.addEventListener("input", () => {
+        frameState.textContent = `frame: ${frameInput.value || "typing"}`;
+      });
+    </script>
+  </body>
 </html>

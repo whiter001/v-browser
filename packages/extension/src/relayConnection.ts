@@ -37,7 +37,9 @@ type ProtocolResponse = {
 };
 
 function isAlreadyAttachedError(error: unknown): boolean {
-  const message = String((error as { message?: string } | undefined)?.message || error || "").toLowerCase();
+  const message = String(
+    (error as { message?: string } | undefined)?.message || error || "",
+  ).toLowerCase();
   return message.includes("another debugger is already attached");
 }
 

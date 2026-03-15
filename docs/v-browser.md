@@ -232,8 +232,8 @@ v-browser --json eval "document.location.href"
 # 从文件执行
 cat > /tmp/vbrowser-example.js <<'EOF'
 Array.from(document.querySelectorAll('button'))
-	.map((el) => (el.innerText || '').trim())
-	.filter(Boolean)
+    .map((el) => (el.innerText || '').trim())
+    .filter(Boolean)
 EOF
 v-browser --json eval --file /tmp/vbrowser-example.js
 

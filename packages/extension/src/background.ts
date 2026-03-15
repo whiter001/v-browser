@@ -305,9 +305,7 @@ class TabShareExtension {
     await this._setConnectedTabId(null);
   }
 
-  private async _syncExtensionRegistration(
-    mcpRelayUrl?: string,
-  ): Promise<{
+  private async _syncExtensionRegistration(mcpRelayUrl?: string): Promise<{
     extensionId: string;
     browserName: string;
     via: "active-connection" | "direct-connect";
