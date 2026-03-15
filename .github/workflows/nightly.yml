@@ -117,7 +117,11 @@ jobs:
           binary_name="${BINARY_NAME}${{ matrix.bin_ext }}"
           mkdir -p "$artifact_dir"
           cp "packages/server/bin/$binary_name" "$artifact_dir/"
-          zip -r "$artifact_dir.zip" "$artifact_dir"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            powershell -Command "Compress-Archive -Path '$artifact_dir/*' -DestinationPath '$artifact_dir.zip'"
+          else
+            zip -r "$artifact_dir.zip" "$artifact_dir"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
