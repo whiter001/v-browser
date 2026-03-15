@@ -36,6 +36,11 @@ type ProtocolResponse = {
   error?: string;
 };
 
+function isAlreadyAttachedError(error: unknown): boolean {
+  const message = String((error as { message?: string } | undefined)?.message || error || "").toLowerCase();
+  return message.includes("another debugger is already attached");
+}
+
 export class RelayConnection {
   private _debuggee: chrome.debugger.Debuggee;
   private _ws: WebSocket;
@@ -121,8 +126,12 @@ export class RelayConnection {
   private _onDebuggerDetach(source: chrome.debugger.Debuggee, reason: string): void {
     if (source.tabId !== this._debuggee.tabId) return;
     this._isAttached = false;
-    this.close(`Debugger detached: ${reason}`);
-    this._debuggee = {};
+    if (reason === "target_closed") {
+      this.close(`Debugger detached: ${reason}`);
+      this._debuggee = {};
+      return;
+    }
+    debugLog("Debugger detached, keeping relay open for reattach:", reason, this._debuggee);
   }
 
   private _onMessage(event: MessageEvent): void {
@@ -253,7 +262,12 @@ export class RelayConnection {
     this._debuggee = { tabId };
     if (!this._isAttached || previousTabId !== tabId) {
       debugLog("Attaching debugger to tab:", this._debuggee);
-      await chrome.debugger.attach(this._debuggee, "1.3");
+      try {
+        await chrome.debugger.attach(this._debuggee, "1.3");
+      } catch (error: any) {
+        if (!isAlreadyAttachedError(error)) throw error;
+        debugLog("Reusing existing debugger attachment for tab:", this._debuggee);
+      }
       this._isAttached = true;
     }
 

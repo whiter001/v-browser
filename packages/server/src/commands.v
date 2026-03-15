@@ -93,6 +93,10 @@ fn cmd_not_impl(name string) string {
 
 // ─── eval ───────────────────────────────────────────────────
 fn cmd_eval(mut sess CdpSession, params string) string {
+	read_error := cdp_extract_str(params, 'readError')
+	if read_error != '' {
+		return 'ERROR:${read_error}'
+	}
 	expr := cdp_extract_str(params, 'expression')
 	if expr == '' {
 		return 'ERROR:missing expression'
@@ -833,7 +837,9 @@ fn screenshot_diff_js(baseline_b64 string, baseline_mime string, current_b64 str
 		'    var changedPx = Math.max(dr, dg, db, da) > limit;\n' + '    if (changedPx) {\n' +
 		'      changed++;\n' +
 		'      diff.data[i] = 255; diff.data[i+1] = 0; diff.data[i+2] = 0; diff.data[i+3] = 255;\n' +
-		'    } else {\n' + '      var avg = Math.round((d2.data[i] + d2.data[i+1] +
+		'    } else {\n' +
+		'      var avg = Math.round((d2.data[i] +
+		d2.data[i+1] +
 		d2.data[i+2]) / 3);\n' +
 		'      diff.data[i] = avg; diff.data[i+1] = avg; diff.data[i+2] = avg; diff.data[i+3] = 96;\n' +
 		'    }\n' + '  }\n' + '  xd.putImageData(diff, 0, 0);\n' +
@@ -888,13 +894,12 @@ fn cmd_pdf(mut sess CdpSession, params string) string {
 // ─── snapshot ───────────────────────────────────────────────
 
 // 可交互角色列表
-const snapshot_interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'radio',
-	'combobox', 'listbox', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option',
-	'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'treeitem', 'heading', 'image',
-	'banner', 'navigation', 'region', 'main', 'form', 'search', 'dialog', 'alert',
-	'alertdialog', 'complementary', 'contentinfo', 'definition', 'directory', 'document',
-	'feed', 'figure', 'log', 'marquee', 'math', 'note', 'progressbar', 'status', 'table',
-	'term', 'timer', 'tooltip', 'tree']
+const snapshot_interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox',
+	'listbox', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'searchbox', 'slider',
+	'spinbutton', 'switch', 'tab', 'treeitem', 'heading', 'image', 'banner', 'navigation', 'region',
+	'main', 'form', 'search', 'dialog', 'alert', 'alertdialog', 'complementary', 'contentinfo',
+	'definition', 'directory', 'document', 'feed', 'figure', 'log', 'marquee', 'math', 'note',
+	'progressbar', 'status', 'table', 'term', 'timer', 'tooltip', 'tree']
 
 fn cmd_snapshot(mut sess CdpSession, params string) string {
 	// 解析参数
@@ -911,7 +916,7 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 	mut out := '= Accessibility Snapshot =\n'
 	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref, interactive)
 	out += ax_out
-	
+
 	// 只有在非 interactive 模式下才添加 cursor-interactive 元素
 	if !interactive {
 		cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref) or {
@@ -945,7 +950,7 @@ fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, in
 			role := ax_prop(node_str, 'role')
 			name := ax_prop(node_str, 'name')
 			bnid := cdp_extract_int(node_str, '"backendDOMNodeId":')
-			
+
 			// interactive 模式下只保留可交互角色
 			// 非 interactive 模式下过滤 none 和 generic
 			should_include := if interactive {
@@ -953,7 +958,7 @@ fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, in
 			} else {
 				role != '' && role != 'none' && role != 'generic'
 			}
-			
+
 			// 只有满足条件的才输出
 			if should_include {
 				ref_key := '@e${counter}'
@@ -1684,6 +1689,14 @@ fn build_semantic_text_report_js(sess &CdpSession, query string, exact bool, sel
 	exact_js := if exact { 'true' } else { 'false' }
 	return build_document_scope_js(sess, '
 		function normalizeText(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
+		function isVisible(el) {
+			if (!el) return false;
+			var tag = (el.tagName || "").toLowerCase();
+			if (tag !== "summary" && el.closest("details:not([open])")) return false;
+			var style = win.getComputedStyle(el);
+			if (style.visibility === "hidden" || style.display === "none") return false;
+			return !!(el.getClientRects && el.getClientRects().length);
+		}
 		function matchesText(actual, expected, exactMatch) {
 			var left = normalizeText(actual);
 			var right = normalizeText(expected);
@@ -1791,8 +1804,12 @@ fn build_semantic_text_report_js(sess &CdpSession, query string, exact bool, sel
 		var candidates = Array.from(doc.querySelectorAll("a[href], button, summary, [role=button], [role=link]")).filter(function(el) {
 			if (!isActionable(el)) return false;
 			return matchesText(candidateText(el), expected, exactMatch);
+		}).sort(function(a, b) {
+			return Number(isVisible(b)) - Number(isVisible(a));
 		}).map(function(el, idx) {
-			return inspectCandidate(el, idx);
+			var item = inspectCandidate(el, idx);
+			if (item) item.visible = isVisible(el);
+			return item;
 		}).filter(Boolean);
 		if (${mode_js} === "debug") {
 			return JSON.stringify(candidates.slice(0, ${limit_js}), null, 2);
@@ -1808,25 +1825,25 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 	exact_js := if exact { 'true' } else { 'false' }
 	locator_body := match locator {
 		'role' {
-			'var all=Array.from(doc.querySelectorAll("*")); elements=all.filter(el=>roleOf(el)===${query_js}&&matchesName(el, ${name_js}, ${exact_js}));'
+			'var pool=Array.from(doc.querySelectorAll(roleSelector(${query_js}))); var visibleMatches=pool.filter(el=>isVisible(el)&&roleOf(el)===${query_js}&&matchesName(el, ${name_js}, ${exact_js})); elements=(visibleMatches.length?visibleMatches:pool.filter(el=>roleOf(el)===${query_js}&&matchesName(el, ${name_js}, ${exact_js})));'
 		}
 		'text' {
-			'var all=Array.from(doc.querySelectorAll("*")); var actionableMatches=all.filter(el=>isActionable(el)&&matchesText(candidateText(el), ${query_js}, ${exact_js})).filter(el=>!hasMatchingDescendant(el, ${query_js}, ${exact_js})); elements=(actionableMatches.length?actionableMatches:all.filter(el=>matchesText(candidateText(el), ${query_js}, ${exact_js})).filter(el=>!hasMatchingDescendant(el, ${query_js}, ${exact_js})).map(el=>closestActionable(el, ${query_js}, ${exact_js}))).filter(Boolean).filter((el, idx, arr)=>arr.indexOf(el)===idx);'
+			'var actionablePool=Array.from(doc.querySelectorAll(actionableSelector())); var visibleActionableMatches=actionablePool.filter(el=>isVisible(el)&&isActionable(el)&&matchesText(candidateText(el), ${query_js}, ${exact_js})).filter(el=>!hasMatchingDescendant(el, ${query_js}, ${exact_js})); var actionableMatches=(visibleActionableMatches.length?visibleActionableMatches:actionablePool.filter(el=>isActionable(el)&&matchesText(candidateText(el), ${query_js}, ${exact_js})).filter(el=>!hasMatchingDescendant(el, ${query_js}, ${exact_js}))); elements=(actionableMatches.length?actionableMatches:Array.from(doc.querySelectorAll("*")).filter(el=>isVisible(el)&&matchesText(candidateText(el), ${query_js}, ${exact_js})).filter(el=>!hasMatchingDescendant(el, ${query_js}, ${exact_js})).map(el=>closestActionable(el, ${query_js}, ${exact_js})).filter(Boolean)).filter((el, idx, arr)=>arr.indexOf(el)===idx);'
 		}
 		'label' {
-			'var labels=Array.from(doc.querySelectorAll("label")); elements=labels.map(label=>{ if(!matchesText(label.innerText||label.textContent||"", ${query_js}, ${exact_js})) return null; return label.control || label.querySelector("input, textarea, select, button"); }).filter(Boolean);'
+			'var labels=Array.from(doc.querySelectorAll("label")); var visibleControls=labels.map(label=>{ if(!matchesText(label.innerText||label.textContent||"", ${query_js}, ${exact_js})) return null; var control=label.control || label.querySelector("input, textarea, select, button"); return control && isVisible(control) ? control : null; }).filter(Boolean); elements=(visibleControls.length?visibleControls:labels.map(label=>{ if(!matchesText(label.innerText||label.textContent||"", ${query_js}, ${exact_js})) return null; return label.control || label.querySelector("input, textarea, select, button"); }).filter(Boolean));'
 		}
 		'placeholder' {
-			'var all=Array.from(doc.querySelectorAll("[placeholder]")); elements=all.filter(el=>matchesText(el.getAttribute("placeholder")||"", ${query_js}, ${exact_js}));'
+			'var all=Array.from(doc.querySelectorAll("[placeholder]")); var visibleMatches=all.filter(el=>isVisible(el)&&matchesText(el.getAttribute("placeholder")||"", ${query_js}, ${exact_js})); elements=(visibleMatches.length?visibleMatches:all.filter(el=>matchesText(el.getAttribute("placeholder")||"", ${query_js}, ${exact_js})));'
 		}
 		'alt' {
-			'var all=Array.from(doc.querySelectorAll("[alt]")); elements=all.filter(el=>matchesText(el.getAttribute("alt")||"", ${query_js}, ${exact_js}));'
+			'var all=Array.from(doc.querySelectorAll("[alt]")); var visibleMatches=all.filter(el=>isVisible(el)&&matchesText(el.getAttribute("alt")||"", ${query_js}, ${exact_js})); elements=(visibleMatches.length?visibleMatches:all.filter(el=>matchesText(el.getAttribute("alt")||"", ${query_js}, ${exact_js})));'
 		}
 		'title' {
-			'var all=Array.from(doc.querySelectorAll("[title]")); elements=all.filter(el=>matchesText(el.getAttribute("title")||"", ${query_js}, ${exact_js}));'
+			'var all=Array.from(doc.querySelectorAll("[title]")); var visibleMatches=all.filter(el=>isVisible(el)&&matchesText(el.getAttribute("title")||"", ${query_js}, ${exact_js})); elements=(visibleMatches.length?visibleMatches:all.filter(el=>matchesText(el.getAttribute("title")||"", ${query_js}, ${exact_js})));'
 		}
 		'testid' {
-			'var all=Array.from(doc.querySelectorAll("[data-testid]")); elements=all.filter(el=>matchesText(el.getAttribute("data-testid")||"", ${query_js}, ${exact_js}));'
+			'var all=Array.from(doc.querySelectorAll("[data-testid]")); var visibleMatches=all.filter(el=>isVisible(el)&&matchesText(el.getAttribute("data-testid")||"", ${query_js}, ${exact_js})); elements=(visibleMatches.length?visibleMatches:all.filter(el=>matchesText(el.getAttribute("data-testid")||"", ${query_js}, ${exact_js})));'
 		}
 		'first', 'last', 'nth' {
 			'elements=Array.from(doc.querySelectorAll(${query_js}));'
@@ -1843,7 +1860,9 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 				'return elements.length ? elements[elements.length - 1] : null;'
 			}
 		}
-		'nth' { 'return elements.length > ${index_js} ? elements[${index_js}] : null;' }
+		'nth' {
+			'return elements.length > ${index_js} ? elements[${index_js}] : null;'
+		}
 		else {
 			if index >= 0 {
 				'return elements.length > ${index_js} ? elements[${index_js}] : null;'
@@ -1854,6 +1873,14 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 	}
 	return build_document_scope_js(sess, '
 		function normalizeText(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
+		function isVisible(el) {
+			if (!el) return false;
+			var tag = (el.tagName || "").toLowerCase();
+			if (tag !== "summary" && el.closest("details:not([open])")) return false;
+			var style = win.getComputedStyle(el);
+			if (style.visibility === "hidden" || style.display === "none") return false;
+			return !!(el.getClientRects && el.getClientRects().length);
+		}
 		function candidateText(el) {
 			return normalizeText(el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("alt") || "");
 		}
@@ -1869,6 +1896,23 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 			if (el.hasAttribute("href") || el.hasAttribute("data-testid") || el.hasAttribute("aria-controls") || el.hasAttribute("aria-haspopup")) return true;
 			if (typeof el.tabIndex === "number" && el.tabIndex >= 0) return true;
 			return false;
+		}
+		function actionableSelector() {
+			return "a[href], button, summary, input:not([type=hidden]), textarea, select, [role=button], [role=link], [role=checkbox], [role=radio], [role=switch], [role=tab], [role=menuitem], [role=option], [data-testid], [aria-controls], [aria-haspopup]";
+		}
+		function roleSelector(role) {
+			switch (String(role || "").toLowerCase()) {
+				case "button": return "button, summary, [role=button], input[type=button], input[type=submit], input[type=reset]";
+				case "link": return "a[href], [role=link]";
+				case "checkbox": return "input[type=checkbox], [role=checkbox]";
+				case "radio": return "input[type=radio], [role=radio]";
+				case "textbox": return "textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset]), [role=textbox]";
+				case "combobox": return "select, [role=combobox]";
+				case "option": return "option, [role=option]";
+				case "tab": return "[role=tab]";
+				case "menuitem": return "[role=menuitem], [role=menuitemcheckbox], [role=menuitemradio]";
+				default: return "*";
+			}
 		}
 		function hasMatchingDescendant(el, expected, exactMatch) {
 			var descendants = Array.from(el.querySelectorAll("*"));
@@ -1972,24 +2016,6 @@ fn exec_semantic_action(mut sess CdpSession, locator_js string, locator string, 
 }
 
 fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, locator string) string {
-	if action in ['click', 'hover'] {
-		pointer_action_for_locator_js(mut sess, locator_js, action) or {
-			body := match action {
-				'click' { build_click_action_body() }
-				'hover' { build_hover_action_body() }
-				else { return 'ERROR:unknown action: ${action}' }
-			}
-			js := build_semantic_action_js(&sess, locator_js, 'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
-			ok := eval_scoped_expression(mut sess, js, false) or {
-				return 'ERROR:${err}'
-			}
-			if ok != 'true' {
-				return 'ERROR:element not found: ${locator}'
-			}
-			return 'null'
-		}
-		return 'null'
-	}
 	body := match action {
 		'click' { build_click_action_body() }
 		'hover' { build_hover_action_body() }

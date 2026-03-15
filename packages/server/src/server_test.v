@@ -6,6 +6,18 @@ import time
 
 fn noop_send(_ string) ! {}
 
+fn fake_eval_stdin_reader() !string {
+	return 'const answer = 42;\nconsole.log(answer);\n'
+}
+
+fn fake_eval_file_reader(path string) !string {
+	return '// loaded from ${path}\nwindow.__ok = true;\n'
+}
+
+fn failing_eval_file_reader(path string) !string {
+	return error('cannot read ${path}')
+}
+
 fn test_parse_cli_to_ipc_connect_routes_to_connect() {
 	method, params := parse_cli_to_ipc('connect', []string{}, false)
 	assert method == 'connect'
@@ -101,7 +113,8 @@ fn test_parse_cli_to_ipc_wait_variants() {
 }
 
 fn test_parse_cli_to_ipc_wait_download_variant() {
-	method, params := parse_cli_to_ipc('wait', ['--download', './report.pdf', '--timeout', '45000'], false)
+	method, params := parse_cli_to_ipc('wait', ['--download', './report.pdf', '--timeout', '45000'],
+		false)
 	assert method == 'wait'
 	assert params == '{"download":"./report.pdf","timeout":45000}'
 }
@@ -137,7 +150,8 @@ fn test_parse_cli_to_ipc_diff_url_variants() {
 }
 
 fn test_parse_cli_to_ipc_find_builds_semantic_request() {
-	method, params := parse_cli_to_ipc('find', ['--role', 'button', '--name', 'Save', '--click'], false)
+	method, params := parse_cli_to_ipc('find', ['--role', 'button', '--name', 'Save', '--click'],
+		false)
 	assert method == 'find'
 	assert params.contains('"locator":"role"')
 	assert params.contains('"query":"button"')
@@ -172,7 +186,8 @@ fn test_parse_cli_to_ipc_find_supports_text_debug_mode() {
 }
 
 fn test_parse_cli_to_ipc_find_supports_text_list_and_index() {
-	method, params := parse_cli_to_ipc('find', ['text', 'Nightly Build', '--list', '--index', '2'], false)
+	method, params := parse_cli_to_ipc('find', ['text', 'Nightly Build', '--list', '--index', '2'],
+		false)
 	assert method == 'find'
 	assert params.contains('"locator":"text"')
 	assert params.contains('"query":"Nightly Build"')
@@ -185,9 +200,44 @@ fn test_parse_cli_to_ipc_tab_switch_and_window_new() {
 	assert method_tab == 'tab'
 	assert params_tab == '{"action":"switch","tabId":12,"windowId":0}'
 
-	method_window, params_window := parse_cli_to_ipc('window', ['new', 'https://example.com'], false)
+	method_window, params_window := parse_cli_to_ipc('window', ['new', 'https://example.com'],
+		false)
 	assert method_window == 'window'
 	assert params_window == '{"action":"new","url":"https://example.com"}'
+}
+
+fn test_parse_cli_to_ipc_eval_supports_file_input() {
+	method, params := parse_cli_to_ipc_with_readers('eval', ['--file', 'script.js'], false,
+		fake_eval_stdin_reader, fake_eval_file_reader)
+	assert method == 'eval'
+	assert params.contains('"expression":"// loaded from script.js\\nwindow.__ok = true;"')
+	assert params.contains('"readError":""')
+	assert params.contains('"base64":"false"')
+}
+
+fn test_parse_cli_to_ipc_eval_supports_stdin_shorthand() {
+	method, params := parse_cli_to_ipc_with_readers('eval', ['-'], false, fake_eval_stdin_reader,
+		fake_eval_file_reader)
+	assert method == 'eval'
+	assert params.contains('const answer = 42;')
+	assert params.contains('console.log(answer);')
+	assert params.contains('"readError":""')
+}
+
+fn test_parse_cli_to_ipc_eval_supports_base64_long_flag() {
+	method, params := parse_cli_to_ipc_with_readers('eval', ['--base64', 'YWxlcnQoMSk='],
+		false, fake_eval_stdin_reader, fake_eval_file_reader)
+	assert method == 'eval'
+	assert params.contains('"expression":"YWxlcnQoMSk="')
+	assert params.contains('"base64":"true"')
+}
+
+fn test_parse_cli_to_ipc_eval_reports_file_read_error() {
+	method, params := parse_cli_to_ipc_with_readers('eval', ['--file', 'missing.js'],
+		false, fake_eval_stdin_reader, failing_eval_file_reader)
+	assert method == 'eval'
+	assert params.contains('"expression":""')
+	assert params.contains('failed to read eval file missing.js: cannot read missing.js')
 }
 
 fn test_ipc_request_round_trip() {
@@ -350,13 +400,16 @@ fn test_server_stop_integration_stops_running_server() {
 		os.rmdir_all(test_home) or {}
 	}
 
-	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or { panic(err) }
+	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or {
+		panic(err)
+	}
 	assert orig_pid > 0
 	assert is_integration_process_running(orig_pid)
 
 	stop_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} server stop')
 	assert stop_result.exit_code == 0
-	assert stop_result.output.contains('server shutdown via IPC') || stop_result.output.contains('server killed')
+	assert stop_result.output.contains('server shutdown via IPC')
+		|| stop_result.output.contains('server killed')
 	assert wait_for_integration_server_stop(orig_pid, relay_port, ipc_port, 5 * time.second)
 	assert !is_integration_process_running(orig_pid)
 	assert !os.exists(os.join_path(test_home, '.v-browser', 'server.pid'))
@@ -375,7 +428,9 @@ fn test_server_restart_integration_replaces_running_server() {
 		os.rmdir_all(test_home) or {}
 	}
 
-	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or { panic(err) }
+	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or {
+		panic(err)
+	}
 	assert orig_pid > 0
 
 	restart_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} server restart')
@@ -552,6 +607,16 @@ fn test_build_action_point_query_js_wraps_frame_offsets() {
 	assert js.contains('fr.x + r.x + r.width / 2')
 }
 
+fn test_build_semantic_locator_js_prefers_visible_matches() {
+	mut sess := new_cdp_session(noop_send)
+	js := build_semantic_locator_js(sess, 'text', 'Run workflow', true, '', -1)
+	assert js.contains('details:not([open])')
+	assert js.contains('visibleActionableMatches')
+	assert js.contains('getClientRects')
+	assert js.contains('actionableSelector()')
+	assert js.contains('roleSelector(role)')
+}
+
 fn test_build_cursor_interactive_snapshot_js_covers_custom_click_targets() {
 	mut sess := new_cdp_session(noop_send)
 	js := build_cursor_interactive_snapshot_js(sess)
@@ -580,4 +645,21 @@ fn test_error_code_maps_common_failures() {
 	assert error_code('element not found: #missing') == 'NOT_FOUND'
 	assert error_code('no extension connected') == 'NOT_CONNECTED'
 	assert error_code('CDP command timed out') == 'TIMEOUT'
+}
+
+fn test_should_retry_after_reconnect_for_connection_failures() {
+	assert should_retry_after_reconnect('eval', 'no extension connected')
+	assert should_retry_after_reconnect('click', 'CDP session is closed')
+	assert !should_retry_after_reconnect('status', 'no extension connected')
+	assert !should_retry_after_reconnect('connect', 'no extension connected')
+}
+
+fn test_is_attach_conflict_error_matches_debugger_conflict() {
+	assert is_attach_conflict_error('Another debugger is already attached to the tab with id: 123')
+	assert !is_attach_conflict_error('no extension connected')
+}
+
+fn test_cmd_eval_returns_read_error_before_missing_expression() {
+	mut sess := new_cdp_session(noop_send)
+	assert cmd_eval(mut sess, '{"expression":"","readError":"failed to read stdin: boom"}') == 'ERROR:failed to read stdin: boom'
 }

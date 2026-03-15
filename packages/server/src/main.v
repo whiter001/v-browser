@@ -10,7 +10,7 @@
 //   v-browser screenshot [p]  — 截图
 //   v-browser snapshot        — accessibility 快照
 //   v-browser download <sel> <path> — 点击并等待下载完成
-//   v-browser eval <expr>     — 执行 JS 表达式（-b base64, --stdin）
+//   v-browser eval <expr>     — 执行 JS 表达式（-b/--base64, --stdin, --file）
 //   v-browser wait <ms|sel>   — 等待
 //   v-browser find --role button --name "OK" --click
 //   ...（其余命令见 commands.v）
@@ -20,6 +20,10 @@ import os
 import net
 import net.urllib
 import time
+
+type EvalStdinReader = fn () !string
+
+type EvalFileReader = fn (string) !string
 
 fn main() {
 	raw_args := os.args[1..]
@@ -85,7 +89,7 @@ fn main() {
 
 	// 所有其他子命令转为 IPC 请求转发给 server
 	method, params := parse_cli_to_ipc(cmd, rest, raw_output)
-	result := send_ipc(method, params) or {
+	result := run_cli_command(method, params) or {
 		print_error(err.msg(), json_output)
 		exit(1)
 	}
@@ -129,11 +133,69 @@ fn handle_connect_command(args []string, json_output bool) {
 		}
 	}
 	params := if tab_id > 0 { '{"tabId":${tab_id},"windowId":${window_id}}' } else { '{}' }
-	result := send_ipc('connect', params) or {
+	result := connect_active_session(params) or {
 		print_error(err.msg(), json_output)
 		exit(1)
 	}
 	println(format_output(result, json_output))
+}
+
+fn run_cli_command(method string, params string) !string {
+	result := send_ipc(method, params) or {
+		if should_retry_after_reconnect(method, err.msg()) {
+			reconnect_current_session()!
+			return send_ipc(method, params)!
+		}
+		return error(err.msg())
+	}
+	return result
+}
+
+fn connect_active_session(params string) !string {
+	result := send_ipc('connect', params) or {
+		if is_attach_conflict_error(err.msg()) {
+			status_after := send_ipc('status', '{}') or { return error(err.msg()) }
+			if is_extension_connected(status_after) {
+				return '{"connected":true,"reusedDebugger":true}'
+			}
+		}
+		return error(err.msg())
+	}
+	return result
+}
+
+fn reconnect_current_session() ! {
+	connect_active_session('{}') or {
+		status_before := send_ipc('status', '{}') or { '{"connected":false}' }
+		if !is_extension_connected(status_before) {
+			extension_id := resolve_extension_id([]string{})
+			if extension_id == '' {
+				return error('no extension connected; set V_BROWSER_EXTENSION_ID or run v-browser connect --extension-id <id>')
+			}
+			connect_url := open_extension_connect_page(extension_id)!
+			eprintln('[v-browser] Reconnecting via extension page: ${connect_url}')
+			if !wait_for_extension_connection(35 * time.second) {
+				return error('extension did not connect within 35s; select a tab in the extension page, then rerun the command')
+			}
+		}
+		connect_active_session('{}')!
+		return
+	}
+}
+
+fn should_retry_after_reconnect(method string, err_msg string) bool {
+	if method in ['connect', 'status'] {
+		return false
+	}
+	lower := err_msg.to_lower()
+	return lower.contains('no extension connected') || lower.contains('no tab is connected')
+		|| lower.contains('cdp session is closed')
+}
+
+fn is_attach_conflict_error(err_msg string) bool {
+	lower := err_msg.to_lower()
+	return lower.contains('another debugger is already attached')
+		|| lower.contains('debugger is already attached to the tab')
 }
 
 fn ensure_server_running() ! {
@@ -252,7 +314,11 @@ fn handle_server_stop(json_output bool, allow_missing bool, emit_output bool) !b
 		return error('no running server found')
 	}
 
-	err_msg := if stop_mode != '' { 'failed to stop v-browser server: ${stop_mode}' } else { 'failed to stop v-browser server' }
+	err_msg := if stop_mode != '' {
+		'failed to stop v-browser server: ${stop_mode}'
+	} else {
+		'failed to stop v-browser server'
+	}
 	return error(err_msg)
 }
 
@@ -511,9 +577,48 @@ fn is_extension_connected(status string) bool {
 	return status.contains('"connected":true')
 }
 
+fn default_eval_stdin_reader() !string {
+	return os.get_raw_lines_joined()
+}
+
+fn default_eval_file_reader(path string) !string {
+	return os.read_file(path)!
+}
+
+fn resolve_eval_input(flags map[string]string, positionals []string, stdin_reader EvalStdinReader, file_reader EvalFileReader) (string, bool, string) {
+	base64_value := flags['b'] or { flags['base64'] or { 'false' } }
+	as_b64 := base64_value != 'false'
+	file_path := flags['file'] or { '' }
+	stdin_value := flags['stdin'] or { 'false' }
+	use_stdin := stdin_value == 'true' || (positionals.len > 0 && positionals[0] == '-')
+	if use_stdin {
+		expr := stdin_reader() or { return '', as_b64, 'failed to read stdin: ${err.msg()}' }
+		return expr.trim_space(), as_b64, ''
+	}
+	if file_path != '' {
+		expr := file_reader(file_path) or {
+			return '', as_b64, 'failed to read eval file ${file_path}: ${err.msg()}'
+		}
+		return expr.trim_space(), as_b64, ''
+	}
+	expr := if as_b64 {
+		base64_value
+	} else if positionals.len > 0 {
+		positionals[0]
+	} else {
+		flags['expression'] or { flags['expr'] or { '' } }
+	}
+	return expr, as_b64, ''
+}
+
 // ─── CLI → IPC 参数解析 ──────────────────────────────────────
 // 将命令行参数转换为 (method, params_json) 对
 fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string) {
+	return parse_cli_to_ipc_with_readers(cmd, args, raw_output, default_eval_stdin_reader,
+		default_eval_file_reader)
+}
+
+fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, stdin_reader EvalStdinReader, file_reader EvalFileReader) (string, string) {
 	// 解析标志位
 	mut flags := map[string]string{}
 	mut positionals := []string{}
@@ -875,30 +980,14 @@ fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string)
 		}
 		// ── eval ──
 		'eval', 'js', 'execute', 'run' {
-			stdin_val := flags['stdin'] or { 'false' }
-			is_stdin := stdin_val == 'true'
-			// 支持从 stdin 读取
-			if is_stdin {
-				expr := os.get_line().trim_space()
-				await_p := flags['await'] or { 'false' }
-				base64_flag := flags['b'] or { 'false' }
-				return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)},"base64":${json_str(base64_flag)}}'
-			}
-			// -b/--base64 时用 flags['b'] 作为表达式，否则用 positional
-			base64_flag := flags['b'] or { 'false' }
-			expr := if base64_flag != 'false' {
-				base64_flag
-			} else if positionals.len > 0 {
-				positionals[0]
-			} else {
-				flags['expression'] or { flags['expr'] or { '' } }
-			}
+			expr, as_b64, read_error := resolve_eval_input(flags, positionals, stdin_reader,
+				file_reader)
 			await_p := flags['await'] or { 'false' }
-			return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)},"base64":${json_str(if base64_flag != 'false' {
+			return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)},"base64":${json_str(if as_b64 {
 				'true'
 			} else {
 				'false'
-			})}}'
+			})},"readError":${json_str(read_error)}}'
 		}
 		// ── tab ──
 		'tab' {
@@ -1279,7 +1368,9 @@ fn print_usage() {
   v-browser screenshot [path]   截图 (--full --format png|jpeg)
   v-browser pdf <path>          生成 PDF
   v-browser snapshot            Accessibility 快照 (@eN 引用)
-  v-browser eval <expr>         执行 JS 表达式
+	v-browser eval <expr>         执行 JS 表达式
+	v-browser eval --file x.js    从文件执行 JS
+	cat x.js | v-browser eval --stdin  从标准输入执行 JS
   v-browser click <selector>    点击元素
   v-browser dblclick <selector> 双击元素
 	v-browser download <sel> <path> 点击并等待下载完成
@@ -1320,5 +1411,8 @@ fn print_usage() {
   --text            文本内容
   --full            完整页面截图
   --format          图片格式
+	--file            从文件读取 eval 内容
+	--stdin           从标准输入读取完整 eval 内容
+	--base64 / -b     以 base64 传入 eval 内容
 ')
 }

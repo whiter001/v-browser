@@ -51,6 +51,27 @@ cd packages/server
 ./v-browser open https://example.com
 ./v-browser snapshot
 ./v-browser eval document.title
+printf 'document.location.href\n' | ./v-browser --json eval --stdin
+```
+
+### 执行较长的 JavaScript
+
+当表达式比较长、包含引号、换行，或者你想避免 shell 续行把终端卡在“等待输入”状态时，优先使用文件或标准输入，而不是把整段 JS 直接塞进命令行。
+
+```bash
+# 方式 1：从文件执行
+cat > /tmp/vbrowser-example.js <<'EOF'
+Array.from(document.querySelectorAll('button'))
+  .map((el) => (el.innerText || '').trim())
+  .filter(Boolean)
+EOF
+./v-browser --json eval --file /tmp/vbrowser-example.js
+
+# 方式 2：通过标准输入执行
+cat /tmp/vbrowser-example.js | ./v-browser --json eval --stdin
+
+# 方式 3：base64 传入，适合脚本程序生成命令时避免引号转义
+./v-browser eval --base64 "ZG9jdW1lbnQudGl0bGU="
 ```
 
 ## 项目配置

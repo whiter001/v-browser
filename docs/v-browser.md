@@ -137,36 +137,36 @@ v-browser close
 
 ## 核心命令
 
-| 命令                                   | 说明                                               |
-| -------------------------------------- | -------------------------------------------------- |
-| `v-browser open <url>`                 | 导航到 URL（别名: goto, navigate）                 |
-| `v-browser click <sel>`                | 点击元素（`--new-tab` 在新标签页打开）             |
-| `v-browser dblclick <sel>`             | 双击元素                                           |
-| `v-browser download <sel> <path>`      | 点击元素并等待下载完成                             |
-| `v-browser focus <sel>`                | 聚焦元素                                           |
-| `v-browser type <sel> <text>`          | 输入文本到元素                                     |
-| `v-browser fill <sel> <text>`          | 清空并填充                                         |
-| `v-browser press <key>`                | 按键（Enter, Tab, Control+a）（别名: key）         |
-| `v-browser keyboard type <text>`       | 模拟真实按键输入（无选择器，当前焦点）             |
-| `v-browser keyboard inserttext <text>` | 插入文本（无按键事件）                             |
-| `v-browser keydown <key>`              | 按住按键                                           |
-| `v-browser keyup <key>`                | 释放按键                                           |
-| `v-browser hover <sel>`                | 悬停元素                                           |
-| `v-browser select <sel> <val>`         | 选择下拉选项                                       |
-| `v-browser check <sel>`                | 勾选复选框                                         |
-| `v-browser uncheck <sel>`              | 取消勾选复选框                                     |
-| `v-browser scroll <dir> [px]`          | 滚动（up/down/left/right，`--selector <sel>`）     |
-| `v-browser scrollintoview <sel>`       | 滚动元素到视图（别名: scrollinto）                 |
-| `v-browser drag <src> <tgt>`           | 拖放                                               |
-| `v-browser upload <sel> <files>`       | 上传文件                                           |
-| `v-browser screenshot [path]`          | 截图（`--full` 完整页面，无路径则保存到临时目录）  |
-| `v-browser screenshot --annotate`      | 带编号元素标签的标注截图                           |
-| `v-browser pdf <path>`                 | 保存为 PDF                                         |
-| `v-browser snapshot`                   | 获取带引用符的无障碍树（推荐 AI 使用）             |
-| `v-browser eval <js>`                  | 执行 JavaScript（`-b` base64，`--stdin` 管道输入） |
-| `v-browser connect`                    | 自动打开扩展连接页并 attach 当前页面               |
-| `v-browser close`                      | 关闭浏览器（别名: quit, exit）                     |
-| `v-browser --json ...`                 | 以统一 JSON 包装输出结果或错误                     |
+| 命令                                   | 说明                                                      |
+| -------------------------------------- | --------------------------------------------------------- |
+| `v-browser open <url>`                 | 导航到 URL（别名: goto, navigate）                        |
+| `v-browser click <sel>`                | 点击元素（`--new-tab` 在新标签页打开）                    |
+| `v-browser dblclick <sel>`             | 双击元素                                                  |
+| `v-browser download <sel> <path>`      | 点击元素并等待下载完成                                    |
+| `v-browser focus <sel>`                | 聚焦元素                                                  |
+| `v-browser type <sel> <text>`          | 输入文本到元素                                            |
+| `v-browser fill <sel> <text>`          | 清空并填充                                                |
+| `v-browser press <key>`                | 按键（Enter, Tab, Control+a）（别名: key）                |
+| `v-browser keyboard type <text>`       | 模拟真实按键输入（无选择器，当前焦点）                    |
+| `v-browser keyboard inserttext <text>` | 插入文本（无按键事件）                                    |
+| `v-browser keydown <key>`              | 按住按键                                                  |
+| `v-browser keyup <key>`                | 释放按键                                                  |
+| `v-browser hover <sel>`                | 悬停元素                                                  |
+| `v-browser select <sel> <val>`         | 选择下拉选项                                              |
+| `v-browser check <sel>`                | 勾选复选框                                                |
+| `v-browser uncheck <sel>`              | 取消勾选复选框                                            |
+| `v-browser scroll <dir> [px]`          | 滚动（up/down/left/right，`--selector <sel>`）            |
+| `v-browser scrollintoview <sel>`       | 滚动元素到视图（别名: scrollinto）                        |
+| `v-browser drag <src> <tgt>`           | 拖放                                                      |
+| `v-browser upload <sel> <files>`       | 上传文件                                                  |
+| `v-browser screenshot [path]`          | 截图（`--full` 完整页面，无路径则保存到临时目录）         |
+| `v-browser screenshot --annotate`      | 带编号元素标签的标注截图                                  |
+| `v-browser pdf <path>`                 | 保存为 PDF                                                |
+| `v-browser snapshot`                   | 获取带引用符的无障碍树（推荐 AI 使用）                    |
+| `v-browser eval <js>`                  | 执行 JavaScript（`-b` / `--base64`、`--stdin`、`--file`） |
+| `v-browser connect`                    | 自动打开扩展连接页并 attach 当前页面                      |
+| `v-browser close`                      | 关闭浏览器（别名: quit, exit）                            |
+| `v-browser --json ...`                 | 以统一 JSON 包装输出结果或错误                            |
 
 ---
 
@@ -214,6 +214,42 @@ v-browser press "Meta+v"
 - `v-browser press <key>` - 模拟按键组合
 - `v-browser keyboard type <text>` - 模拟真实按键输入
 - `v-browser tab` - 标签页操作（切换标签页）
+
+---
+
+## eval 最佳实践
+
+短表达式可以直接写在命令行里：
+
+```bash
+v-browser eval document.title
+v-browser --json eval "document.location.href"
+```
+
+长表达式、多行脚本，或者包含大量引号时，优先使用 `--file` 或 `--stdin`，避免 shell 因未闭合引号进入“等待输入”状态：
+
+```bash
+# 从文件执行
+cat > /tmp/vbrowser-example.js <<'EOF'
+Array.from(document.querySelectorAll('button'))
+	.map((el) => (el.innerText || '').trim())
+	.filter(Boolean)
+EOF
+v-browser --json eval --file /tmp/vbrowser-example.js
+
+# 从标准输入执行
+cat /tmp/vbrowser-example.js | v-browser --json eval --stdin
+
+# 也支持位置参数 `-` 表示从 stdin 读取
+cat /tmp/vbrowser-example.js | v-browser --json eval -
+```
+
+如果你是在脚本里动态拼命令，想彻底避开引号转义，也可以用 base64：
+
+```bash
+v-browser eval --base64 "ZG9jdW1lbnQudGl0bGU="
+v-browser eval -b "ZG9jdW1lbnQubG9jYXRpb24uaHJlZg=="
+```
 
 ---
 
