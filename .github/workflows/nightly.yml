@@ -116,14 +116,14 @@ jobs:
           artifact_dir="${PROJECT_NAME}-${{ matrix.target }}"
           binary_name="${BINARY_NAME}${{ matrix.bin_ext }}"
           mkdir -p "$artifact_dir"
-            cp "packages/server/bin/$binary_name" "$artifact_dir/"
+          cp "packages/server/bin/$binary_name" "$artifact_dir/"
           zip -r "$artifact_dir.zip" "$artifact_dir"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
-            path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}.zip
+          path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}.zip
           if-no-files-found: error
 
   release:
