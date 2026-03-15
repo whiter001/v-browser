@@ -1097,7 +1097,12 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			abort := flags['abort'] or { 'false' }
 			body := flags['body'] or { '' }
 			filter := flags['filter'] or { '' }
-			return 'network', '{"action":${json_str(action)},"url":${json_str(url)},"abort":${json_str(abort)},"body":${json_str(body)},"filter":${json_str(filter)}}'
+			mut request_id := flags['request-id'] or { '' }
+			// 支持 network body <requestId> 语法
+			if action == 'body' && request_id == '' && positionals.len > 1 {
+				request_id = positionals[1]
+			}
+			return 'network', '{"action":${json_str(action)},"url":${json_str(url)},"abort":${json_str(abort)},"body":${json_str(body)},"filter":${json_str(filter)},"requestId":${json_str(request_id)}}'
 		}
 		// ── frame ──
 		'frame' {
@@ -1395,6 +1400,7 @@ fn print_usage() {
   v-browser cookies get/set/clear   Cookie 管理
   v-browser storage get/set/clear   localStorage 管理
   v-browser network route/unroute   网络拦截
+  v-browser network body <requestId> 获取响应体
   v-browser dialog accept/dismiss   对话框处理
   v-browser highlight <selector>    高亮元素
   v-browser console / errors        查看控制台/错误

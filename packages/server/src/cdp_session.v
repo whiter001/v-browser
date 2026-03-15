@@ -7,6 +7,7 @@ module main
 import x.json2 as json
 import sync
 import time
+import encoding.base64
 
 // ProtocolResponse 扩展发回的任意消息（响应 or 事件）
 struct ProtocolResponse {
@@ -441,6 +442,19 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 
 fn tracked_network_request_json(entry TrackedNetworkRequest) string {
 	return '{"requestId":${json_str(entry.request_id)},"method":${json_str(entry.method)},"url":${json_str(entry.url)},"resourceType":${json_str(entry.resource_type)},"status":${entry.status},"statusText":${json_str(entry.status_text)},"errorText":${json_str(entry.error_text)},"finished":${entry.finished}}'
+}
+
+// get_response_body 获取网络请求的响应体
+fn (mut s CdpSession) get_response_body(request_id string) !string {
+	s.enable_network_tracking()!
+	resp := s.send_command('Network.getResponseBody', '{"requestId":${json_str(request_id)}}')!
+	body := cdp_extract_str(resp.result, 'body')
+	base64_flag := cdp_extract_obj_key(resp.result, '"base64Encoded":')
+	if base64_flag == 'true' {
+		// 解码 base64
+		return base64.decode_str(body)
+	}
+	return body
 }
 
 // ─── 超时常量 ───────────────────────────────────────────────

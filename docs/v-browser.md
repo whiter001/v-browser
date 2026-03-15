@@ -385,15 +385,26 @@ v-browser storage session        # 同上
 
 ## 网络
 
-当前 `network route` / `unroute` / `network requests` 已可用；请求状态码依赖浏览器返回的 `Network.responseReceived` / `Network.responseReceivedExtraInfo`，因此少数请求可能只显示基础信息。
+当前 `network route` / `unroute` / `network requests` / `network body` 已可用；请求状态码依赖浏览器返回的 `Network.responseReceived` / `Network.responseReceivedExtraInfo`，因此少数请求可能只显示基础信息。
 
 ```bash
 v-browser network route <url>              # 拦截请求
 v-browser network route <url> --abort      # 阻止请求
 v-browser network route <url> --body <json> # 模拟响应
 v-browser network unroute [url]           # 移除路由
-v-browser network requests                 # 查看跟踪的请求
-v-browser network requests --filter api    # 过滤请求
+v-browser network requests               # 查看跟踪的请求（含 requestId）
+v-browser network requests --filter api   # 过滤请求
+v-browser network body <requestId>        # 根据 requestId 获取响应体
+```
+
+**使用示例：**
+
+```bash
+# 1. 查看请求列表，获取 requestId
+v-browser network requests
+
+# 2. 根据 requestId 获取响应体
+v-browser network body <requestId>
 ```
 
 ---
