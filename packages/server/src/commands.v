@@ -2375,6 +2375,14 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			body := sess.get_response_body(request_id) or { return 'ERROR:${err}' }
 			return json_str(body)
 		}
+		'headers' {
+			request_id := cdp_extract_str(params, 'requestId')
+			if request_id == '' {
+				return 'ERROR:missing requestId'
+			}
+			headers := sess.get_response_headers(request_id) or { return 'ERROR:${err}' }
+			return json_str(headers)
+		}
 		'route' {
 			url := cdp_extract_str(params, 'url')
 			abort := cdp_extract_str(params, 'abort') == 'true'

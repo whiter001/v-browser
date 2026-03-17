@@ -25,14 +25,16 @@ struct EventSub {
 
 struct TrackedNetworkRequest {
 mut:
-	request_id    string
-	url           string
-	method        string
-	resource_type string
-	status        int
-	status_text   string
-	error_text    string
-	finished      bool
+	request_id        string
+	url               string
+	method            string
+	resource_type     string
+	status            int
+	status_text       string
+	error_text        string
+	finished          bool
+	request_headers   string
+	response_headers  string
 }
 
 // CdpSession 管理一个 WebSocket 连接上的 CDP 会话
@@ -403,12 +405,22 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 			entry.url = cdp_extract_str(request_obj, 'url')
 			entry.method = cdp_extract_str(request_obj, 'method')
 			entry.resource_type = cdp_extract_str(params, 'type')
+			// 提取请求头
+			headers_obj := cdp_extract_obj(request_obj, 'headers')
+			if headers_obj != '' {
+				entry.request_headers = headers_obj
+			}
 		}
 		'Network.responseReceived' {
 			response_obj := cdp_extract_obj(params, 'response')
 			status_val := cdp_extract_obj_key(response_obj, '"status":')
 			entry.status = status_val.int()
 			entry.status_text = cdp_extract_str(response_obj, 'statusText')
+			// 提取响应头
+			headers_obj := cdp_extract_obj(response_obj, 'headers')
+			if headers_obj != '' {
+				entry.response_headers = headers_obj
+			}
 			if entry.url == '' {
 				entry.url = cdp_extract_str(response_obj, 'url')
 			}
@@ -441,7 +453,7 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 }
 
 fn tracked_network_request_json(entry TrackedNetworkRequest) string {
-	return '{"requestId":${json_str(entry.request_id)},"method":${json_str(entry.method)},"url":${json_str(entry.url)},"resourceType":${json_str(entry.resource_type)},"status":${entry.status},"statusText":${json_str(entry.status_text)},"errorText":${json_str(entry.error_text)},"finished":${entry.finished}}'
+	return '{"requestId":${json_str(entry.request_id)},"method":${json_str(entry.method)},"url":${json_str(entry.url)},"resourceType":${json_str(entry.resource_type)},"status":${entry.status},"statusText":${json_str(entry.status_text)},"errorText":${json_str(entry.error_text)},"finished":${entry.finished},"requestHeaders":${json_str(entry.request_headers)},"responseHeaders":${json_str(entry.response_headers)}}'
 }
 
 // get_response_body 获取网络请求的响应体
@@ -455,6 +467,19 @@ fn (mut s CdpSession) get_response_body(request_id string) !string {
 		return base64.decode_str(body)
 	}
 	return body
+}
+
+// get_response_headers 获取网络请求的响应头（从本地追踪记录中获取）
+fn (mut s CdpSession) get_response_headers(request_id string) !string {
+	s.enable_network_tracking()!
+	// 从本地追踪的请求中获取响应头
+	entry := s.network_requests[request_id] or {
+		return error('request not found: ${request_id}')
+	}
+	if entry.response_headers == '' {
+		return error('response headers not available for: ${request_id}')
+	}
+	return entry.response_headers
 }
 
 // ─── 超时常量 ───────────────────────────────────────────────

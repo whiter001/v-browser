@@ -1098,8 +1098,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			body := flags['body'] or { '' }
 			filter := flags['filter'] or { '' }
 			mut request_id := flags['request-id'] or { '' }
-			// 支持 network body <requestId> 语法
+			// 支持 network body/headers <requestId> 语法
 			if action == 'body' && request_id == '' && positionals.len > 1 {
+				request_id = positionals[1]
+			}
+			if action == 'headers' && request_id == '' && positionals.len > 1 {
 				request_id = positionals[1]
 			}
 			return 'network', '{"action":${json_str(action)},"url":${json_str(url)},"abort":${json_str(abort)},"body":${json_str(body)},"filter":${json_str(filter)},"requestId":${json_str(request_id)}}'
