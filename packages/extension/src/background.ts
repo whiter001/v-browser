@@ -71,23 +71,32 @@ class TabShareExtension {
       case "connectToMCPRelay":
         this._connectToRelay(sender.tab!.id!, message.mcpRelayUrl).then(
           () => sendResponse({ success: true }),
-          (error: any) => sendResponse({ success: false, error: error.message }),
+          (error: any) =>
+            sendResponse({ success: false, error: error.message }),
         );
         return true;
       case "getTabs":
         this._getTabs().then(
-          (tabs) => sendResponse({ success: true, tabs, currentTabId: sender.tab?.id }),
-          (error: any) => sendResponse({ success: false, error: error.message }),
+          (tabs) =>
+            sendResponse({ success: true, tabs, currentTabId: sender.tab?.id }),
+          (error: any) =>
+            sendResponse({ success: false, error: error.message }),
         );
         return true;
       case "connectToTab":
         this._resolveTargetTab(sender, message.tabId, message.windowId)
           .then(({ tabId, windowId }) =>
-            this._connectTab(sender.tab?.id || tabId, tabId, windowId, message.mcpRelayUrl!),
+            this._connectTab(
+              sender.tab?.id || tabId,
+              tabId,
+              windowId,
+              message.mcpRelayUrl!,
+            ),
           )
           .then(
             () => sendResponse({ success: true }),
-            (error: any) => sendResponse({ success: false, error: error.message }),
+            (error: any) =>
+              sendResponse({ success: false, error: error.message }),
           );
         return true; // Return true to indicate that the response will be sent asynchronously
       case "getConnectionStatus":
@@ -100,13 +109,15 @@ class TabShareExtension {
       case "syncExtensionRegistration":
         this._syncExtensionRegistration(message.mcpRelayUrl).then(
           (result) => sendResponse({ success: true, ...result }),
-          (error: any) => sendResponse({ success: false, error: error.message }),
+          (error: any) =>
+            sendResponse({ success: false, error: error.message }),
         );
         return true;
       case "disconnect":
         this._disconnect().then(
           () => sendResponse({ success: true }),
-          (error: any) => sendResponse({ success: false, error: error.message }),
+          (error: any) =>
+            sendResponse({ success: false, error: error.message }),
         );
         return true;
       case "closeTabFromConnect":
@@ -121,7 +132,10 @@ class TabShareExtension {
     return false;
   }
 
-  private async _connectToRelay(selectorTabId: number, mcpRelayUrl: string): Promise<void> {
+  private async _connectToRelay(
+    selectorTabId: number,
+    mcpRelayUrl: string,
+  ): Promise<void> {
     try {
       debugLog(`Connecting to relay at ${mcpRelayUrl}`);
       const socket = new WebSocket(mcpRelayUrl);
@@ -189,8 +203,10 @@ class TabShareExtension {
       }
       await this._setConnectedTabId(null);
 
-      this._activeConnection = this._pendingTabSelection.get(selectorTabId)?.connection;
-      if (!this._activeConnection) throw new Error("No active MCP relay connection");
+      this._activeConnection =
+        this._pendingTabSelection.get(selectorTabId)?.connection;
+      if (!this._activeConnection)
+        throw new Error("No active MCP relay connection");
       this._pendingTabSelection.delete(selectorTabId);
 
       this._activeConnection.onTabIdChanged = (nextTabId) => {
@@ -219,7 +235,8 @@ class TabShareExtension {
   private async _setConnectedTabId(tabId: number | null): Promise<void> {
     const oldTabId = this._connectedTabId;
     this._connectedTabId = tabId;
-    if (oldTabId && oldTabId !== tabId) await this._updateBadge(oldTabId, { text: "" });
+    if (oldTabId && oldTabId !== tabId)
+      await this._updateBadge(oldTabId, { text: "" });
     if (tabId)
       await this._updateBadge(tabId, {
         text: "✓",
@@ -236,7 +253,7 @@ class TabShareExtension {
       await chrome.action.setBadgeText({ tabId, text });
       await chrome.action.setTitle({ tabId, title: title || "" });
       if (color) await chrome.action.setBadgeBackgroundColor({ tabId, color });
-    } catch (error: any) {
+    } catch (_error: any) {
       // Ignore errors as the tab may be closed already.
     }
   }
@@ -267,10 +284,10 @@ class TabShareExtension {
         pending.timerId = setTimeout(() => {
           const existed = this._pendingTabSelection.delete(tabId);
           if (existed) {
-            pending.connection.close("Tab has been inactive for 5 seconds");
+            pending.connection.close("Tab has been inactive for 30 seconds");
             chrome.tabs.sendMessage(tabId, { type: "connectionTimeout" });
           }
-        }, 5000);
+        }, 30000);
         return;
       }
     }
@@ -278,8 +295,8 @@ class TabShareExtension {
 
   private _onTabUpdated(
     tabId: number,
-    changeInfo: chrome.tabs.TabChangeInfo,
-    tab: chrome.tabs.Tab,
+    _changeInfo: chrome.tabs.TabChangeInfo,
+    _tab: chrome.tabs.Tab,
   ) {
     if (this._connectedTabId === tabId) void this._setConnectedTabId(tabId);
   }
@@ -288,7 +305,10 @@ class TabShareExtension {
     const tabs = await chrome.tabs.query({});
     return tabs.filter(
       (tab) =>
-        tab.url && !["chrome:", "edge:", "devtools:"].some((scheme) => tab.url!.startsWith(scheme)),
+        tab.url &&
+        !["chrome:", "edge:", "devtools:"].some((scheme) =>
+          tab.url!.startsWith(scheme),
+        ),
     );
   }
 

@@ -21,6 +21,11 @@ server
 *.tar
 *.gz
 
+# Log files
+*.log
+server.log
+snapshot.txt
+
 # Build artifact: V compiler creates this directory when running `v -o ./v-browser ./src`
 # (appears to be a quirk of V's build system with this source layout)
 src/src

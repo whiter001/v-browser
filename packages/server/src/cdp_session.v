@@ -639,7 +639,16 @@ fn cdp_extract_error(s string) string {
 
 // json_str 简单字符串 JSON 编码
 fn json_str(s string) string {
-	escaped := s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r',
-		'\\r')
-	return '"${escaped}"'
+	mut escaped := s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r',
+		'\\r').replace('\t', '\\t')
+	// 过滤不可见的控制字符（0x00-0x1F，除了已处理的 \n \r \t），避免前端 JSON.parse 失败
+	mut clean := []u8{cap: escaped.len}
+	for i in 0 .. escaped.len {
+		b := escaped[i]
+		if b < 32 && b !in [`\n`, `\r`, `\t`] {
+			continue
+		}
+		clean << b
+	}
+	return '"${clean.bytestr()}"'
 }

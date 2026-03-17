@@ -31,9 +31,14 @@ v-browser
 packages/test-ui/main
 packages/test-ui/test-ui
 
+# Log files
+*.log
+server.log
+
 # OS files
 .DS_Store
 Thumbs.db
+nul
 
 # Local env files
 .env
