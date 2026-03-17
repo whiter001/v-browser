@@ -70,7 +70,7 @@ v-browser click <sel>                # 点击元素（--new-tab 在新标签页�
 v-browser dblclick <sel>             # 双击
 v-browser focus <sel>                # 聚焦元素
 v-browser hover <sel>                # 悬停
-v-browser type <sel> <text>          # 输入文本（追加）
+v-browser type <sel> <text>          # 真实按键式追加输入文本
 v-browser fill <sel> <text>          # 清空并填充
 v-browser press <key>                # 按键
 v-browser select <sel> <val>         # 选择下拉选项

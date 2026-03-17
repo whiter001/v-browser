@@ -769,6 +769,15 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			}
 			return 'type', '{"selector":${json_str(sel)},"text":${json_str(text)}}'
 		}
+		'keyboard' {
+			action := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
+			text := flags['text'] or {
+				if positionals.len > 1 { positionals[1] } else { '' }
+			}
+			return 'keyboard', '{"action":${json_str(action)},"text":${json_str(text)}}'
+		}
 		'press', 'key' {
 			key := flags['key'] or {
 				if positionals.len > 0 { positionals[0] } else { '' }
@@ -1385,8 +1394,10 @@ fn print_usage() {
   v-browser hover <selector>    鼠标悬停
   v-browser focus <selector>    聚焦元素
   v-browser fill <sel> <text>   清空并填入文本
-  v-browser type <sel> <text>   追加输入文本
-  v-browser press <key>         按键 (Enter, Tab, Escape, Control+a ...)
+	v-browser type <sel> <text>   真实按键式追加输入文本
+	v-browser press <key>         按键 (Enter, Tab, Escape, Control+a ...)
+	v-browser keyboard type <text>       模拟真实按键输入（当前焦点）
+	v-browser keyboard inserttext <text> 插入文本（无按键事件）
   v-browser select <sel> <val>  选择 <select> 选项
   v-browser check/uncheck <sel> 勾选/取消勾选
   v-browser scroll <dir> [--px N] [--selector sel]  滚动 (up/down/left/right)

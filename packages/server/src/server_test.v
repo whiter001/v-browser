@@ -195,6 +195,16 @@ fn test_parse_cli_to_ipc_find_supports_text_list_and_index() {
 	assert params.contains('"index":"2"')
 }
 
+fn test_parse_cli_to_ipc_keyboard_routes_type_and_inserttext() {
+	method_type, params_type := parse_cli_to_ipc('keyboard', ['type', 'Hello'], false)
+	assert method_type == 'keyboard'
+	assert params_type == '{"action":"type","text":"Hello"}'
+
+	method_insert, params_insert := parse_cli_to_ipc('keyboard', ['inserttext', 'Hello'], false)
+	assert method_insert == 'keyboard'
+	assert params_insert == '{"action":"inserttext","text":"Hello"}'
+}
+
 fn test_parse_cli_to_ipc_tab_switch_and_window_new() {
 	method_tab, params_tab := parse_cli_to_ipc('tab', ['switch', '12'], false)
 	assert method_tab == 'tab'

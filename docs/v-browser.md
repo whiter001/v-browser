@@ -144,7 +144,7 @@ v-browser close
 | `v-browser dblclick <sel>`             | 双击元素                                                  |
 | `v-browser download <sel> <path>`      | 点击元素并等待下载完成                                    |
 | `v-browser focus <sel>`                | 聚焦元素                                                  |
-| `v-browser type <sel> <text>`          | 输入文本到元素                                            |
+| `v-browser type <sel> <text>`          | 真实按键式追加输入文本到元素                              |
 | `v-browser fill <sel> <text>`          | 清空并填充                                                |
 | `v-browser press <key>`                | 按键（Enter, Tab, Control+a）（别名: key）                |
 | `v-browser keyboard type <text>`       | 模拟真实按键输入（无选择器，当前焦点）                    |

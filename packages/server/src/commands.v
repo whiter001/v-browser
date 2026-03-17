@@ -1187,13 +1187,19 @@ fn cmd_focus(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	el := resolve_selector(mut sess, sel) or { return 'ERROR:${err}' }
+	focus_selector(mut sess, sel) or { return 'ERROR:${err}' }
+	return 'null'
+}
+
+fn focus_selector(mut sess CdpSession, sel string) ! {
+	el := resolve_selector(mut sess, sel)!
 	sess.send_command('DOM.focus', '{"backendNodeId":${el.backend_node_id}}') or {
 		// fallback: Runtime.evaluate
-		js := build_element_scope_js(&sess, sel, 'el?.focus()')
-		sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {}
+		js := build_element_scope_js(&sess, sel, 'el?.focus(); return true;')
+		if !evaluate_bool_js(mut sess, js)! {
+			return error('element not found: ${sel}')
+		}
 	}
-	return 'null'
 }
 
 // ─── fill ───────────────────────────────────────────────────
@@ -1214,7 +1220,8 @@ fn cmd_type_text(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	run_element_action(mut sess, sel, build_type_action_body(text)) or { return 'ERROR:${err}' }
+	focus_selector(mut sess, sel) or { return 'ERROR:${err}' }
+	type_text_like_playwright(mut sess, text) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
@@ -1224,8 +1231,12 @@ fn cmd_keyboard(mut sess CdpSession, params string) string {
 	text := cdp_extract_str(params, 'text')
 	return match action {
 		'type', 'inserttext' {
-			sess.send_command('Input.insertText', '{"text":${json_str(text)}}') or {
-				return 'ERROR:${err}'
+			if action == 'type' {
+				type_text_like_playwright(mut sess, text) or { return 'ERROR:${err}' }
+			} else {
+				sess.send_command('Input.insertText', '{"text":${json_str(text)}}') or {
+					return 'ERROR:${err}'
+				}
 			}
 			'null'
 		}
@@ -1241,8 +1252,8 @@ fn cmd_press(mut sess CdpSession, params string) string {
 	if key == '' {
 		return 'ERROR:missing key'
 	}
-	dispatch_key(mut sess, key, 'keyDown') or { return 'ERROR:${err}' }
-	dispatch_key(mut sess, key, 'keyUp') or { return 'ERROR:${err}' }
+	dispatch_key(mut sess, key, 'keyDown', '') or { return 'ERROR:${err}' }
+	dispatch_key(mut sess, key, 'keyUp', '') or { return 'ERROR:${err}' }
 	return 'null'
 }
 
@@ -1251,7 +1262,7 @@ fn cmd_keydown(mut sess CdpSession, params string) string {
 	if key == '' {
 		return 'ERROR:missing key'
 	}
-	dispatch_key(mut sess, key, 'keyDown') or { return 'ERROR:${err}' }
+	dispatch_key(mut sess, key, 'keyDown', '') or { return 'ERROR:${err}' }
 	return 'null'
 }
 
@@ -1260,11 +1271,11 @@ fn cmd_keyup(mut sess CdpSession, params string) string {
 	if key == '' {
 		return 'ERROR:missing key'
 	}
-	dispatch_key(mut sess, key, 'keyUp') or { return 'ERROR:${err}' }
+	dispatch_key(mut sess, key, 'keyUp', '') or { return 'ERROR:${err}' }
 	return 'null'
 }
 
-fn dispatch_key(mut sess CdpSession, key string, typ string) ! {
+fn dispatch_key(mut sess CdpSession, key string, typ string, text string) ! {
 	// 解析 Control+a 等组合键
 	parts := key.split('+')
 	mut modifiers := 0
@@ -1281,7 +1292,42 @@ fn dispatch_key(mut sess CdpSession, key string, typ string) ! {
 			}
 		}
 	}
-	sess.send_command('Input.dispatchKeyEvent', '{"type":"${typ}","key":"${actual_key}","modifiers":${modifiers}}')!
+	mut payload := '{"type":"${typ}","key":${json_str(actual_key)},"modifiers":${modifiers}'
+	if typ == 'keyDown' && text != '' {
+		payload += ',"text":${json_str(text)},"unmodifiedText":${json_str(text)}'
+	}
+	payload += '}'
+	sess.send_command('Input.dispatchKeyEvent', payload)!
+}
+
+fn type_text_like_playwright(mut sess CdpSession, text string) ! {
+	for ch in text.runes() {
+		ch_text := ch.str()
+		match ch {
+			`\n` {
+				dispatch_key(mut sess, 'Enter', 'keyDown', '\n')!
+				dispatch_key(mut sess, 'Enter', 'keyUp', '')!
+			}
+			`\r` {
+				continue
+			}
+			`\t` {
+				dispatch_key(mut sess, 'Tab', 'keyDown', '\t')!
+				dispatch_key(mut sess, 'Tab', 'keyUp', '')!
+			}
+			else {
+				// ASCII printable chars use real key events
+				if ch_text.len == 1 && ch_text[0] >= 32 && ch_text[0] < 127 {
+					key_name := if ch_text == ' ' { 'Space' } else { ch_text }
+					dispatch_key(mut sess, key_name, 'keyDown', ch_text)!
+					dispatch_key(mut sess, key_name, 'keyUp', '')!
+				} else {
+					// Non-ASCII (e.g., Chinese) use insertText for better compatibility
+					sess.send_command('Input.insertText', '{"text":${json_str(ch_text)}}')!
+				}
+			}
+		}
+	}
 }
 
 // ─── select ─────────────────────────────────────────────────
