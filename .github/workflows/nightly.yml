@@ -67,13 +67,14 @@ jobs:
       - name: Package extension
         run: |
           cd packages/extension
-          zip -r ../v-browser-extension.zip dist/ manifest.json icons/
+          short_sha="${GITHUB_SHA::7}"
+          zip -r "../v-browser-extension-${short_sha}.zip" dist/ manifest.json icons/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: v-browser-extension
-          path: packages/v-browser-extension.zip
+          path: packages/v-browser-extension-*.zip
           if-no-files-found: error
 
   build:
@@ -113,21 +114,23 @@ jobs:
       - name: Package artifact
         shell: bash
         run: |
+          short_sha="${GITHUB_SHA::7}"
           artifact_dir="${PROJECT_NAME}-${{ matrix.target }}"
           binary_name="${BINARY_NAME}${{ matrix.bin_ext }}"
-          mkdir -p "$artifact_dir"
-          cp "packages/server/bin/$binary_name" "$artifact_dir/"
+          artifact_name="${artifact_dir}-${short_sha}"
+          mkdir -p "$artifact_name"
+          cp "packages/server/bin/$binary_name" "$artifact_name/"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            powershell -Command "Compress-Archive -Path '$artifact_dir/*' -DestinationPath '$artifact_dir.zip'"
+            powershell -Command "Compress-Archive -Path '$artifact_name/*' -DestinationPath '$artifact_name.zip'"
           else
-            zip -r "$artifact_dir.zip" "$artifact_dir"
+            zip -r "$artifact_name.zip" "$artifact_name"
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
-          path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}.zip
+          path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}-*.zip
           if-no-files-found: error
 
   release:
@@ -186,10 +189,10 @@ jobs:
             echo
             echo '### Included artifacts'
             echo
-            echo '- `v-browser-linux-x86_64.zip`'
-            echo '- `v-browser-windows-x86_64.zip`'
-            echo '- `v-browser-darwin-arm64.zip`'
-            echo '- `v-browser-extension.zip` (Browser Extension)'
+            echo "- \`v-browser-linux-x86_64-${short_sha}.zip\`"
+            echo "- \`v-browser-windows-x86_64-${short_sha}.zip\`"
+            echo "- \`v-browser-darwin-arm64-${short_sha}.zip\`"
+            echo "- \`v-browser-extension-${short_sha}.zip\` (Browser Extension)"
             echo
             echo '### Verification performed'
             echo
@@ -208,7 +211,7 @@ jobs:
       - name: Publish nightly release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "nightly-assets/**/*.zip,v-browser-extension.zip"
+          artifacts: "nightly-assets/**/*.zip,v-browser-extension-*.zip"
           tag: nightly
           name: v-browser nightly build
           body: ${{ steps.release_body.outputs.BODY }}
