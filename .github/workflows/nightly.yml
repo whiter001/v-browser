@@ -143,27 +143,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download binary artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          path: nightly-assets
+          path: release-assets
           merge-multiple: true
-
-      - name: Download extension artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: v-browser-extension
-          path: .
 
       - name: Update nightly tag
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
           git fetch --tags
-          git tag -d nightly || true
-          git push origin :nightly || true
-          git tag -a nightly -m "Nightly build"
-          git push origin nightly
+          git tag -f nightly
+          git push origin nightly --force
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -211,38 +203,22 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Clear nightly release assets
+      - name: Publish nightly release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          release_id=$(gh api repos/${{ github.repository }}/releases/tags/nightly -q '.id' 2>/dev/null || true)
-          if [[ -z "$release_id" ]]; then
-            echo "No existing nightly release found."
-            exit 0
-          fi
-
-          asset_ids=$(gh api repos/${{ github.repository }}/releases/$release_id/assets -q '.[].id' 2>/dev/null || true)
-          if [[ -z "$asset_ids" ]]; then
-            echo "Nightly release has no assets to delete."
-            exit 0
-          fi
-
-          for asset_id in $asset_ids; do
-            gh api -X DELETE repos/${{ github.repository }}/releases/assets/$asset_id
-          done
-
-      - name: Publish nightly release
-        uses: ncipollo/release-action@v1
-        with:
-          artifacts: "nightly-assets/**/*.zip,v-browser-extension-*.zip"
-          tag: nightly
-          name: v-browser nightly build
-          body: ${{ steps.release_body.outputs.BODY }}
-          allowUpdates: true
-          prerelease: true
-          makeLatest: false
-          replacesArtifacts: true
-          removeArtifacts: true
-          artifactErrorsFailBuild: true
+          
+          echo "Cleaning up existing nightly release..."
+          gh release delete nightly --yes --cleanup-tag || true
+          
+          # Wait a bit for GitHub API to sync
+          sleep 2
+          
+          echo "Creating new nightly release..."
+          gh release create nightly \
+            --title "v-browser nightly build" \
+            --notes "${{ steps.release_body.outputs.BODY }}" \
+            --prerelease \
+            release-assets/*.zip
