@@ -68,13 +68,14 @@ jobs:
         run: |
           cd packages/extension
           short_sha="${GITHUB_SHA::7}"
-          zip -r "../v-browser-extension-${short_sha}.zip" dist/ manifest.json icons/
+          run_id="${GITHUB_RUN_ID}"
+          zip -r "../v-browser-extension-${short_sha}-${run_id}.zip" dist/ manifest.json icons/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: v-browser-extension
-          path: packages/v-browser-extension-*.zip
+          path: packages/v-browser-extension-*-*.zip
           if-no-files-found: error
 
   build:
@@ -115,9 +116,10 @@ jobs:
         shell: bash
         run: |
           short_sha="${GITHUB_SHA::7}"
+          run_id="${GITHUB_RUN_ID}"
           artifact_dir="${PROJECT_NAME}-${{ matrix.target }}"
           binary_name="${BINARY_NAME}${{ matrix.bin_ext }}"
-          artifact_name="${artifact_dir}-${short_sha}"
+          artifact_name="${artifact_dir}-${short_sha}-${run_id}"
           mkdir -p "$artifact_name"
           cp "packages/server/bin/$binary_name" "$artifact_name/"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
@@ -130,7 +132,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
-          path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}-*.zip
+          path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}-*-*.zip
           if-no-files-found: error
 
   release:
@@ -171,6 +173,7 @@ jobs:
         run: |
           now=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
           short_sha="${GITHUB_SHA::7}"
+          run_id="${GITHUB_RUN_ID}"
           trigger="${{ github.event_name }}"
           ref_name="${{ github.ref_name }}"
           {
@@ -189,10 +192,10 @@ jobs:
             echo
             echo '### Included artifacts'
             echo
-            echo "- \`v-browser-linux-x86_64-${short_sha}.zip\`"
-            echo "- \`v-browser-windows-x86_64-${short_sha}.zip\`"
-            echo "- \`v-browser-darwin-arm64-${short_sha}.zip\`"
-            echo "- \`v-browser-extension-${short_sha}.zip\` (Browser Extension)"
+            echo "- \`v-browser-linux-x86_64-${short_sha}-${run_id}.zip\`"
+            echo "- \`v-browser-windows-x86_64-${short_sha}-${run_id}.zip\`"
+            echo "- \`v-browser-darwin-arm64-${short_sha}-${run_id}.zip\`"
+            echo "- \`v-browser-extension-${short_sha}-${run_id}.zip\` (Browser Extension)"
             echo
             echo '### Verification performed'
             echo
