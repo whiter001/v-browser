@@ -147,6 +147,9 @@ jobs:
           name: v-browser-extension
           path: .
 
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Update nightly tag
         run: |
           git fetch --tags
