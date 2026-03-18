@@ -148,12 +148,14 @@ jobs:
           path: .
 
       - name: Update nightly tag
-        uses: richardsimko/update-tag@v1
+        run: |
+          git fetch --tags
+          git tag -d nightly || true
+          git push origin :nightly || true
+          git tag -a nightly -m "Nightly build"
+          git push origin nightly
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: nightly
-          force: true
 
       - name: Generate release body
         id: release_body
