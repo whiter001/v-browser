@@ -208,7 +208,7 @@ jobs:
       - name: Publish nightly release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "nightly-assets/*.zip,v-browser-extension.zip"
+          artifacts: "nightly-assets/**/*.zip,v-browser-extension.zip"
           tag: nightly
           name: v-browser nightly build
           body: ${{ steps.release_body.outputs.BODY }}
