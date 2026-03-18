@@ -211,6 +211,28 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
+      - name: Clear nightly release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_id=$(gh api repos/${{ github.repository }}/releases/tags/nightly -q '.id' 2>/dev/null || true)
+          if [[ -z "$release_id" ]]; then
+            echo "No existing nightly release found."
+            exit 0
+          fi
+
+          asset_ids=$(gh api repos/${{ github.repository }}/releases/$release_id/assets -q '.[].id' 2>/dev/null || true)
+          if [[ -z "$asset_ids" ]]; then
+            echo "Nightly release has no assets to delete."
+            exit 0
+          fi
+
+          for asset_id in $asset_ids; do
+            gh api -X DELETE repos/${{ github.repository }}/releases/assets/$asset_id
+          done
+
       - name: Publish nightly release
         uses: ncipollo/release-action@v1
         with:
