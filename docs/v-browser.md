@@ -2,6 +2,12 @@
 
 `v-browser` 是一个面向 AI Agent 的浏览器自动化 CLI 工具，基于 vlang 实现, 配合extension使用。
 
+## 相关文档
+
+- [最短可执行 SOP](./v-browser-sop.md)
+- [可落地改进清单](./v-browser-improvement-plan.md)
+- [仓库内 skill](../.github/skills/v-browser/SKILL.md)
+
 ## 安装与启动
 
 ```bash

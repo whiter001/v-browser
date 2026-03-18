@@ -281,11 +281,22 @@ fn (mut s VBrowserServer) dispatch(req IpcRequest) IpcResponse {
 	// status 命令不需要 session
 	if req.method == 'status' {
 		s.ext_mu.@lock()
-		connected := s.ext_conn != none
+		mut connected := false
+		mut attached := false
+		mut page_enabled := false
+		mut network_enabled := false
+		mut current_frame_selector := ''
+		if mut conn := s.ext_conn {
+			connected = true
+			page_enabled = conn.session.page_enabled
+			network_enabled = conn.session.network_enabled
+			current_frame_selector = conn.session.current_frame_selector
+			attached = page_enabled || network_enabled || current_frame_selector != ''
+		}
 		s.ext_mu.unlock()
 		return IpcResponse{
 			id:     req.id
-			result: '{"connected":${connected}}'
+			result: '{"connected":${connected},"extensionConnected":${connected},"attached":${attached},"pageEnabled":${page_enabled},"networkEnabled":${network_enabled},"currentFrameSelector":${json_str(current_frame_selector)}}'
 		}
 	}
 	if req.method == 'connect' {

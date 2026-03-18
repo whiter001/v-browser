@@ -31,6 +31,8 @@ const els = {
   dragState: $("dragState"),
   uploadField: $("uploadField"),
   uploadState: $("uploadState"),
+  uploadPhase: $("uploadPhase"),
+  uploadPreview: $("uploadPreview"),
   alertButton: $("alertButton"),
   confirmButton: $("confirmButton"),
   promptButton: $("promptButton"),
@@ -184,7 +186,10 @@ els.dragTarget.addEventListener("drop", (event) => {
 
 els.uploadField.addEventListener("change", () => {
   const names = Array.from(els.uploadField.files || []).map((file) => file.name);
-  els.uploadState.textContent = names.length > 0 ? `upload: ${names.join(", ")}` : "upload: none";
+  const joined = names.length > 0 ? names.join(", ") : "none";
+  els.uploadState.textContent = names.length > 0 ? `upload: ${joined}` : "upload: none";
+  els.uploadPhase.textContent = names.length > 0 ? "upload: selected" : "upload: idle";
+  els.uploadPreview.textContent = names.length > 0 ? `preview: ${joined}` : "preview: none";
 });
 
 els.alertButton.addEventListener("click", () => {

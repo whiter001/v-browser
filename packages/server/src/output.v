@@ -43,11 +43,20 @@ fn decode_json_string(s string) string {
 fn print_error(message string, json_output bool) {
 	if json_output {
 		code := error_code(message)
-		println('{"ok":false,"error":{"code":' + json_str(code) + ',"message":' +
-			json_str(message) + '}}')
+		suggestion := error_suggestion(message)
+		mut error_json := '{"code":' + json_str(code) + ',"message":' + json_str(message)
+		if suggestion != '' {
+			error_json += ',"suggestion":' + json_str(suggestion)
+		}
+		error_json += '}'
+		println('{"ok":false,"error":' + error_json + '}')
 		return
 	}
 	eprintln('Error: ${message}')
+	suggestion := error_suggestion(message)
+	if suggestion != '' {
+		eprintln('Hint: ${suggestion}')
+	}
 }
 
 fn json_value_or_string(value string) string {
@@ -83,8 +92,14 @@ fn error_code(message string) string {
 	if msg.contains('missing ') || msg.contains('requires ') || msg.contains('invalid ') {
 		return 'INVALID_ARGUMENT'
 	}
-	if msg.contains('not found') || msg.contains('no target tab available') {
+	if msg.contains('not found') || msg.contains('no target tab available') || msg.contains('no tab is currently accessible') {
 		return 'NOT_FOUND'
+	}
+	if msg.contains('debugger conflict') || msg.contains('another debugger is already attached') {
+		return 'DEBUGGER_CONFLICT'
+	}
+	if msg.contains('ambiguous text match') || msg.contains('multiple candidates') {
+		return 'AMBIGUOUS_MATCH'
 	}
 	if msg.contains('no extension connected') || msg.contains('no tab is connected') {
 		return 'NOT_CONNECTED'
@@ -95,6 +110,9 @@ fn error_code(message string) string {
 	if msg.contains('timeout') || msg.contains('timed out') {
 		return 'TIMEOUT'
 	}
+	if msg.contains('verification failed') {
+		return 'VERIFY_FAILED'
+	}
 	if msg.contains('failed to start') || msg.contains('did not become ready') {
 		return 'STARTUP_FAILED'
 	}
@@ -102,4 +120,39 @@ fn error_code(message string) string {
 		return 'CONNECTION_FAILED'
 	}
 	return 'COMMAND_FAILED'
+}
+
+fn error_suggestion(message string) string {
+	msg := message.to_lower()
+	if msg.contains('debugger conflict') || msg.contains('another debugger is already attached') {
+		return 'Close any other CDP sessions (Chrome DevTools, other automation tools) attached to the same tab, then run v-browser connect again.'
+	}
+	if msg.contains('no available tab') || msg.contains('no tab is currently accessible') || msg.contains('no target tab available') {
+		return 'Switch to a normal webpage tab (not the extension page), then run v-browser connect again.'
+	}
+	if msg.contains('no extension connected') || msg.contains('no tab is connected') {
+		return 'Run v-browser connect after syncing the extension id. If the extension page is already open, switch to a normal webpage tab before reconnecting.'
+	}
+	if msg.contains('not found') {
+		return 'Check the selector or target tab. Use v-browser snapshot to inspect the current page, or use find --list / find --debug to review semantic candidates.'
+	}
+	if msg.contains('ambiguous text match') || msg.contains('multiple candidates') {
+		return 'Use find --index to select a specific candidate, or add --name / --exact to narrow the match.'
+	}
+	if msg.contains('timeout') || msg.contains('timed out') {
+		return 'Wait for the page to finish loading, or increase the command timeout if the page is expected to take longer.'
+	}
+	if msg.contains('verification failed') {
+		return 'Check whether the target element actually changed. If the page is dynamic, increase --verify-timeout or verify a more stable state.'
+	}
+	if msg.contains('failed to start') || msg.contains('did not become ready') {
+		return 'Check the server log, then try v-browser server restart or v-browser status to verify the daemon is healthy.'
+	}
+	if msg.contains('cannot connect') || msg.contains('connection') {
+		return 'Verify the relay server and extension are running, then run v-browser connect again.'
+	}
+	if msg.contains('invalid ') || msg.contains('missing ') || msg.contains('requires ') {
+		return 'Check the command arguments and try again. Use v-browser --help or the command reference if the syntax is unclear.'
+	}
+	return ''
 }

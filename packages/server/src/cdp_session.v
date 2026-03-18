@@ -226,11 +226,18 @@ fn (mut s CdpSession) send_command_to(method string, params_json string, session
 // attach_to_tab 发 attachToTab 命令，等扩展 attach chrome.debugger
 fn (mut s CdpSession) attach_to_tab() !string {
 	resp := s.send_bridge_command_to('attachToTab', '{}', cdp_attach_timeout) or {
-		return error(if err.msg().contains('timed out') {
-			'Extension connection timeout: no extension connected within 60s. Please install the v-browser extension and allow the connection.'
-		} else {
-			err.msg()
-		})
+		err_msg := err.msg()
+		if err_msg.contains('timed out') {
+			return error('Extension connection timeout: no extension connected within 60s. Please install the v-browser extension and allow the connection.')
+		}
+		if err_msg.contains('another debugger is already attached')
+			|| err_msg.contains('debugger is already attached to the tab') {
+			return error('Debugger conflict: another debugger is already attached to the tab. Close other CDP sessions (like Chrome DevTools) and run v-browser connect again.')
+		}
+		if err_msg.contains('no target tab available') || err_msg.contains('tab not found') {
+			return error('No available tab: no tab is currently accessible. Switch to a normal webpage tab and run v-browser connect again.')
+		}
+		return error(err_msg)
 	}
 	s.enable_page_events() or {}
 	s.enable_network_tracking() or {}

@@ -149,6 +149,36 @@ fn test_parse_cli_to_ipc_diff_url_variants() {
 	assert params.contains('"waitUntil":"networkidle"')
 }
 
+fn test_parse_cli_to_ipc_fill_and_upload_include_verify_flags() {
+	fill_method, fill_params := parse_cli_to_ipc('fill', ['--selector', '#editor', '--text', 'Hello', '--verify', '--verify-timeout', '2750'], false)
+	assert fill_method == 'fill'
+	assert fill_params.contains('"selector":"#editor"')
+	assert fill_params.contains('"text":"Hello"')
+	assert fill_params.contains('"verify":"true"')
+	assert fill_params.contains('"verifyTimeout":2750')
+
+	type_method, type_params := parse_cli_to_ipc('type', ['--selector', '#editor', '--text', 'Hello', '--verify'], false)
+	assert type_method == 'type'
+	assert type_params.contains('"selector":"#editor"')
+	assert type_params.contains('"text":"Hello"')
+	assert type_params.contains('"verify":"true"')
+	assert type_params.contains('"verifyTimeout":1500')
+
+	upload_method, upload_params := parse_cli_to_ipc('upload', ['--selector', 'input[type=file]', '--files', './a.txt,./b.txt', '--verify'], false)
+	assert upload_method == 'upload'
+	assert upload_params.contains('"selector":"input[type=file]"')
+	assert upload_params.contains('"files":"./a.txt,./b.txt"')
+	assert upload_params.contains('"verify":"true"')
+	assert upload_params.contains('"verifyTimeout":1500')
+	assert upload_params.contains('"waitPreview":"false"')
+	assert upload_params.contains('"previewSelector":""')
+
+	upload_preview_method, upload_preview_params := parse_cli_to_ipc('upload', ['--selector', 'input[type=file]', '--files', './a.txt', '--wait-preview', '--preview-selector', '#uploadPreview'], false)
+	assert upload_preview_method == 'upload'
+	assert upload_preview_params.contains('"waitPreview":"true"')
+	assert upload_preview_params.contains('"previewSelector":"#uploadPreview"')
+}
+
 fn test_parse_cli_to_ipc_find_builds_semantic_request() {
 	method, params := parse_cli_to_ipc('find', ['--role', 'button', '--name', 'Save', '--click'],
 		false)
@@ -381,11 +411,27 @@ fn test_server_dispatch_status_and_connect_without_extension() {
 	mut server := VBrowserServer{}
 	status := server.dispatch(IpcRequest{ id: 1, method: 'status', params: '{}' })
 	assert status.err == ''
-	assert status.result == '{"connected":false}'
+	assert status.result.contains('"connected":false')
+	assert status.result.contains('"extensionConnected":false')
+	assert status.result.contains('"attached":false')
 
 	connect := server.dispatch(IpcRequest{ id: 2, method: 'connect', params: '{}' })
 	assert connect.result == ''
 	assert connect.err.contains('no extension connected')
+}
+
+fn test_server_dispatch_status_reports_attached_when_session_is_active() {
+	mut server := VBrowserServer{}
+	mut sess := new_cdp_session(noop_send)
+	sess.page_enabled = true
+	server.ext_conn = &ExtensionConn{
+		session: &sess
+	}
+	status := server.dispatch(IpcRequest{ id: 1, method: 'status', params: '{}' })
+	assert status.err == ''
+	assert status.result.contains('"connected":true')
+	assert status.result.contains('"extensionConnected":true')
+	assert status.result.contains('"attached":true')
 }
 
 fn test_extract_query_param_and_validate_extension_token() {
@@ -627,6 +673,38 @@ fn test_build_semantic_locator_js_prefers_visible_matches() {
 	assert js.contains('roleSelector(role)')
 }
 
+fn test_build_semantic_text_report_js_includes_hint_and_count() {
+	mut sess := new_cdp_session(noop_send)
+	js := build_semantic_text_report_js(sess, 'Run workflow', true, -1, 5, 'debug')
+	assert js.contains('var total = candidates.length')
+	assert js.contains('var hint = total === 0 ? "未找到候选"')
+	assert js.contains('count: total')
+	assert js.contains('selectedIndex: -1')
+	assert js.contains('report.candidates = candidates.slice(0, 5)')
+}
+
+fn test_build_fill_action_body_uses_native_setter() {
+	js := build_fill_action_body('Hello')
+	assert js.contains('Object.getOwnPropertyDescriptor')
+	assert js.contains('HTMLInputElement.prototype')
+	assert js.contains('HTMLTextAreaElement.prototype')
+	assert js.contains('dispatchEvent(new Event("input"')
+	assert js.contains('dispatchEvent(new Event("change"')
+}
+
+fn test_upload_result_json_includes_phase_and_preview_selector() {
+	json := upload_result_json(['./a.txt', './b.txt'], 'previewed', '#uploadPreview')
+	assert json.contains('"phase":"previewed"')
+	assert json.contains('"files":["a.txt","b.txt"]')
+	assert json.contains('"previewSelector":"#uploadPreview"')
+}
+
+fn test_verification_settle_interval_scales_with_timeout() {
+	assert verification_settle_interval(300 * time.millisecond) == 50 * time.millisecond
+	assert verification_settle_interval(1500 * time.millisecond) == 75 * time.millisecond
+	assert verification_settle_interval(5 * time.second) == 150 * time.millisecond
+}
+
 fn test_build_cursor_interactive_snapshot_js_covers_custom_click_targets() {
 	mut sess := new_cdp_session(noop_send)
 	js := build_cursor_interactive_snapshot_js(sess)
@@ -653,8 +731,31 @@ fn test_format_output_wraps_json_mode() {
 fn test_error_code_maps_common_failures() {
 	assert error_code('missing selector') == 'INVALID_ARGUMENT'
 	assert error_code('element not found: #missing') == 'NOT_FOUND'
+	assert error_code('ambiguous text match: Run workflow') == 'AMBIGUOUS_MATCH'
 	assert error_code('no extension connected') == 'NOT_CONNECTED'
 	assert error_code('CDP command timed out') == 'TIMEOUT'
+	assert error_code('verification failed: expected foo, got bar') == 'VERIFY_FAILED'
+	assert error_code('Debugger conflict: another debugger is already attached') == 'DEBUGGER_CONFLICT'
+	assert error_code('No available tab: no tab is currently accessible') == 'NOT_FOUND'
+}
+
+fn test_error_suggestion_maps_common_failures() {
+	assert error_suggestion('no extension connected')
+		== 'Run v-browser connect after syncing the extension id. If the extension page is already open, switch to a normal webpage tab before reconnecting.'
+	assert error_suggestion('element not found: #missing')
+		== 'Check the selector or target tab. Use v-browser snapshot to inspect the current page, or use find --list / find --debug to review semantic candidates.'
+	assert error_suggestion('ambiguous text match: Run workflow')
+		== 'Use find --index to select a specific candidate, or add --name / --exact to narrow the match.'
+	assert error_suggestion('CDP command timed out')
+		== 'Wait for the page to finish loading, or increase the command timeout if the page is expected to take longer.'
+	assert error_suggestion('verification failed: expected foo, got bar')
+		== 'Check whether the target element actually changed. If the page is dynamic, increase --verify-timeout or verify a more stable state.'
+	assert error_suggestion('failed to start v-browser server')
+		== 'Check the server log, then try v-browser server restart or v-browser status to verify the daemon is healthy.'
+	assert error_suggestion('Debugger conflict: another debugger is already attached')
+		== 'Close any other CDP sessions (Chrome DevTools, other automation tools) attached to the same tab, then run v-browser connect again.'
+	assert error_suggestion('No available tab: no tab is currently accessible')
+		== 'Switch to a normal webpage tab (not the extension page), then run v-browser connect again.'
 }
 
 fn test_should_retry_after_reconnect_for_connection_failures() {

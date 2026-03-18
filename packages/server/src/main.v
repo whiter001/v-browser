@@ -96,6 +96,11 @@ fn main() {
 	// status 命令：未连接时显示友好提示
 	if method == 'status' && !json_output && result.contains('"connected":false') {
 		eprintln('Not connected. Run `v-browser connect` to connect.')
+		if result.contains('"extensionConnected":true') && result.contains('"attached":false') {
+			eprintln('Hint: the extension is connected but no tab is attached yet. Switch to a normal webpage tab, then run v-browser connect again.')
+		} else {
+			eprintln('Hint: if the extension page is already open, switch to a normal webpage tab, then run v-browser connect again.')
+		}
 	}
 	// CLI 模式自动解码 JSON 字符串
 	if !json_output && raw_output {
@@ -134,7 +139,16 @@ fn handle_connect_command(args []string, json_output bool) {
 	}
 	params := if tab_id > 0 { '{"tabId":${tab_id},"windowId":${window_id}}' } else { '{}' }
 	result := connect_active_session(params) or {
-		print_error(err.msg(), json_output)
+		err_msg := err.msg()
+		if is_attach_conflict_error(err_msg) {
+			eprintln('Debugger conflict: another debugger is already attached to the tab. Close Chrome DevTools or other CDP sessions, then run v-browser connect again.')
+		} else if err_msg.contains('no available tab') || err_msg.contains('no tab is currently accessible') {
+			eprintln('No tab available: switch to a normal webpage tab (not the extension page), then run v-browser connect again.')
+		} else if err_msg.contains('timeout') {
+			eprintln('Connection timed out. Make sure the extension is installed and the extension connect page is open.')
+		} else {
+			print_error(err_msg, json_output)
+		}
 		exit(1)
 	}
 	println(format_output(result, json_output))
@@ -758,7 +772,9 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 					if positionals.len > 1 { positionals[1] } else { '' }
 				}
 			}
-			return 'fill', '{"selector":${json_str(sel)},"text":${json_str(text)}}'
+			verify := if flags.keys().contains('verify') { 'true' } else { 'false' }
+			verify_timeout := flags['verify-timeout'] or { flags['verifyTimeout'] or { '1500' } }
+			return 'fill', '{"selector":${json_str(sel)},"text":${json_str(text)},"verify":${json_str(verify)},"verifyTimeout":${verify_timeout}}'
 		}
 		'type' {
 			sel := flags['selector'] or {
@@ -767,7 +783,9 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			text := flags['text'] or {
 				if positionals.len > 1 { positionals[1] } else { '' }
 			}
-			return 'type', '{"selector":${json_str(sel)},"text":${json_str(text)}}'
+			verify := if flags.keys().contains('verify') { 'true' } else { 'false' }
+			verify_timeout := flags['verify-timeout'] or { flags['verifyTimeout'] or { '1500' } }
+			return 'type', '{"selector":${json_str(sel)},"text":${json_str(text)},"verify":${json_str(verify)},"verifyTimeout":${verify_timeout}}'
 		}
 		'keyboard' {
 			action := flags['action'] or {
@@ -836,7 +854,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			files := flags['files'] or {
 				if positionals.len > 1 { positionals[1..].join(',') } else { '' }
 			}
-			return 'upload', '{"selector":${json_str(sel)},"files":${json_str(files)}}'
+			verify := if flags.keys().contains('verify') { 'true' } else { 'false' }
+			verify_timeout := flags['verify-timeout'] or { flags['verifyTimeout'] or { '1500' } }
+			wait_preview := if flags.keys().contains('wait-preview') { 'true' } else { 'false' }
+			preview_selector := flags['preview-selector'] or { flags['previewSelector'] or { '' } }
+			return 'upload', '{"selector":${json_str(sel)},"files":${json_str(files)},"verify":${json_str(verify)},"verifyTimeout":${verify_timeout},"waitPreview":${json_str(wait_preview)},"previewSelector":${json_str(preview_selector)}}'
 		}
 		// ── 获取属性 ──
 		'get' {

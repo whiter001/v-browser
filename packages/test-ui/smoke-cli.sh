@@ -53,6 +53,20 @@ assert_contains() {
   esac
 }
 
+assert_not_contains() {
+  haystack=$1
+  needle=$2
+  message=$3
+  case "$haystack" in
+    *"$needle"*)
+      printf '[smoke] ERROR: %s\n' "$message" >&2
+      printf '[smoke] Actual output: %s\n' "$haystack" >&2
+      exit 1
+      ;;
+    *) ;;
+  esac
+}
+
 ensure_server_bin() {
   if [ -x "$SERVER_BIN" ]; then
     if ! find "$SERVER_DIR/src" -type f -newer "$SERVER_BIN" | grep -q . 2>/dev/null; then
@@ -249,6 +263,60 @@ wait_download_output=$(run_cli --json wait --download "$wait_download_path" --ti
 assert_contains "$wait_download_output" '"ok":true' 'wait --download command failed'
 assert_contains "$wait_download_output" 'wait-download.txt' 'wait --download did not report output path'
 assert_file_contains "$wait_download_path" 'sample upload payload for v-browser fixture' 'wait --download did not save expected file contents'
+
+log 'Verifying upload command'
+ensure_connected
+upload_file="$SCRIPT_DIR/static/fixtures/upload-sample.txt"
+upload_output=$(run_cli --json upload '#uploadField' "$upload_file" --wait-preview --preview-selector '#uploadPreview')
+assert_contains "$upload_output" '"ok":true' 'upload command failed'
+assert_contains "$upload_output" '"phase":"previewed"' 'upload command did not report previewed phase'
+assert_contains "$upload_output" '"previewSelector":"#uploadPreview"' 'upload command did not report preview selector'
+assert_result_equals '#uploadState' 'upload: upload-sample.txt'
+assert_result_equals '#uploadPhase' 'upload: selected'
+assert_result_equals '#uploadPreview' 'preview: upload-sample.txt'
+
+log 'Verifying storage commands'
+ensure_connected
+session_before=$(run_cli --json storage get --type session)
+assert_contains "$session_before" '"fixture.session":"active"' 'session storage was not seeded'
+run_cli storage set --type session --key smoke.session --value ready >/dev/null
+session_after_set=$(run_cli --json storage get --type session)
+assert_contains "$session_after_set" '"smoke.session":"ready"' 'storage set did not persist the temporary key'
+run_cli storage clear --type session >/dev/null
+session_after_clear=$(run_cli --json storage get --type session)
+assert_not_contains "$session_after_clear" 'smoke.session' 'storage clear did not remove the temporary key'
+
+log 'Verifying dialog commands'
+ensure_connected
+run_cli click '#promptButton' >/dev/null
+run_cli dialog accept --text 'smoke answer' >/dev/null
+assert_result_equals '#dialogState' 'dialog: prompt smoke answer'
+
+log 'Verifying frame command'
+ensure_connected
+run_cli frame '#fixtureFrame' >/dev/null
+assert_result_equals '#frameState' 'frame: idle'
+run_cli fill '#frameInput' 'frame smoke' >/dev/null
+assert_result_equals '#frameState' 'frame: frame smoke'
+run_cli frame main >/dev/null
+
+log 'Verifying network route/body commands'
+ensure_connected
+run_cli network route --url '*api/demo/request-info*' --body '{"ok":true,"path":"/api/demo/request-info","message":"intercepted fixture"}' >/dev/null
+run_cli click '#fetchInfoButton' >/dev/null
+assert_contains "$(run_cli --json get text '#networkState')" 'intercepted fixture' 'network route did not replace the demo response body'
+run_cli network unroute >/dev/null
+run_cli click '#fetchInfoButton' >/dev/null
+run_cli wait --text 'fixture request captured' >/dev/null
+assert_contains "$(run_cli --json get text '#networkState')" 'fixture request captured' 'network unroute did not restore the live demo response'
+network_requests_output=$(run_cli --json network requests --filter '/api/demo/request-info')
+assert_contains "$network_requests_output" '"url":"http://127.0.0.1:48280/api/demo/request-info"' 'network requests did not capture the demo request'
+request_id=$(printf '%s' "$network_requests_output" | sed -n 's/.*"requestId":"\([^"]*\)".*/\1/p' | tail -n 1)
+if [ -z "$request_id" ]; then
+  fail 'Could not extract requestId from network requests output'
+fi
+network_body_output=$(run_cli --json network body "$request_id")
+assert_contains "$network_body_output" 'fixture request captured' 'network body did not return the demo response body'
 
 log 'Verifying diff screenshot command'
 ensure_connected

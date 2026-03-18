@@ -256,7 +256,131 @@ fn build_hover_action_body() string {
 
 fn build_fill_action_body(text string) string {
 	value_js := js_str(text)
-	return 'el.focus(); if ("value" in el) { el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); el.value = ${value_js}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; } if (el.isContentEditable) { el.textContent = ${value_js}; el.dispatchEvent(new Event("input", { bubbles: true })); return true; } return false;'
+	return 'el.focus(); function setValue(target, value) { var proto = Object.getPrototypeOf(target); var desc = Object.getOwnPropertyDescriptor(proto, "value") || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value") || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value"); if (desc && desc.set) { desc.set.call(target, value); } else { target.value = value; } } if ("value" in el) { setValue(el, ""); el.dispatchEvent(new Event("input", { bubbles: true })); setValue(el, ${value_js}); el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; } if (el.isContentEditable) { el.textContent = ${value_js}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; } return false;'
+}
+
+fn parse_verify_settings(params string, default_timeout time.Duration) (bool, time.Duration) {
+	verify := cdp_extract_str(params, 'verify') == 'true'
+	verify_timeout_ms := cdp_extract_int(params, '"verifyTimeout":')
+	if verify_timeout_ms <= 0 {
+		return verify, default_timeout
+	}
+	return verify, time.millisecond * verify_timeout_ms
+}
+
+fn read_element_text_or_value(mut sess CdpSession, sel string) !string {
+	js := build_element_scope_js(&sess, sel, 'if(!el) return null; if ("value" in el) return el.value; return el.textContent || "";')
+	return eval_scoped_expression(mut sess, js, false)
+}
+
+fn wait_for_element_text_or_value(mut sess CdpSession, sel string, expected string, timeout time.Duration) ! {
+	deadline := time.now().add(timeout)
+	poll_interval := verification_poll_interval(timeout)
+	settle_interval := verification_settle_interval(timeout)
+	mut last_current := ''
+	for time.now() < deadline {
+		current := read_element_text_or_value(mut sess, sel) or { '' }
+		last_current = current
+		if current == expected {
+			time.sleep(settle_interval)
+			stable := read_element_text_or_value(mut sess, sel) or { '' }
+			if stable == expected {
+				return
+			}
+			last_current = stable
+		}
+		time.sleep(poll_interval)
+	}
+	return error('verification failed: expected ${expected}, got ${last_current}')
+}
+
+fn read_file_input_names(mut sess CdpSession, sel string) !string {
+	js := build_element_scope_js(&sess, sel, 'if(!el) return null; if (!el.files) return ""; return Array.from(el.files).map(function(file) { return file.name; }).join("\n");')
+	return eval_scoped_expression(mut sess, js, false)
+}
+
+fn read_preview_text(mut sess CdpSession, sel string) !string {
+	js := build_element_scope_js(&sess, sel, 'if(!el) return null; return (el.innerText || el.textContent || el.value || "").trim();')
+	return eval_scoped_expression(mut sess, js, false)
+}
+
+fn wait_for_file_input_names(mut sess CdpSession, sel string, expected_names []string, timeout time.Duration) ! {
+	expected := expected_names.map(os.file_name(it)).join('\n')
+	deadline := time.now().add(timeout)
+	poll_interval := verification_poll_interval(timeout)
+	settle_interval := verification_settle_interval(timeout)
+	mut last_current := ''
+	for time.now() < deadline {
+		current := read_file_input_names(mut sess, sel) or { '' }
+		last_current = current
+		if current == expected {
+			time.sleep(settle_interval)
+			stable := read_file_input_names(mut sess, sel) or { '' }
+			if stable == expected {
+				return
+			}
+			last_current = stable
+		}
+		time.sleep(poll_interval)
+	}
+	return error('verification failed: expected ${expected}, got ${last_current}')
+}
+
+fn wait_for_upload_preview(mut sess CdpSession, preview_selector string, expected_names []string, timeout time.Duration) ! {
+	if preview_selector.trim_space() == '' {
+		return error('missing preview selector')
+	}
+	expected := expected_names.map(os.file_name(it)).join(', ')
+	deadline := time.now().add(timeout)
+	poll_interval := verification_poll_interval(timeout)
+	settle_interval := verification_settle_interval(timeout)
+	mut last_current := ''
+	for time.now() < deadline {
+		current := read_preview_text(mut sess, preview_selector) or { '' }
+		last_current = current
+		if current.contains(expected) {
+			time.sleep(settle_interval)
+			stable := read_preview_text(mut sess, preview_selector) or { '' }
+			if stable.contains(expected) {
+				return
+			}
+			last_current = stable
+		}
+		time.sleep(poll_interval)
+	}
+	return error('verification failed: preview selector ${preview_selector} did not show ${expected}; got ${last_current}')
+}
+
+fn verification_poll_interval(timeout time.Duration) time.Duration {
+	if timeout <= 500 * time.millisecond {
+		return 50 * time.millisecond
+	}
+	if timeout <= 2 * time.second {
+		return 75 * time.millisecond
+	}
+	if timeout <= 10 * time.second {
+		return 100 * time.millisecond
+	}
+	return 200 * time.millisecond
+}
+
+fn verification_settle_interval(timeout time.Duration) time.Duration {
+	if timeout <= 500 * time.millisecond {
+		return 50 * time.millisecond
+	}
+	if timeout <= 2 * time.second {
+		return 75 * time.millisecond
+	}
+	return 150 * time.millisecond
+}
+
+fn upload_result_json(files []string, phase string, preview_selector string) string {
+	files_json := '[' + files.map(json_str(os.file_name(it))).join(',') + ']'
+	mut p := '{"phase":${json_str(phase)},"files":${files_json}}'
+	if preview_selector.trim_space() != '' {
+		p = '{"phase":${json_str(phase)},"files":${files_json},"previewSelector":${json_str(preview_selector)}}'
+	}
+	return p
 }
 
 fn build_type_action_body(text string) string {
@@ -1210,6 +1334,12 @@ fn cmd_fill(mut sess CdpSession, params string) string {
 		return 'ERROR:missing selector'
 	}
 	run_element_action(mut sess, sel, build_fill_action_body(text)) or { return 'ERROR:${err}' }
+	verify, verify_timeout := parse_verify_settings(params, 1500 * time.millisecond)
+	if verify {
+		wait_for_element_text_or_value(mut sess, sel, text, verify_timeout) or {
+			return 'ERROR:${err}'
+		}
+	}
 	return 'null'
 }
 
@@ -1222,6 +1352,12 @@ fn cmd_type_text(mut sess CdpSession, params string) string {
 	}
 	focus_selector(mut sess, sel) or { return 'ERROR:${err}' }
 	type_text_like_playwright(mut sess, text) or { return 'ERROR:${err}' }
+	verify, verify_timeout := parse_verify_settings(params, 1500 * time.millisecond)
+	if verify {
+		wait_for_element_text_or_value(mut sess, sel, text, verify_timeout) or {
+			return 'ERROR:${err}'
+		}
+	}
 	return 'null'
 }
 
@@ -1434,6 +1570,8 @@ fn cmd_drag(mut sess CdpSession, params string) string {
 fn cmd_upload(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	files_str := cdp_extract_str(params, 'files')
+	wait_preview := cdp_extract_str(params, 'waitPreview') == 'true'
+	preview_selector := cdp_extract_str(params, 'previewSelector')
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
@@ -1446,7 +1584,23 @@ fn cmd_upload(mut sess CdpSession, params string) string {
 	sess.send_command('DOM.setFileInputFiles', '{"objectId":${json_str(object_id)},"files":${files_json}}') or {
 		return 'ERROR:${err}'
 	}
-	return 'null'
+	verify, verify_timeout := parse_verify_settings(params, 1500 * time.millisecond)
+	if verify {
+		wait_for_file_input_names(mut sess, sel, files, verify_timeout) or { return 'ERROR:${err}' }
+	}
+	if wait_preview {
+		if preview_selector.trim_space() == '' {
+			return 'ERROR:missing preview selector'
+		}
+		wait_for_upload_preview(mut sess, preview_selector, files, verify_timeout) or {
+			return 'ERROR:${err}'
+		}
+		return upload_result_json(files, 'previewed', preview_selector)
+	}
+	if preview_selector.trim_space() != '' {
+		return upload_result_json(files, 'selected', preview_selector)
+	}
+	return upload_result_json(files, 'selected', '')
 }
 
 // ─── get ────────────────────────────────────────────────────
@@ -1710,6 +1864,13 @@ fn cmd_find(mut sess CdpSession, params string) string {
 		limit := if debug_mode { 5 } else { 0 }
 		return semantic_text_candidates_report(mut sess, query, exact, index, limit, mode)
 	}
+	if locator == 'text' && index < 0 {
+		report := semantic_text_candidates_report(mut sess, query, exact, index, 5, 'list')
+		count := cdp_extract_int(report, '"count":')
+		if count > 1 {
+			return 'ERROR:ambiguous text match: ${query}. Use --index to select a candidate, or run find --list / --debug to review candidates.'
+		}
+	}
 	js := build_semantic_locator_js(&sess, locator, query, exact, name_filter, index)
 	return exec_semantic_action(mut sess, js, locator, action, value)
 }
@@ -1857,10 +2018,15 @@ fn build_semantic_text_report_js(sess &CdpSession, query string, exact bool, sel
 			if (item) item.visible = isVisible(el);
 			return item;
 		}).filter(Boolean);
+		var total = candidates.length;
+		var hint = total === 0 ? "未找到候选" : (total === 1 ? "仅 1 个候选" : "有 " + total + " 个候选，请使用 --index 选择具体项，或用 --name 缩小范围");
+		var report = { count: total, selectedIndex: ${selected_index_js}, hint: hint, mode: ${mode_js} };
 		if (${mode_js} === "debug") {
-			return JSON.stringify(candidates.slice(0, ${limit_js}), null, 2);
+			report.candidates = candidates.slice(0, ${limit_js});
+		} else {
+			report.candidates = candidates;
 		}
-		return JSON.stringify(candidates, null, 2);
+		return JSON.stringify(report, null, 2);
 	')
 }
 
