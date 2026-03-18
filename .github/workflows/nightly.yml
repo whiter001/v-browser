@@ -135,6 +135,9 @@ jobs:
     needs: [build, extension]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download binary artifacts
         uses: actions/download-artifact@v4
         with:
@@ -146,9 +149,6 @@ jobs:
         with:
           name: v-browser-extension
           path: .
-
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Update nightly tag
         run: |
