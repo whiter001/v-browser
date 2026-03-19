@@ -425,7 +425,7 @@ fn test_server_dispatch_status_reports_attached_when_session_is_active() {
 	mut sess := new_cdp_session(noop_send)
 	sess.page_enabled = true
 	server.ext_conn = &ExtensionConn{
-		session: &sess
+		session: sess
 	}
 	status := server.dispatch(IpcRequest{ id: 1, method: 'status', params: '{}' })
 	assert status.err == ''
