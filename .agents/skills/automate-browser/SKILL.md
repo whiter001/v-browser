@@ -97,6 +97,22 @@ v-browser upload <sel> <files>       # 文件上传
 v-browser download <sel> <path>      # 点击并等待下载完成
 ```
 
+### 下载文件和图片
+
+`v-browser download` 适合下载页面上可点击的文件链接、图片链接、附件链接，或者带有可下载目标的元素。使用时要直接传入完整的目标文件路径，而不是只传目录。
+
+```bash
+# 下载到指定文件名
+v-browser download "#downloadLink" "C:\\Downloads\\photo.jpg"
+
+# 如果目标是图片或文件直链，也可以直接保存为指定文件名
+v-browser download "a[href*='image']" "C:\\Downloads\\image.png"
+```
+
+- 如果页面元素本身没有 download 属性，但能点开真正的文件地址，通常也可以用 download 保存下来。
+- 如果只是普通页面里的图片展示，没有可点击下载入口，先用 v-browser get attr <sel> src 或 v-browser get attr <sel> href 拿到真实地址，再决定是否用 download。
+- 对于下载到目录的需求，请在目标路径里带上文件名；当前命令返回的是最终文件路径，不是目录路径。
+
 ### 键盘模拟
 
 ```bash
