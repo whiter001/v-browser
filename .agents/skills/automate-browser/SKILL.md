@@ -1,6 +1,6 @@
 ---
 name: automate-browser
-description: 面向 AI Agent 的浏览器自动化 CLI 工具，基于 V 语言和 Chrome DevTools Protocol (CDP)。
+description: 面向 AI Agent 的浏览器自动化 CLI 工具，基于 V 语言和 Chrome DevTools Protocol (CDP)，适合网页操作、抓取、发布和多标签页调试。
 ---
 
 # automate-browser 使用指南
@@ -23,6 +23,12 @@ npm run build
 
 1. **连接浏览器**：`v-browser connect`（自动启动 server + 打开扩展连接页）
 
+### 验证约定
+
+- 如果你刚改了运行时代码、连接逻辑、tab 管理、网络保存或扩展桥接，先重启 `v-browser server` 再验证。
+- 这个项目的本地 daemon / relay / 扩展连接链路很容易跑旧进程，不重启会出现“看起来没改动”的假象。
+- 只改文档、注释或静态内容时，一般不需要重启。
+
 ---
 
 ## 常用命令
@@ -30,6 +36,8 @@ npm run build
 | 命令                          | 说明                                               |
 | ----------------------------- | -------------------------------------------------- |
 | `v-browser connect`           | 自动打开扩展连接页并 attach 当前页面               |
+| `v-browser connect <url>`     | 优先命中已打开且 URL 匹配的标签页                  |
+| `v-browser tab list`          | 列出当前标签页，连接前先确认目标页是否已打开       |
 | `v-browser open <url>`        | 导航到 URL                                         |
 | `v-browser snapshot`          | 获取无障碍树（`--raw` 返回原始文本，适合 AI 处理） |
 | `v-browser click <sel>`       | 点击元素                                           |
@@ -52,15 +60,23 @@ v-browser clipboard write image ./photo.png
 - `clipboard read image` 会把剪贴板里的第一张图片保存到临时文件，并返回路径和 MIME 类型
 - `clipboard write image <path>` 会把本地图片写入系统剪贴板
 
+### 多标签页与 URL 命中
+
+- 当你已经打开了目标网页时，优先用 `v-browser connect <url>` 复用现有标签页，不要先 `open` 再 `connect`。
+- 连接前如果不确定页面是否已打开，先跑 `v-browser tab list`。
+- 如果当前改动涉及运行时行为，而验证结果看起来没变化，优先重启 `v-browser server` 再重新 `connect`。
+
 ---
 
 ### ⚠️ 常见问题
 
-| 问题                      | 原因                                           | 解决方案                             |
-| ------------------------- | ---------------------------------------------- | ------------------------------------ |
-| `get text` 报 SyntaxError | 未提供 selector，生成 `querySelector("")` 无效 | 使用 `v-browser get text <selector>` |
-| `snapshot` 超时           | 大型 SPA 无障碍树太庞大                        | 使用 `v-browser eval` 获取内容       |
-| `Not connected`           | 未连接浏览器                                   | 运行 `v-browser connect`             |
+| 问题                      | 原因                                           | 解决方案                                    |
+| ------------------------- | ---------------------------------------------- | ------------------------------------------- |
+| `get text` 报 SyntaxError | 未提供 selector，生成 `querySelector("")` 无效 | 使用 `v-browser get text <selector>`        |
+| `snapshot` 超时           | 大型 SPA 无障碍树太庞大                        | 使用 `v-browser eval` 获取内容              |
+| `Not connected`           | 未连接浏览器                                   | 运行 `v-browser connect`                    |
+| 连到旧标签页              | 目标页已打开但 attach 命中了别的 tab           | 先 `v-browser tab list`，再 `connect <url>` |
+| 改动不生效                | 运行时改动还在旧 server 上                     | 先 `v-browser server restart`               |
 
 ---
 
@@ -302,3 +318,5 @@ v-browser network requests            # 查看网络请求
 - `snapshot` 输出里带 `@eN` 的元素引用符，可以直接复用到后续命令
 - `eval` 适合处理复杂页面、动态渲染和剪贴板操作
 - `--json` 可以让输出更适合机器处理
+- 对 X / Twitter 长帖，优先抓 `document.body.innerText` 或 `article` 的正文，再抓 `[data-testid="tweetPhoto"] img` 和 `article img` 的 `src`
+- 对 QQ 邮箱记事本这类富文本页，先写标题，再写正文，最后补图片，保存后再读一遍确认标题和图片没有丢
