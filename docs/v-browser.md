@@ -131,7 +131,9 @@ cd packages/server
 ```bash
 v-browser connect
 v-browser open example.com
-v-browser snapshot                    # 获取带引用符的无障碍树
+v-browser snapshot                    # 获取带引用符的无障碍树（默认极速模式）
+v-browser snapshot --extra          # 获取更完整快照（含可交互元素补全，适合 AI 识别困难场景）
+v-browser snapshot --maxNodes 500   # 限制最终输出节点数，防止上下文溢出
 v-browser click @e2                   # 通过快照引用符点击
 v-browser fill @e3 "test@example.com" # 通过引用符填充
 v-browser get text @e1                # 通过引用符获取文本
@@ -143,36 +145,36 @@ v-browser close
 
 ## 核心命令
 
-| 命令                                   | 说明                                                      |
-| -------------------------------------- | --------------------------------------------------------- |
-| `v-browser open <url>`                 | 导航到 URL（别名: goto, navigate）                        |
-| `v-browser click <sel>`                | 点击元素（`--new-tab` 在新标签页打开）                    |
-| `v-browser dblclick <sel>`             | 双击元素                                                  |
-| `v-browser download <sel> <path>`      | 点击元素并等待下载完成                                    |
-| `v-browser focus <sel>`                | 聚焦元素                                                  |
-| `v-browser type <sel> <text>`          | 真实按键式追加输入文本到元素                              |
-| `v-browser fill <sel> <text>`          | 清空并填充                                                |
-| `v-browser press <key>`                | 按键（Enter, Tab, Control+a）（别名: key）                |
-| `v-browser keyboard type <text>`       | 模拟真实按键输入（无选择器，当前焦点）                    |
-| `v-browser keyboard inserttext <text>` | 插入文本（无按键事件）                                    |
-| `v-browser keydown <key>`              | 按住按键                                                  |
-| `v-browser keyup <key>`                | 释放按键                                                  |
-| `v-browser hover <sel>`                | 悬停元素                                                  |
-| `v-browser select <sel> <val>`         | 选择下拉选项                                              |
-| `v-browser check <sel>`                | 勾选复选框                                                |
-| `v-browser uncheck <sel>`              | 取消勾选复选框                                            |
-| `v-browser scroll <dir> [px]`          | 滚动（up/down/left/right，`--selector <sel>`）            |
-| `v-browser scrollintoview <sel>`       | 滚动元素到视图（别名: scrollinto）                        |
-| `v-browser drag <src> <tgt>`           | 拖放                                                      |
-| `v-browser upload <sel> <files>`       | 上传文件                                                  |
-| `v-browser screenshot [path]`          | 截图（`--full` 完整页面，无路径则保存到临时目录）         |
-| `v-browser screenshot --annotate`      | 带编号元素标签的标注截图                                  |
-| `v-browser pdf <path>`                 | 保存为 PDF                                                |
-| `v-browser snapshot`                   | 获取带引用符的无障碍树（推荐 AI 使用）                    |
-| `v-browser eval <js>`                  | 执行 JavaScript（`-b` / `--base64`、`--stdin`、`--file`） |
-| `v-browser connect`                    | 自动打开扩展连接页并 attach 当前页面                      |
-| `v-browser close`                      | 关闭浏览器（别名: quit, exit）                            |
-| `v-browser --json ...`                 | 以统一 JSON 包装输出结果或错误                            |
+| 命令                                   | 说明                                                                          |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| `v-browser open <url>`                 | 导航到 URL（别名: goto, navigate）                                            |
+| `v-browser click <sel>`                | 点击元素（`--new-tab` 在新标签页打开）                                        |
+| `v-browser dblclick <sel>`             | 双击元素                                                                      |
+| `v-browser download <sel> <path>`      | 点击元素并等待下载完成                                                        |
+| `v-browser focus <sel>`                | 聚焦元素                                                                      |
+| `v-browser type <sel> <text>`          | 输入文本到元素（追加到现有值）                                                |
+| `v-browser fill <sel> <text>`          | 清空并填充                                                                    |
+| `v-browser press <key>`                | 按键（Enter, Tab, Control+a）（别名: key）                                    |
+| `v-browser keyboard type <text>`       | 模拟真实按键输入（无选择器，当前焦点）                                        |
+| `v-browser keyboard inserttext <text>` | 插入文本（无按键事件）                                                        |
+| `v-browser keydown <key>`              | 按住按键                                                                      |
+| `v-browser keyup <key>`                | 释放按键                                                                      |
+| `v-browser hover <sel>`                | 悬停元素                                                                      |
+| `v-browser select <sel> <val>`         | 选择下拉选项                                                                  |
+| `v-browser check <sel>`                | 勾选复选框                                                                    |
+| `v-browser uncheck <sel>`              | 取消勾选复选框                                                                |
+| `v-browser scroll <dir> [px]`          | 滚动（up/down/left/right，`--selector <sel>`）                                |
+| `v-browser scrollintoview <sel>`       | 滚动元素到视图（别名: scrollinto）                                            |
+| `v-browser drag <src> <tgt>`           | 拖放                                                                          |
+| `v-browser upload <sel> <files>`       | 上传文件                                                                      |
+| `v-browser screenshot [path]`          | 截图（`--full` 完整页面，无路径则保存到临时目录）                             |
+| `v-browser screenshot --annotate`      | 带编号元素标签的标注截图                                                      |
+| `v-browser pdf <path>`                 | 保存为 PDF                                                                    |
+| `v-browser snapshot`                   | 获取带引用符的无障碍树（`--extra` 开启补全，`--maxNodes` 限制最终输出节点数） |
+| `v-browser eval <js>`                  | 执行 JavaScript（`-b` / `--base64`、`--stdin`、`--file`）                     |
+| `v-browser connect`                    | 自动打开扩展连接页并 attach 当前页面                                          |
+| `v-browser close`                      | 关闭浏览器（别名: quit, exit）                                                |
+| `v-browser --json ...`                 | 以统一 JSON 包装输出结果或错误                                                |
 
 ---
 
@@ -529,10 +531,19 @@ v-browser find role button click --name "Submit"
 使用 `snapshot` 命令获取页面无障碍树后，元素会显示引用符（如 `@e1`, `@e2`），可直接用于后续命令：
 
 ```bash
-v-browser snapshot              # 获取快照
+v-browser snapshot              # 获取快照（默认模式，极速）
+v-browser snapshot --extra    # 获取更完整快照（含视觉可交互元素补全）
+v-browser snapshot --maxNodes 500  # 限制最终输出节点数
+v-browser snapshot --raw      # 返回未编码的纯文本
 v-browser click @e2            # 点击引用符指向的元素
 v-browser fill @e3 "text"      # 填充引用符指向的输入框
 ```
+
+### snapshot 命令性能优化说明
+
+- **默认模式（推荐）**：仅获取无障碍树的核心节点，过滤冗余元素，响应时间通常在 **100ms** 以内。
+- **`--extra` 模式**：额外执行浏览器端 JS 扫描以补全视觉可交互但无障碍信息缺失的元素。此模式在大型 SPA 上可能需要数秒。
+- **`--maxNodes` 参数**：限制最终输出的节点数；AX Tree 和补全结果共用同一预算，防止超大型页面导致上下文溢出。
 
 ---
 

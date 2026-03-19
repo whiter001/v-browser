@@ -718,8 +718,12 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 		// ── 快照 ──
 		'snapshot', 'snap', 'ax' {
 			raw := if raw_output { 'true' } else { 'false' }
+			// extra 是新版开关；interactive 作为旧参数保留兼容。
+			extra := flags['extra'] or { flags['interactive'] or { 'false' } }
 			interactive := flags['interactive'] or { 'false' }
-			return 'snapshot', '{"raw":${raw},"interactive":${interactive}}'
+			// maxNodes 限制最终输出的引用总数，AX Tree 和补全共享同一预算。
+			max_nodes := flags['maxNodes'] or { '0' }
+			return 'snapshot', '{"raw":${raw},"extra":${extra},"interactive":${interactive},"maxNodes":${max_nodes}}'
 		}
 		// ── 元素操作 ──
 		'click' {

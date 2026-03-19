@@ -5,6 +5,7 @@ module main
 import os
 import time
 import encoding.base64
+import strings
 
 struct DevicePreset {
 	name       string
@@ -1028,7 +1029,10 @@ const snapshot_interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'ra
 fn cmd_snapshot(mut sess CdpSession, params string) string {
 	// 解析参数
 	raw := cdp_extract_bool(params, 'raw')
-	interactive := cdp_extract_bool(params, 'interactive')
+	// 默认只输出 AX Tree；--extra / --interactive 会额外触发 cursor-interactive 补全扫描。
+	extra := cdp_extract_bool(params, 'extra') || cdp_extract_bool(params, 'interactive')
+	// maxNodes 限制的是最终返回的引用总数，AX Tree 和补全共用同一预算。
+	max_nodes := cdp_extract_int(params, 'maxNodes')
 
 	resp := sess.send_command('Accessibility.getFullAXTree', '{}') or { return 'ERROR:${err}' }
 	nodes_json := cdp_extract_obj_key(resp.result, '"nodes":')
@@ -1037,57 +1041,65 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 	}
 
 	axref_clear(mut sess.axref)
-	mut out := '= Accessibility Snapshot =\n'
-	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref, interactive)
-	out += ax_out
+	mut out := strings.new_builder(4096)
+	out.write_string('= Accessibility Snapshot =\n')
+	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref, extra, max_nodes)
+	out.write_string(ax_out)
 
-	// 只有在非 interactive 模式下才添加 cursor-interactive 元素
-	if !interactive {
-		cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref) or {
-			''
-		}
-		if cursor_out != '' {
-			if ax_out != '' && !ax_out.ends_with('\n') {
-				out += '\n'
+	// extra 模式下才会在 AX Tree 之外附加 cursor-interactive 补全。
+	if extra {
+		remaining := if max_nodes > 0 { max_nodes - (next_counter - 1) } else { 0 }
+		if max_nodes == 0 || remaining > 0 {
+			cursor_limit := if max_nodes > 0 { remaining } else { 0 }
+			cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref,
+				cursor_limit) or { '' }
+			if cursor_out != '' {
+				if !ax_out.ends_with('\n') {
+					out.write_string('\n')
+				}
+				out.write_string('# Cursor-interactive elements:\n')
+				out.write_string(cursor_out)
 			}
-			out += '# Cursor-interactive elements:\n'
-			out += cursor_out
 		}
 	}
 
+	final_out := out.str()
 	// raw 模式返回未编码的纯文本
 	if raw {
-		return out
+		return final_out
 	}
-	return json_str(out)
+	return json_str(final_out)
 }
 
-fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, interactive bool) (string, int) {
-	mut out := ''
+fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, include_extra bool,
+	max_nodes int) (string, int) {
+	mut out := strings.new_builder(4096)
 	mut counter := start_counter
 	mut pos := 1 // skip opening '['
 	mut i := 0 // 安全计数器，防止解析过大的树时无限循环
 
 	for pos < nodes_json.len - 1 {
 		if nodes_json[pos] == `{` {
+			if max_nodes > 0 && counter - start_counter >= max_nodes {
+				break
+			}
 			node_str := cdp_balanced(nodes_json[pos..])
 			role := ax_prop(node_str, 'role')
 			name := ax_prop(node_str, 'name')
 			bnid := cdp_extract_int(node_str, '"backendDOMNodeId":')
 
-			// interactive 模式下只保留可交互角色
-			// 非 interactive 模式下过滤 none 和 generic
-			should_include := if interactive {
+			// extra 模式只保留明确可交互的角色；默认模式则保留更多可读节点。
+			should_include := if include_extra {
 				role != '' && role in snapshot_interactive_roles
 			} else {
 				role != '' && role != 'none' && role != 'generic'
 			}
 
-			// 只有满足条件的才输出
+			// 只有满足条件的节点才分配引用并写入输出。
 			if should_include {
 				ref_key := '@e${counter}'
 				counter++
-				out += '${ref_key} [${role}] ${name}\n'
+				out.write_string('${ref_key} [${role}] ${name}\n')
 				if bnid > 0 {
 					axref_set(mut store, ref_key, AxRef{
 						backend_node_id: bnid
@@ -1106,10 +1118,11 @@ fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, in
 		}
 		// 安全上限
 	}
-	return out, counter
+	return out.str(), counter
 }
 
-fn build_cursor_interactive_snapshot_js(sess &CdpSession) string {
+fn build_cursor_interactive_snapshot_js(sess &CdpSession, candidate_limit int) string {
+	limit := if candidate_limit > 0 { candidate_limit } else { 1000 }
 	return build_document_scope_js(sess, '
 		var interactiveRoles = new Set([
 			"button", "link", "textbox", "checkbox", "radio", "combobox", "listbox",
@@ -1154,9 +1167,18 @@ fn build_cursor_interactive_snapshot_js(sess &CdpSession) string {
 		}
 		var seen = new Set();
 		var results = [];
-		var all = doc.querySelectorAll("*");
-		for (var i = 0; i < all.length; i++) {
-			var el = all[i];
+		// 优化：不再使用 querySelectorAll("*")，仅扫描明确的可交互元素或有交互意图的属性
+		var selector = [
+			"a", "button", "input", "select", "textarea", "details", "summary",
+			"[onclick]", "[role]", "[tabindex]", "[contenteditable]",
+			"area", "label"
+		].join(",");
+		var candidates = doc.querySelectorAll(selector);
+		
+		// 默认只处理前 1000 个候选；如果 snapshot 传入了 maxNodes，则继续收紧扫描上限。
+		var count = Math.min(candidates.length, ${limit});
+		for (var i = 0; i < count; i++) {
+			var el = candidates[i];
 			var tag = (el.tagName || "").toLowerCase();
 			if (interactiveTags.has(tag)) continue;
 			var role = normalizeText(el.getAttribute("role"));
@@ -1191,17 +1213,24 @@ fn build_cursor_interactive_snapshot_js(sess &CdpSession) string {
 	')
 }
 
-fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mut store AxRefStore) !string {
-	js := build_cursor_interactive_snapshot_js(&sess)
-	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
+fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mut store AxRefStore,
+	max_nodes int) !string {
+	js := build_cursor_interactive_snapshot_js(&sess, max_nodes)
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
+		return error('cursor scan failed: ${err}')
+	}
 	result_obj := cdp_extract_obj_key(resp.result, '"result":')
 	raw_lines := cdp_extract_value_from_result(result_obj)
 	if raw_lines == '' || raw_lines == 'null' {
 		return ''
 	}
-	mut out := ''
+	mut out := strings.new_builder(4096)
 	mut counter := start_counter
 	for line in raw_lines.split('\n') {
+		// maxNodes 是全局输出预算，这里沿用剩余额度继续截断。
+		if max_nodes > 0 && counter - start_counter >= max_nodes {
+			break
+		}
 		parts := line.split('\t')
 		if parts.len < 3 {
 			continue
@@ -1216,18 +1245,18 @@ fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mu
 		ref_key := '@e${counter}'
 		counter++
 		resolved_role := if role != '' { role } else { 'clickable' }
-		out += '${ref_key} [${resolved_role}] ${text}'
+		out.write_string('${ref_key} [${resolved_role}] ${text}')
 		if hints != '' {
-			out += ' (${hints})'
+			out.write_string(' (${hints})')
 		}
-		out += '\n'
+		out.write_string('\n')
 		axref_set(mut store, ref_key, AxRef{
 			selector: selector
 			role:     resolved_role
 			name:     text
 		})
 	}
-	return out
+	return out.str()
 }
 
 fn ax_prop(node_str string, prop string) string {

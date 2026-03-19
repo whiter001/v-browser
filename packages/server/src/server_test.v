@@ -36,6 +36,12 @@ fn test_parse_cli_to_ipc_set_device_routes_value() {
 	assert params == '{"property":"device","value":"iPhone 14"}'
 }
 
+fn test_parse_cli_to_ipc_snapshot_routes_extra_and_max_nodes() {
+	method, params := parse_cli_to_ipc('snapshot', ['--extra', '--maxNodes', '25'], false)
+	assert method == 'snapshot'
+	assert params == '{"raw":false,"extra":true,"interactive":false,"maxNodes":25}'
+}
+
 fn test_build_extension_connect_url_contains_expected_query() {
 	url := build_extension_connect_url('abc123', 'tok-1')
 	assert url.starts_with('chrome-extension://abc123/connect.html?')
@@ -707,11 +713,22 @@ fn test_verification_settle_interval_scales_with_timeout() {
 
 fn test_build_cursor_interactive_snapshot_js_covers_custom_click_targets() {
 	mut sess := new_cdp_session(noop_send)
-	js := build_cursor_interactive_snapshot_js(sess)
+	js := build_cursor_interactive_snapshot_js(sess, 7)
 	assert js.contains('cursor === "pointer"')
 	assert js.contains('onclick')
 	assert js.contains('data-testid')
 	assert js.contains('clickable')
+	assert js.contains('Math.min(candidates.length, 7)')
+}
+
+fn test_render_ax_tree_limits_output_nodes() {
+	mut store := AxRefStore{}
+	nodes_json := '[{"role":{"value":"button"},"name":{"value":"Save"},"backendDOMNodeId":1},{"role":{"value":"link"},"name":{"value":"Home"},"backendDOMNodeId":2},{"role":{"value":"textbox"},"name":{"value":"Email"},"backendDOMNodeId":3}]'
+	out, next_counter := render_ax_tree(nodes_json, 1, mut store, false, 2)
+	assert out.contains('@e1 [button] Save')
+	assert out.contains('@e2 [link] Home')
+	assert !out.contains('Email')
+	assert next_counter == 3
 }
 
 fn test_resolve_device_preset_iphone_14() {

@@ -53,6 +53,7 @@ Chrome Tab (CDP 1.3)
 
 - [x] **P3-1** `commands/navigate.v`：`open`、`close`、`tab list/new/switch/close`、`window new`
 - [x] **P3-2** `commands/page.v`：`screenshot`（当前支持 `--full`，`--annotate` 仍单列在 P6-1）、`pdf`、`snapshot`（AX tree + @eN 生成）、`eval`
+- [x] **P3-2-Patch** `snapshot` 性能优化：默认极速模式、strings.Builder 优化内存、JS 扫描熔断、maxNodes 参数支持
 - [x] **P3-3** `commands/input.v`：`click`、`dblclick`、`fill`、`type`、`keyboard type/inserttext`、`press`/`keydown`/`keyup`、`hover`、`scroll`/`scrollintoview`、`drag`、`upload`、`select`、`check`/`uncheck`、`focus`
 - [x] **P3-4** 验收：`docs/v-browser.md` 快速开始主路径命令已可用
 
