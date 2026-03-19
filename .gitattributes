@@ -1,0 +1,93 @@
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# Force LF for all known text file types (prevents CRLF expansion on checkout)
+*.v       text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+*.rst     text eol=lf
+*.ts      text eol=lf
+*.tsx     text eol=lf
+*.js      text eol=lf
+*.jsx     text eol=lf
+*.mjs     text eol=lf
+*.cjs     text eol=lf
+*.css     text eol=lf
+*.scss    text eol=lf
+*.less    text eol=lf
+*.html    text eol=lf
+*.htm     text eol=lf
+*.xml     text eol=lf
+*.json    text eol=lf
+*.jsonc   text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.toml    text eol=lf
+*.ini     text eol=lf
+*.sh      text eol=lf
+*.bash    text eol=lf
+*.zsh     text eol=lf
+*.ps1     text eol=lf
+*.bat     text eol=lf
+*.cmd     text eol=lf
+*.py      text eol=lf
+*.rb      text eol=lf
+*.go      text eol=lf
+*.rs      text eol=lf
+*.swift   text eol=lf
+*.kt      text eol=lf
+*.kts     text eol=lf
+*.java    text eol=lf
+*.c       text eol=lf
+*.h       text eol=lf
+*.cpp     text eol=lf
+*.hpp     text eol=lf
+*.cs      text eol=lf
+*.fs      text eol=lf
+*.fsx     text eol=lf
+*.sln     text eol=lf
+*.csproj  text eol=lf
+*.props   text eol=lf
+*.targets text eol=lf
+*.mpl     text eol=lf
+*.tmpl    text eol=lf
+*.t       text eol=lf
+*.cfg     text eol=lf
+*.conf    text eol=lf
+*.editorconfig text eol=lf
+
+# Binary files — leave untouched
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary
+*.woff    binary
+*.woff2   binary
+*.ttf     binary
+*.eot     binary
+*.exe     binary
+*.dll     binary
+*.so      binary
+*.dylib   binary
+*.a       binary
+*.o       binary
+*.obj     binary
+*.zip     binary
+*.tar     binary
+*.gz      binary
+*.bz2     binary
+*.xz      binary
+*.7z      binary
+*.rar     binary
+*.mp3     binary
+*.mp4     binary
+*.avi     binary
+*.mkv     binary
+*.mov     binary
+*.wmv     binary
+*.flv     binary
+*.webm    binary
+*.ico     binary
+*.cur     binary
