@@ -33,6 +33,18 @@ mut:
 	next_index        int
 }
 
+struct TabContext {
+mut:
+	current_frame_selector string
+	axref_refs            map[string]AxRef
+	network_requests      map[string]TrackedNetworkRequest
+	network_request_order []string
+	network_watch         NetworkWatchState
+	console_msgs          []string
+	page_errors           []string
+	dialog_events         []string
+}
+
 struct TrackedNetworkRequest {
 mut:
 	request_id        string
@@ -66,6 +78,9 @@ mut:
 	network_mu             sync.Mutex
 	network_watch          NetworkWatchState
 	network_watch_mu       sync.Mutex
+	current_tab_id         int
+	tab_contexts           map[int]TabContext
+	tab_contexts_mu        sync.Mutex
 	page_enabled           bool
 	page_mu                sync.Mutex
 	// 运行时缓存（debug 命令使用）
@@ -80,6 +95,7 @@ fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 		pending:          map[int]chan ProtocolResponse{}
 		event_subs:       map[string][]chan ProtocolResponse{}
 		network_requests: map[string]TrackedNetworkRequest{}
+		tab_contexts:     map[int]TabContext{}
 		network_watch:    NetworkWatchState{
 			candidate_urls:    map[string]bool{}
 			saved_request_ids: map[string]bool{}
@@ -255,9 +271,112 @@ fn (mut s CdpSession) attach_to_tab() !string {
 		}
 		return error(err_msg)
 	}
-	s.enable_page_events() or {}
-	s.enable_network_tracking() or {}
+	s.activate_tab_context_from_result(resp.result) or {}
 	return resp.result
+}
+
+fn (mut s CdpSession) activate_tab_context_from_result(result string) ! {
+	tab_id := cdp_extract_int(result, '"tabId":')
+	if tab_id <= 0 {
+		return
+	}
+	if s.current_tab_id > 0 && s.current_tab_id != tab_id {
+		s.save_current_tab_context()
+	}
+	s.current_tab_id = tab_id
+	s.restore_tab_context(tab_id)
+	s.page_mu.@lock()
+	s.page_enabled = false
+	s.page_mu.unlock()
+	s.network_mu.@lock()
+	s.network_enabled = false
+	s.network_mu.unlock()
+	s.enable_page_events()!
+	s.enable_network_tracking()!
+	if s.network_watch.active {
+		sync_network_watch_existing_requests(mut s)
+	}
+}
+
+fn (mut s CdpSession) save_current_tab_context() {
+	if s.current_tab_id <= 0 {
+		return
+	}
+	mut axref_refs := map[string]AxRef{}
+	s.axref.mu.@lock()
+	for key, value in s.axref.refs {
+		axref_refs[key] = value
+	}
+	s.axref.mu.unlock()
+	mut network_requests := map[string]TrackedNetworkRequest{}
+	s.network_mu.@lock()
+	for key, value in s.network_requests {
+		network_requests[key] = value
+	}
+	network_request_order := s.network_request_order.clone()
+	s.network_mu.unlock()
+	mut network_watch := NetworkWatchState{
+		active:            s.network_watch.active
+		target_dir:        s.network_watch.target_dir
+		filter:            s.network_watch.filter
+		candidate_urls:    clone_bool_map(s.network_watch.candidate_urls)
+		saved_request_ids: clone_bool_map(s.network_watch.saved_request_ids)
+		next_index:        s.network_watch.next_index
+	}
+	s.tab_contexts_mu.@lock()
+	s.tab_contexts[s.current_tab_id] = TabContext{
+		current_frame_selector: s.current_frame_selector
+		axref_refs:            axref_refs
+		network_requests:      network_requests
+		network_request_order: network_request_order
+		network_watch:         network_watch
+		console_msgs:          s.console_msgs.clone()
+		page_errors:           s.page_errors.clone()
+		dialog_events:         s.dialog_events.clone()
+	}
+	s.tab_contexts_mu.unlock()
+}
+
+fn (mut s CdpSession) restore_tab_context(tab_id int) {
+	s.tab_contexts_mu.@lock()
+	ctx := s.tab_contexts[tab_id] or {
+		s.tab_contexts_mu.unlock()
+		s.current_frame_selector = ''
+		s.axref.mu.@lock()
+		s.axref.refs.clear()
+		s.axref.mu.unlock()
+		s.network_mu.@lock()
+		s.network_requests.clear()
+		s.network_request_order = []string{}
+		s.network_enabled = false
+		s.network_mu.unlock()
+		s.network_watch_mu.@lock()
+		s.network_watch = NetworkWatchState{
+			candidate_urls:    map[string]bool{}
+			saved_request_ids: map[string]bool{}
+		}
+		s.network_watch_mu.unlock()
+		s.console_msgs = []string{}
+		s.page_errors = []string{}
+		s.dialog_events = []string{}
+		return
+	}
+	s.tab_contexts_mu.unlock()
+	s.current_frame_selector = ctx.current_frame_selector
+	s.axref.mu.@lock()
+	s.axref.refs = clone_axref_map(ctx.axref_refs)
+	s.axref.mu.unlock()
+	s.network_mu.@lock()
+	s.network_requests = clone_tracked_request_map(ctx.network_requests)
+	s.network_request_order = ctx.network_request_order.clone()
+	s.network_enabled = false
+	s.network_mu.unlock()
+	s.network_watch_mu.@lock()
+	s.network_watch = clone_network_watch_state(ctx.network_watch)
+	s.network_watch_mu.unlock()
+	s.console_msgs = ctx.console_msgs.clone()
+	s.page_errors = ctx.page_errors.clone()
+	s.dialog_events = ctx.dialog_events.clone()
 }
 
 // on_message 由 WebSocket on_message 回调调用，分发响应/事件
@@ -415,6 +534,41 @@ fn (mut s CdpSession) network_requests_json(filter string) string {
 		items << tracked_network_request_json(entry)
 	}
 	return '[' + items.join(',') + ']'
+}
+
+fn clone_axref_map(src map[string]AxRef) map[string]AxRef {
+	mut dst := map[string]AxRef{}
+	for key, value in src {
+		dst[key] = value
+	}
+	return dst
+}
+
+fn clone_tracked_request_map(src map[string]TrackedNetworkRequest) map[string]TrackedNetworkRequest {
+	mut dst := map[string]TrackedNetworkRequest{}
+	for key, value in src {
+		dst[key] = value
+	}
+	return dst
+}
+
+fn clone_bool_map(src map[string]bool) map[string]bool {
+	mut dst := map[string]bool{}
+	for key, value in src {
+		dst[key] = value
+	}
+	return dst
+}
+
+fn clone_network_watch_state(src NetworkWatchState) NetworkWatchState {
+	return NetworkWatchState{
+		active:            src.active
+		target_dir:        src.target_dir
+		filter:            src.filter
+		candidate_urls:    clone_bool_map(src.candidate_urls)
+		saved_request_ids: clone_bool_map(src.saved_request_ids)
+		next_index:        src.next_index
+	}
 }
 
 fn track_network_event(mut s CdpSession, method string, params string) {

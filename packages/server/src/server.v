@@ -364,7 +364,7 @@ fn (mut s VBrowserServer) attach_session(params string) !string {
 	window_id := cdp_extract_int(params, '"windowId":')
 	if tab_id > 0 {
 		resp := conn.session.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}')!
-		conn.session.enable_network_tracking() or {}
+		conn.session.activate_tab_context_from_result(resp.result) or {}
 		return resp.result
 	}
 	return conn.session.attach_to_tab()

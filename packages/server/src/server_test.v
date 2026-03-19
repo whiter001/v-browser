@@ -285,6 +285,70 @@ fn test_parse_cli_to_ipc_tab_switch_and_window_new() {
 	assert params_window == '{"action":"new","url":"https://example.com"}'
 }
 
+fn test_tab_context_save_and_restore_keeps_per_tab_state() {
+	mut sess := new_cdp_session(noop_send)
+	sess.current_tab_id = 11
+	sess.current_frame_selector = '#article'
+	sess.axref.refs = {
+		'@e1': AxRef{
+			backend_node_id: 1
+			node_id:         2
+			selector:        '#article'
+			name:            'article'
+		}
+	}
+	sess.network_requests = {
+		'req-1': TrackedNetworkRequest{
+			request_id: 'req-1'
+			url:        'https://example.com/a.png'
+			finished:   true
+		}
+	}
+	sess.network_request_order = ['req-1']
+	sess.network_watch = NetworkWatchState{
+		active:            true
+		target_dir:        '/tmp/tab-11'
+		filter:            'image'
+		candidate_urls:    {'https://example.com/a.png': true}
+		saved_request_ids: {'req-1': true}
+		next_index:        1
+	}
+	sess.console_msgs = ['console-11']
+	sess.page_errors = ['page-11']
+	sess.dialog_events = ['dialog-11']
+	sess.save_current_tab_context()
+
+	sess.current_tab_id = 22
+	sess.current_frame_selector = '#other'
+	sess.axref.refs = {}
+	sess.network_requests = {}
+	sess.network_request_order = []
+	sess.network_watch = NetworkWatchState{
+		candidate_urls:    {}
+		saved_request_ids: {}
+	}
+	sess.console_msgs = []
+	sess.page_errors = []
+	sess.dialog_events = []
+
+	sess.restore_tab_context(11)
+
+	assert sess.current_frame_selector == '#article'
+	assert '@e1' in sess.axref.refs
+	assert sess.axref.refs['@e1'] or { panic('missing axref') }.selector == '#article'
+	assert sess.network_requests['req-1'] or { panic('missing request') }.url == 'https://example.com/a.png'
+	assert sess.network_request_order == ['req-1']
+	assert sess.network_watch.active
+	assert sess.network_watch.target_dir == '/tmp/tab-11'
+	assert sess.network_watch.filter == 'image'
+	assert 'https://example.com/a.png' in sess.network_watch.candidate_urls
+	assert sess.network_watch.saved_request_ids['req-1']
+	assert sess.network_watch.next_index == 1
+	assert sess.console_msgs == ['console-11']
+	assert sess.page_errors == ['page-11']
+	assert sess.dialog_events == ['dialog-11']
+}
+
 fn test_parse_cli_to_ipc_eval_supports_file_input() {
 	method, params := parse_cli_to_ipc_with_readers('eval', ['--file', 'script.js'], false,
 		fake_eval_stdin_reader, fake_eval_file_reader)

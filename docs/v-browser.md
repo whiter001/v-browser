@@ -466,6 +466,8 @@ v-browser network save-images ./downloads/x-post-2034608149416522052
 
 ## 标签页和窗口
 
+v-browser 现在会按 `tabId` 记住当前标签页的上下文缓存，包括当前 frame、@eN 引用、网络记录和 `network watch` 状态；切换回同一个 tab 时会自动恢复这些状态。
+
 ```bash
 v-browser tab                     # 列出标签页
 v-browser tab new [url]          # 新建标签页（可选带 URL）

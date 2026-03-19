@@ -2362,14 +2362,13 @@ fn cmd_tab(mut sess CdpSession, params string) string {
 		}
 		'new' {
 			url := cdp_extract_str(params, 'url')
+			sess.save_current_tab_context()
 			resp := sess.send_bridge_command('createTab', '{"url":${json_str(if url != '' {
 				url
 			} else {
 				'about:blank'
 			})}}') or { return 'ERROR:${err}' }
-			axref_clear(mut sess.axref)
-			sess.current_frame_selector = ''
-			sess.enable_network_tracking() or {}
+			sess.activate_tab_context_from_result(resp.result) or { return 'ERROR:${err}' }
 			return resp.result
 		}
 		'switch' {
@@ -2378,12 +2377,11 @@ fn cmd_tab(mut sess CdpSession, params string) string {
 			if tab_id == 0 {
 				return 'ERROR:missing tabId'
 			}
+			sess.save_current_tab_context()
 			resp := sess.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}') or {
 				return 'ERROR:${err}'
 			}
-			axref_clear(mut sess.axref)
-			sess.current_frame_selector = ''
-			sess.enable_network_tracking() or {}
+			sess.activate_tab_context_from_result(resp.result) or { return 'ERROR:${err}' }
 			return resp.result
 		}
 		'close' {
@@ -2391,8 +2389,23 @@ fn cmd_tab(mut sess CdpSession, params string) string {
 			if tab_id == 0 {
 				return 'ERROR:missing tabId'
 			}
+			if sess.current_tab_id == tab_id {
+				sess.save_current_tab_context()
+			}
 			resp := sess.send_bridge_command('closeTab', '{"tabId":${tab_id}}') or {
 				return 'ERROR:${err}'
+			}
+			sess.tab_contexts_mu.@lock()
+			sess.tab_contexts.delete(tab_id)
+			sess.tab_contexts_mu.unlock()
+			if sess.current_tab_id == tab_id {
+				sess.current_tab_id = 0
+				sess.page_mu.@lock()
+				sess.page_enabled = false
+				sess.page_mu.unlock()
+				sess.network_mu.@lock()
+				sess.network_enabled = false
+				sess.network_mu.unlock()
 			}
 			return resp.result
 		}
@@ -2407,14 +2420,13 @@ fn cmd_window(mut sess CdpSession, params string) string {
 	match action {
 		'new' {
 			url := cdp_extract_str(params, 'url')
+			sess.save_current_tab_context()
 			resp := sess.send_bridge_command('createWindow', '{"url":${json_str(if url != '' {
 				url
 			} else {
 				'about:blank'
 			})}}') or { return 'ERROR:${err}' }
-			axref_clear(mut sess.axref)
-			sess.current_frame_selector = ''
-			sess.enable_network_tracking() or {}
+			sess.activate_tab_context_from_result(resp.result) or { return 'ERROR:${err}' }
 			return resp.result
 		}
 		else {
