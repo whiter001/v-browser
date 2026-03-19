@@ -92,6 +92,18 @@ Chrome Tab (CDP 1.3)
 
 ---
 
+## Phase 7 · 网络资源导出
+
+- [x] **P7-1** 复用 CDP `Network.getResponseBody`，补齐请求响应体的字节级读取能力
+- [x] **P7-2** `commands/network.v`：新增 `save`，支持按 `requestId` 将响应体保存到本地路径
+- [x] **P7-3** `commands/network.v`：根据 `content-type` / URL / requestId 自动补全默认文件名与扩展名
+- [x] **P7-4** `main.v`：CLI 参数解析支持 `v-browser network save <requestId> <path>`
+- [x] **P7-5** `network save-all-images`：自动筛选当前页面图片请求并批量导出到目录
+- [x] **P7-6** `network watch`：监听页面网络事件并按规则自动转发到 server 落盘
+- [x] **P7-7** 文档补充：X / Twitter 图片抓取与保存流程示例
+
+---
+
 ## 关键技术决策
 
 | 决策点         | 选择                                                   |
@@ -103,3 +115,4 @@ Chrome Tab (CDP 1.3)
 | 全页截图       | `Page.captureScreenshot {captureBeyondViewport: true}` |
 | 事件等待       | 订阅 CDP 事件 chan，select + timeout                   |
 | 选择器优先级   | `@eN` > CSS/XPath > 语义定位器                         |
+| 网络资源导出   | 页面侧抓请求，server 侧按 `requestId` 统一落盘         |

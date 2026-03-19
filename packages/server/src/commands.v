@@ -2617,6 +2617,54 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			body := sess.get_response_body(request_id) or { return 'ERROR:${err}' }
 			return json_str(body)
 		}
+		'save' {
+			request_id := cdp_extract_str(params, 'requestId')
+			if request_id == '' {
+				return 'ERROR:missing requestId'
+			}
+			target_path := cdp_extract_str(params, 'path')
+			out_path, mime_type := save_network_response(mut sess, request_id, target_path) or {
+				return 'ERROR:${err}'
+			}
+			return '{"ok":true,"requestId":${json_str(request_id)},"path":${json_str(out_path)},"mimeType":${json_str(mime_type)}}'
+		}
+		'save-images' {
+			target_dir := cdp_extract_str(params, 'path')
+			if target_dir == '' {
+				return 'ERROR:missing path'
+			}
+			filter := cdp_extract_str(params, 'filter')
+			paths, count := save_network_images(mut sess, target_dir, filter) or {
+				return 'ERROR:${err}'
+			}
+			mut items := []string{}
+			for path in paths {
+				items << json_str(path)
+			}
+			return '{"ok":true,"count":${count},"paths":[${items.join(",")}]} '
+		}
+		'watch' {
+			subaction := cdp_extract_str(params, 'subaction')
+			match subaction {
+				'', 'start' {
+					target_dir := cdp_extract_str(params, 'path')
+					filter := cdp_extract_str(params, 'filter')
+					if target_dir == '' {
+						return 'ERROR:missing path'
+					}
+					return start_network_watch(mut sess, target_dir, filter) or { return 'ERROR:${err}' }
+				}
+				'stop' {
+					return stop_network_watch(mut sess)
+				}
+				'status' {
+					return network_watch_status_json(mut sess)
+				}
+				else {
+					return 'ERROR:unknown network watch subaction: ${subaction}'
+				}
+			}
+		}
 		'headers' {
 			request_id := cdp_extract_str(params, 'requestId')
 			if request_id == '' {
@@ -2667,6 +2715,408 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			return 'ERROR:unknown network action: ${action}'
 		}
 	}
+}
+
+fn save_network_response(mut sess CdpSession, request_id string, target_path string) !(string, string) {
+	sess.enable_network_tracking()!
+	entry := sess.network_requests[request_id] or {
+		return error('request not found: ${request_id}')
+	}
+	body := sess.get_response_body_bytes(request_id)!
+	mime_type := network_response_mime_type(entry)
+	out_path := resolve_network_save_path(target_path, request_id, entry.url, mime_type)
+	parent_dir := os.dir(out_path)
+	if parent_dir != '' {
+		os.mkdir_all(parent_dir)!
+	}
+	os.write_file_array(out_path, body)!
+	return out_path, mime_type
+}
+
+fn save_network_images(mut sess CdpSession, target_dir string, filter string) !([]string, int) {
+	sess.enable_network_tracking()!
+	os.mkdir_all(target_dir)!
+	needle := filter.trim_space().to_lower()
+	primary_urls := collect_page_primary_image_urls(mut sess) or { []string{} }
+	mut primary_url_set := map[string]bool{}
+	for url in primary_urls {
+		primary_url_set[url] = true
+	}
+	mut saved_paths := []string{}
+	if primary_url_set.len == 0 {
+		return saved_paths, 0
+	}
+	for request_id in sess.network_request_order {
+		entry := sess.network_requests[request_id] or { continue }
+		if needle != '' {
+			haystack := '${entry.method} ${entry.url} ${entry.resource_type} ${entry.status_text} ${entry.error_text}'.to_lower()
+			if !haystack.contains(needle) {
+				continue
+			}
+		}
+		if entry.url !in primary_url_set {
+			continue
+		}
+		seq := saved_paths.len + 1
+		output_name := network_image_output_name(seq, entry)
+		out_path, _ := save_network_response(mut sess, request_id, os.join_path(target_dir, output_name)) or {
+			continue
+		}
+		saved_paths << out_path
+	}
+	return saved_paths, saved_paths.len
+}
+
+fn start_network_watch(mut sess CdpSession, target_dir string, filter string) !string {
+	if target_dir.trim_space() == '' {
+		return error('missing path')
+	}
+	sess.enable_network_tracking()!
+	os.mkdir_all(target_dir)!
+	needle := filter.trim_space().to_lower()
+	primary_urls := collect_page_primary_image_urls(mut sess) or { []string{} }
+	mut candidate_urls := []string{}
+	for url in primary_urls {
+		if needle != '' && !url.to_lower().contains(needle) {
+			continue
+		}
+		if url !in candidate_urls {
+			candidate_urls << url
+		}
+	}
+	sess.network_watch_mu.@lock()
+	sess.network_watch.active = true
+	sess.network_watch.target_dir = target_dir
+	sess.network_watch.filter = filter
+	sess.network_watch.candidate_urls = map[string]bool{}
+	sess.network_watch.saved_request_ids = map[string]bool{}
+	sess.network_watch.next_index = 0
+	for url in candidate_urls {
+		sess.network_watch.candidate_urls[url] = true
+	}
+	target_count := sess.network_watch.candidate_urls.len
+	sess.network_watch_mu.unlock()
+	sync_network_watch_existing_requests(mut sess)
+	return '{"ok":true,"active":true,"targetDir":${json_str(target_dir)},"filter":${json_str(filter)},"candidateCount":${target_count}}'
+}
+
+fn stop_network_watch(mut sess CdpSession) string {
+	sess.network_watch_mu.@lock()
+	active := sess.network_watch.active
+	target_dir := sess.network_watch.target_dir
+	filter := sess.network_watch.filter
+	candidate_count := sess.network_watch.candidate_urls.len
+	saved_count := sess.network_watch.saved_request_ids.len
+	sess.network_watch.active = false
+	sess.network_watch.target_dir = ''
+	sess.network_watch.filter = ''
+	sess.network_watch.candidate_urls = map[string]bool{}
+	sess.network_watch.saved_request_ids = map[string]bool{}
+	sess.network_watch.next_index = 0
+	sess.network_watch_mu.unlock()
+	return '{"ok":true,"active":${active},"targetDir":${json_str(target_dir)},"filter":${json_str(filter)},"candidateCount":${candidate_count},"savedCount":${saved_count}}'
+}
+
+fn network_watch_status_json(mut sess CdpSession) string {
+	sess.network_watch_mu.@lock()
+	defer { sess.network_watch_mu.unlock() }
+	return '{"active":${sess.network_watch.active},"targetDir":${json_str(sess.network_watch.target_dir)},"filter":${json_str(sess.network_watch.filter)},"candidateCount":${sess.network_watch.candidate_urls.len},"savedCount":${sess.network_watch.saved_request_ids.len},"nextIndex":${sess.network_watch.next_index}}'
+}
+
+fn sync_network_watch_existing_requests(mut sess CdpSession) {
+	sess.network_watch_mu.@lock()
+	if !sess.network_watch.active {
+		sess.network_watch_mu.unlock()
+		return
+	}
+	mut request_ids := []string{}
+	mut paths := []string{}
+	for request_id in sess.network_request_order {
+		entry := sess.network_requests[request_id] or { continue }
+		if !entry.finished {
+			continue
+		}
+		if entry.url !in sess.network_watch.candidate_urls {
+			continue
+		}
+		if request_id in sess.network_watch.saved_request_ids {
+			continue
+		}
+		sess.network_watch.next_index++
+		seq := sess.network_watch.next_index
+		paths << os.join_path(sess.network_watch.target_dir, network_image_output_name(seq, entry))
+		sess.network_watch.saved_request_ids[request_id] = true
+		request_ids << request_id
+	}
+	sess.network_watch_mu.unlock()
+	for i, request_id in request_ids {
+		path := paths[i]
+		spawn fn [mut sess, request_id, path] () {
+			if err := save_network_response_with_retry(mut sess, request_id, path, 3, 150 * time.millisecond) {
+				eprintln('[network watch] sync save failed for ${request_id}: ${err}')
+			}
+		}()
+	}
+}
+
+fn handle_network_watch_loading_finished(mut sess CdpSession, request_id string) {
+	sess.network_watch_mu.@lock()
+	if !sess.network_watch.active {
+		sess.network_watch_mu.unlock()
+		return
+	}
+	entry := sess.network_requests[request_id] or {
+		sess.network_watch_mu.unlock()
+		return
+	}
+	if entry.url !in sess.network_watch.candidate_urls {
+		sess.network_watch_mu.unlock()
+		return
+	}
+	if request_id in sess.network_watch.saved_request_ids {
+		sess.network_watch_mu.unlock()
+		return
+	}
+	sess.network_watch.next_index++
+	seq := sess.network_watch.next_index
+	target_dir := sess.network_watch.target_dir
+	sess.network_watch.saved_request_ids[request_id] = true
+	sess.network_watch_mu.unlock()
+	output_name := network_image_output_name(seq, entry)
+	path := os.join_path(target_dir, output_name)
+	if err := save_network_response_with_retry(mut sess, request_id, path, 3, 150 * time.millisecond) {
+		eprintln('[network watch] save failed for ${request_id}: ${err}')
+	}
+}
+
+fn save_network_response_with_retry(mut sess CdpSession, request_id string, target_path string, attempts int, delay time.Duration) !string {
+	mut last_err := ''
+	for attempt in 0 .. attempts {
+		out_path, _ := save_network_response(mut sess, request_id, target_path) or {
+			last_err = err.msg()
+			if attempt + 1 < attempts {
+				time.sleep(delay)
+				continue
+			}
+			return error(last_err)
+		}
+		return out_path
+	}
+	return error(if last_err != '' { last_err } else { 'save failed' })
+}
+
+fn collect_page_primary_image_urls(mut sess CdpSession) ![]string {
+	js := build_page_primary_image_urls_js(&sess)
+	raw := eval_scoped_expression(mut sess, js, true)!
+	if raw == '' || raw == 'null' || raw == '[]' {
+		return []string{}
+	}
+	mut urls := []string{}
+	trimmed := raw.trim_space()
+	if trimmed.starts_with('[') && trimmed.ends_with(']') {
+		for item in trimmed[1..trimmed.len - 1].split(',') {
+			url := decode_json_string_literal(item.trim_space())
+			if url != '' && url !in urls {
+				urls << url
+			}
+		}
+	}
+	return urls
+}
+
+fn build_page_primary_image_urls_js(sess &CdpSession) string {
+	return build_document_scope_js(sess, '
+		function normalizeUrl(src) {
+			try { return new URL(src, doc.baseURI).href; } catch (e) { return ""; }
+		}
+		function isVisible(el) {
+			if (!el) return false;
+			var r = el.getBoundingClientRect();
+			var style = win.getComputedStyle(el);
+			return r.width > 0 && r.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+		}
+		function imageArea(img) {
+			var r = img.getBoundingClientRect();
+			return r.width * r.height;
+		}
+		var containers = Array.from(doc.querySelectorAll("article, figure, main, [role=article], [data-testid=tweet]"));
+		if (!containers.length) containers = [doc.body];
+		var best = null;
+		for (var i = 0; i < containers.length; i++) {
+			var root = containers[i];
+			var images = Array.from(root.querySelectorAll("img")).filter(isVisible);
+			var mediaImages = images.filter(function(img) { return imageArea(img) >= 40000; });
+			if (!mediaImages.length) continue;
+			var area = mediaImages.reduce(function(sum, img) { return sum + imageArea(img); }, 0);
+			var textLen = String(root.innerText || "").trim().length;
+			var score = area + Math.min(textLen, 4000);
+			if (!best || score > best.score) {
+				best = { score: score, mediaImages: mediaImages };
+			}
+		}
+		if (!best) return "[]";
+		var urls = [];
+		var seen = {};
+		best.mediaImages.forEach(function(img) {
+			var src = normalizeUrl(img.currentSrc || img.src || "");
+			if (!src || seen[src]) return;
+			seen[src] = true;
+			urls.push(src);
+		});
+		return JSON.stringify(urls);
+	')
+}
+
+fn network_image_output_name(index int, entry TrackedNetworkRequest) string {
+	mut base := network_url_filename(entry.url)
+	if base == '' {
+		base = entry.request_id
+	}
+	mime_type := network_response_mime_type(entry)
+	if file_extension(base) == '' {
+		base += network_file_extension(mime_type, entry.url)
+	}
+	return '${index:02d}-${base}'
+}
+
+fn resolve_network_save_path(target_path string, request_id string, url string, mime_type string) string {
+	mut base_path := target_path.trim_space()
+	if base_path == '' {
+		base_path = os.join_path(os.temp_dir(), network_default_filename(request_id, url, mime_type))
+		return base_path
+	}
+	if base_path.ends_with('/') || base_path.ends_with('\\') {
+		return os.join_path(base_path, network_default_filename(request_id, url, mime_type))
+	}
+	if os.exists(base_path) && os.is_dir(base_path) {
+		return os.join_path(base_path, network_default_filename(request_id, url, mime_type))
+	}
+	if file_extension(base_path) == '' {
+		return base_path + network_file_extension(mime_type, url)
+	}
+	return base_path
+}
+
+fn network_default_filename(request_id string, url string, mime_type string) string {
+	mut name := network_url_filename(url)
+	if name == '' {
+		name = request_id
+	}
+	if file_extension(name) == '' {
+		name += network_file_extension(mime_type, url)
+	}
+	return name
+}
+
+fn file_extension(path string) string {
+	mut name := path
+	if idx := name.last_index('/') {
+		name = name[idx + 1..]
+	}
+	if idx := name.last_index('\\') {
+		name = name[idx + 1..]
+	}
+	if idx := name.last_index('.') {
+		if idx > 0 && idx < name.len - 1 {
+			return name[idx..]
+		}
+	}
+	return ''
+}
+
+fn network_url_filename(url string) string {
+	mut cleaned := url
+	if idx := cleaned.index('?') {
+		cleaned = cleaned[..idx]
+	}
+	if idx := cleaned.index('#') {
+		cleaned = cleaned[..idx]
+	}
+	if idx := cleaned.last_index('/') {
+		return cleaned[idx + 1..]
+	}
+	return ''
+}
+
+fn network_file_extension(mime_type string, url string) string {
+	if mime_type != '' {
+		match mime_type.to_lower() {
+			'image/jpeg', 'image/jpg' { return '.jpg' }
+			'image/gif' { return '.gif' }
+			'image/webp' { return '.webp' }
+			'image/bmp' { return '.bmp' }
+			'image/png' { return '.png' }
+			'text/html' { return '.html' }
+			'application/json' { return '.json' }
+			'video/mp4' { return '.mp4' }
+			else {}
+		}
+	}
+	if query_image_format_extension(url) != '' {
+		return query_image_format_extension(url)
+	}
+	if url.to_lower().contains('.jpg') || url.to_lower().contains('.jpeg') {
+		return '.jpg'
+	}
+	if url.to_lower().contains('.gif') {
+		return '.gif'
+	}
+	if url.to_lower().contains('.webp') {
+		return '.webp'
+	}
+	if url.to_lower().contains('.bmp') {
+		return '.bmp'
+	}
+	return '.bin'
+}
+
+fn query_image_format_extension(url string) string {
+	mut query := url
+	if idx := query.index('?') {
+		query = query[idx + 1..]
+	} else {
+		return ''
+	}
+	for pair in query.split('&') {
+		if pair.starts_with('format=') {
+			format := pair[7..].to_lower()
+			return match format {
+				'jpg', 'jpeg' { '.jpg' }
+				'png' { '.png' }
+				'gif' { '.gif' }
+				'webp' { '.webp' }
+				'bmp' { '.bmp' }
+				else { '' }
+			}
+		}
+	}
+	return ''
+}
+
+fn network_response_mime_type(entry TrackedNetworkRequest) string {
+	mut mime_type := cdp_extract_str(entry.response_headers, 'content-type')
+	if mime_type == '' {
+		mime_type = cdp_extract_str(entry.response_headers, 'Content-Type')
+	}
+	if mime_type == '' {
+		if entry.url.to_lower().contains('.jpg') || entry.url.to_lower().contains('.jpeg') {
+			return 'image/jpeg'
+		}
+		if entry.url.to_lower().contains('.gif') {
+			return 'image/gif'
+		}
+		if entry.url.to_lower().contains('.webp') {
+			return 'image/webp'
+		}
+		if entry.url.to_lower().contains('.png') {
+			return 'image/png'
+		}
+		return 'application/octet-stream'
+	}
+	if idx := mime_type.index(';') {
+		return mime_type[..idx].trim_space()
+	}
+	return mime_type.trim_space()
 }
 
 // ─── frame ──────────────────────────────────────────────────

@@ -74,6 +74,23 @@ cat /tmp/vbrowser-example.js | ./v-browser --json eval --stdin
 ./v-browser eval --base64 "ZG9jdW1lbnQudGl0bGU="
 ```
 
+## 网络资源导出
+
+v-browser 现在支持直接把网络响应体保存到本地，适合 X / Twitter 这类图片页的自动化导出：
+
+```bash
+./v-browser network requests --filter image
+./v-browser network body <requestId>
+./v-browser network save <requestId> ./downloads/image.jpg
+./v-browser network save-images ./downloads/x-post
+./v-browser network watch start ./downloads/watch
+./v-browser network watch status
+./v-browser network watch stop
+```
+
+其中 `network save-images` 会优先筛选帖子主图请求，并自动过滤头像、emoji 和视频缩略图。
+`network watch` 会持续监听当前页面的网络事件，适合页面主图在后续滚动或动态加载后再发起请求的场景。
+
 ## 项目配置
 
 `v-browser` 目前主要通过环境变量配置运行行为。CLI/Server 本身不会自动读取根目录 `.env`，但你可以把它当成团队共享的配置模板，再按自己的 shell 手动加载。
@@ -166,7 +183,7 @@ $env:V_BROWSER_BROWSER_APP = "C:\Program Files (x86)\Microsoft\Edge\Application\
 
 设置后需要**重启终端**使环境变量生效。
 
-#### macOS / Linux
+#### macOS / Linux（设置环境变量）
 
 ```bash
 export V_BROWSER_EXTENSION_ID="eefgklfpdnjodmmjefedjfnflacaimmj"

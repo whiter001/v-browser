@@ -47,5 +47,8 @@ nul
 # Test results
 test-results/
 
+# Downloads
+downloads/
+
 
 .playwright-mcp/

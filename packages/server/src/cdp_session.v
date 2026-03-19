@@ -23,6 +23,16 @@ struct EventSub {
 	ch chan ProtocolResponse
 }
 
+struct NetworkWatchState {
+mut:
+	active            bool
+	target_dir        string
+	filter            string
+	candidate_urls    map[string]bool
+	saved_request_ids map[string]bool
+	next_index        int
+}
+
 struct TrackedNetworkRequest {
 mut:
 	request_id        string
@@ -54,6 +64,8 @@ mut:
 	network_request_order  []string
 	network_enabled        bool
 	network_mu             sync.Mutex
+	network_watch          NetworkWatchState
+	network_watch_mu       sync.Mutex
 	page_enabled           bool
 	page_mu                sync.Mutex
 	// 运行时缓存（debug 命令使用）
@@ -68,6 +80,10 @@ fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 		pending:          map[int]chan ProtocolResponse{}
 		event_subs:       map[string][]chan ProtocolResponse{}
 		network_requests: map[string]TrackedNetworkRequest{}
+		network_watch:    NetworkWatchState{
+			candidate_urls:    map[string]bool{}
+			saved_request_ids: map[string]bool{}
+		}
 	}
 }
 
@@ -283,6 +299,14 @@ fn (mut s CdpSession) on_message(raw string) {
 				}
 			} else if inner_method.starts_with('Network.') {
 				track_network_event(mut s, inner_method, inner_params)
+				if inner_method == 'Network.loadingFinished' {
+					request_id := cdp_extract_str(inner_params, 'requestId')
+					if request_id != '' {
+						spawn fn [mut s, request_id] () {
+							handle_network_watch_loading_finished(mut s, request_id)
+						}()
+					}
+				}
 			}
 			// 向订阅者分发内层 method
 			s.dispatch_event(inner_method, ProtocolResponse{
@@ -474,6 +498,17 @@ fn (mut s CdpSession) get_response_body(request_id string) !string {
 		return base64.decode_str(body)
 	}
 	return body
+}
+
+fn (mut s CdpSession) get_response_body_bytes(request_id string) ![]u8 {
+	s.enable_network_tracking()!
+	resp := s.send_command('Network.getResponseBody', '{"requestId":${json_str(request_id)}}')!
+	body := cdp_extract_str(resp.result, 'body')
+	base64_flag := cdp_extract_obj_key(resp.result, '"base64Encoded":')
+	if base64_flag == 'true' {
+		return base64.decode(body)
+	}
+	return body.bytes()
 }
 
 // get_response_headers 获取网络请求的响应头（从本地追踪记录中获取）

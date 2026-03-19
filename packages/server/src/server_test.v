@@ -155,6 +155,39 @@ fn test_parse_cli_to_ipc_diff_url_variants() {
 	assert params.contains('"waitUntil":"networkidle"')
 }
 
+fn test_parse_cli_to_ipc_network_save_variants() {
+	method, params := parse_cli_to_ipc('network', ['save', 'req-1', './out/image'], false)
+	assert method == 'network'
+	assert params.contains('"action":"save"')
+	assert params.contains('"requestId":"req-1"')
+	assert params.contains('"path":"./out/image"')
+}
+
+fn test_parse_cli_to_ipc_network_save_images_variants() {
+	method, params := parse_cli_to_ipc('network', ['save-images', './out/images'], false)
+	assert method == 'network'
+	assert params.contains('"action":"save-images"')
+	assert params.contains('"path":"./out/images"')
+}
+
+fn test_parse_cli_to_ipc_network_watch_variants() {
+	method_start, params_start := parse_cli_to_ipc('network', ['watch', 'start', './out/watch'], false)
+	assert method_start == 'network'
+	assert params_start.contains('"action":"watch"')
+	assert params_start.contains('"subaction":"start"')
+	assert params_start.contains('"path":"./out/watch"')
+
+	method_status, params_status := parse_cli_to_ipc('network', ['watch', 'status'], false)
+	assert method_status == 'network'
+	assert params_status.contains('"action":"watch"')
+	assert params_status.contains('"subaction":"status"')
+
+	method_stop, params_stop := parse_cli_to_ipc('network', ['watch', 'stop'], false)
+	assert method_stop == 'network'
+	assert params_stop.contains('"action":"watch"')
+	assert params_stop.contains('"subaction":"stop"')
+}
+
 fn test_parse_cli_to_ipc_fill_and_upload_include_verify_flags() {
 	fill_method, fill_params := parse_cli_to_ipc('fill', ['--selector', '#editor', '--text', 'Hello', '--verify', '--verify-timeout', '2750'], false)
 	assert fill_method == 'fill'
@@ -946,4 +979,35 @@ fn test_clipboard_js_helpers_include_clipboard_calls() {
 	assert write_js.contains('ClipboardItem')
 	assert write_js.contains('atob(')
 	assert write_js.contains('return "ok"')
+}
+
+fn test_network_save_path_helpers_infer_extensions() {
+	assert network_url_filename('https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium') == 'HDxhU9RWQAAw-2P'
+	assert network_file_extension('image/jpeg', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P') == '.jpg'
+	assert network_file_extension('', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium') == '.jpg'
+	assert network_file_extension('application/json', 'https://example.com/api') == '.json'
+	assert network_default_filename('req-1', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P', 'image/jpeg') == 'HDxhU9RWQAAw-2P.jpg'
+	assert resolve_network_save_path('./tmp/image', 'req-1', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P', 'image/jpeg') == './tmp/image.jpg'
+}
+
+fn test_build_page_primary_image_urls_js_mentions_container_scoring() {
+	mut sess := new_cdp_session(noop_send)
+	js := build_page_primary_image_urls_js(sess)
+	assert js.contains('article, figure, main, [role=article], [data-testid=tweet]')
+	assert js.contains('imageArea(img) >= 40000')
+	assert js.contains('best.mediaImages')
+	assert js.contains('normalizeUrl(src)')
+	assert js.contains('new URL(src, doc.baseURI).href')
+}
+
+fn test_save_network_images_uses_candidate_set_for_matching() {
+	mut candidate_urls := map[string]bool{}
+	candidate_urls['https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium'] = true
+	entry := TrackedNetworkRequest{
+		request_id:    'media-1'
+		url:           'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium'
+		resource_type: 'Image'
+	}
+	assert entry.url in candidate_urls
+	assert network_image_output_name(1, entry) == '01-HDxhU9RWQAAw-2P.jpg'
 }

@@ -178,6 +178,23 @@ v-browser close
 
 ---
 
+## 网络资源导出
+
+当你需要把当前页面的图片响应体直接保存到本地时，可以使用下面这些命令：
+
+```bash
+v-browser network requests --filter image
+v-browser network body <requestId>
+v-browser network save <requestId> ./downloads/image.jpg
+v-browser network save-images ./downloads/x-post
+v-browser network watch start ./downloads/watch
+v-browser network watch status
+v-browser network watch stop
+```
+
+其中 `network save-images` 会优先筛选帖子主图请求，并自动过滤头像、emoji 和视频缩略图。
+`network watch` 适合动态页面或懒加载场景，会持续监听网络事件并把匹配到的资源自动落盘。
+
 ## 剪贴板操作
 
 v-browser 现在提供了两个直接的图片剪贴板命令：
@@ -403,7 +420,7 @@ v-browser storage session        # 同上
 
 ## 网络
 
-当前 `network route` / `unroute` / `network requests` / `network body` 已可用；请求状态码依赖浏览器返回的 `Network.responseReceived` / `Network.responseReceivedExtraInfo`，因此少数请求可能只显示基础信息。
+当前 `network route` / `unroute` / `network requests` / `network body` / `network save` / `network save-images` 已可用；请求状态码依赖浏览器返回的 `Network.responseReceived` / `Network.responseReceivedExtraInfo`，因此少数请求可能只显示基础信息。
 
 ```bash
 v-browser network route <url>              # 拦截请求
@@ -413,6 +430,8 @@ v-browser network unroute [url]           # 移除路由
 v-browser network requests               # 查看跟踪的请求（含 requestId）
 v-browser network requests --filter api   # 过滤请求
 v-browser network body <requestId>        # 根据 requestId 获取响应体
+v-browser network save <requestId> ./out/image.jpg
+v-browser network save-images ./out/images
 ```
 
 **使用示例：**
@@ -423,7 +442,25 @@ v-browser network requests
 
 # 2. 根据 requestId 获取响应体
 v-browser network body <requestId>
+
+# 3. 直接保存单个响应体到本地
+v-browser network save <requestId> ./downloads/one.jpg
+
+# 4. 批量保存当前页面的主图请求
+v-browser network save-images ./downloads/x-post-2034608149416522052
 ```
+
+### X / Twitter 图片保存
+
+对于 X 帖子，`network save-images` 会只筛选 `pbs.twimg.com/media/...` 这类帖子主图请求，并自动跳过头像、emoji、视频缩略图和站点图标等噪声。导出的文件会按顺序编号，例如：
+
+```text
+./downloads/x-post-2034608149416522052/
+    01-HDxhU9RWQAAw-2P.jpg
+    02-HDxhi5qXwAAKqPI.jpg
+```
+
+如果你已经知道某个图片请求的 `requestId`，也可以直接使用 `network save` 精确保存。适合先用 `network requests --filter image` 找到目标请求，再落盘。
 
 ---
 
