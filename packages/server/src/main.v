@@ -113,6 +113,7 @@ fn main() {
 fn handle_connect_command(args []string, json_output bool) {
 	tab_id := extract_flag_value(args, '--tab-id').int()
 	window_id := extract_flag_value(args, '--window-id').int()
+	target_url := extract_connect_target_url(args)
 	extension_id := resolve_extension_id(args)
 	status_before := send_ipc('status', '{}') or {
 		print_error(err.msg(), json_output)
@@ -137,7 +138,7 @@ fn handle_connect_command(args []string, json_output bool) {
 			exit(1)
 		}
 	}
-	params := if tab_id > 0 { '{"tabId":${tab_id},"windowId":${window_id}}' } else { '{}' }
+	params := '{"tabId":${tab_id},"windowId":${window_id},"url":${json_str(target_url)}}'
 	result := connect_active_session(params) or {
 		err_msg := err.msg()
 		if is_attach_conflict_error(err_msg) {
@@ -152,6 +153,24 @@ fn handle_connect_command(args []string, json_output bool) {
 		exit(1)
 	}
 	println(format_output(result, json_output))
+}
+
+fn extract_connect_target_url(args []string) string {
+	url := extract_flag_value(args, '--url').trim_space()
+	if url != '' {
+		return url
+	}
+	if args.len == 0 {
+		return ''
+	}
+	first := args[0].trim_space()
+	if first == '' || first.starts_with('-') {
+		return ''
+	}
+	if first.contains('://') {
+		return first
+	}
+	return ''
 }
 
 fn run_cli_command(method string, params string) !string {

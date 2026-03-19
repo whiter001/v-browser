@@ -182,7 +182,9 @@ export class RelayConnection {
             tab.id &&
             tab.windowId &&
             tab.url &&
-            !["chrome:", "edge:", "devtools:"].some((scheme) => tab.url!.startsWith(scheme)),
+            !["chrome:", "edge:", "devtools:", "chrome-extension:"].some((scheme) =>
+              tab.url!.startsWith(scheme),
+            ),
         )
         .map((tab) => ({
           id: tab.id,

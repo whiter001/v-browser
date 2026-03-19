@@ -362,12 +362,13 @@ fn (mut s VBrowserServer) attach_session(params string) !string {
 	mut conn := conn_opt or { return error('no extension connected') }
 	tab_id := cdp_extract_int(params, '"tabId":')
 	window_id := cdp_extract_int(params, '"windowId":')
+	target_url := cdp_extract_str(params, 'url')
 	if tab_id > 0 {
 		resp := conn.session.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}')!
 		conn.session.activate_tab_context_from_result(resp.result) or {}
 		return resp.result
 	}
-	return conn.session.attach_to_tab()
+	return conn.session.attach_to_tab_by_url(target_url)
 }
 
 // get_session 获取当前 session，无连接则报错

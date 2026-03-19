@@ -51,6 +51,31 @@ fn test_build_extension_connect_url_contains_expected_query() {
 	assert url.contains('client=')
 }
 
+fn test_extract_connect_target_url_prefers_flag_and_positional_url() {
+	assert extract_connect_target_url(['--url', 'https://x.com/a']) == 'https://x.com/a'
+	assert extract_connect_target_url(['https://wx.mail.qq.com/home/index#/notepad']) == 'https://wx.mail.qq.com/home/index#/notepad'
+	assert extract_connect_target_url(['--tab-id', '12']) == ''
+	assert extract_connect_target_url([]) == ''
+}
+
+fn test_find_best_tab_for_url_from_json_prefers_matching_tab_then_active() {
+	tabs_json := '[{"id":11,"windowId":1,"title":"A","url":"https://x.com/a","active":false},{"id":22,"windowId":2,"title":"B","url":"https://wx.mail.qq.com/home/index#/notepad","active":true},{"id":33,"windowId":3,"title":"C","url":"https://x.com/a","active":true}]'
+	tab_id, window_id := find_best_tab_for_url_from_json(tabs_json, 'https://x.com/a') or { panic(err) }
+	assert tab_id == 33
+	assert window_id == 3
+
+	active_tab_id, active_window_id := find_best_tab_for_url_from_json(tabs_json, '') or { panic(err) }
+	assert active_tab_id == 22
+	assert active_window_id == 2
+}
+
+fn test_find_best_tab_for_url_from_json_ignores_extension_tabs_when_selecting() {
+	tabs_json := '[{"id":11,"windowId":1,"title":"Ext","url":"chrome-extension://pcomgagjilgkfioemopicalioepnanjj/connect.html","active":true},{"id":22,"windowId":2,"title":"X","url":"https://x.com/AI_Jasonyu/status/2034524961835225265","active":false}]'
+	tab_id, window_id := find_best_tab_for_url_from_json(tabs_json, '') or { panic(err) }
+	assert tab_id == 22
+	assert window_id == 2
+}
+
 fn test_browser_open_candidates_prefer_explicit_app() {
 	candidates := browser_open_candidates('Google Chrome Canary')
 	assert candidates.len == 4

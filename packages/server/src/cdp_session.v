@@ -45,6 +45,14 @@ mut:
 	dialog_events         []string
 }
 
+struct TabSummary {
+	id       int
+	window_id int
+	title    string
+	url      string
+	active   bool
+}
+
 struct TrackedNetworkRequest {
 mut:
 	request_id        string
@@ -273,6 +281,154 @@ fn (mut s CdpSession) attach_to_tab() !string {
 	}
 	s.activate_tab_context_from_result(resp.result) or {}
 	return resp.result
+}
+
+fn (mut s CdpSession) attach_to_tab_by_url(target_url string) !string {
+	if target_url.trim_space() == '' {
+		resp := s.send_bridge_command('listTabs', '{}')!
+		tab_id, window_id := find_best_tab_for_url_from_json(resp.result, '') or {
+			return s.attach_to_tab()
+		}
+		if tab_id <= 0 {
+			return s.attach_to_tab()
+		}
+		resp2 := s.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}') or {
+			return error(err.msg())
+		}
+		s.activate_tab_context_from_result(resp2.result) or {}
+		return resp2.result
+	}
+	tab_id, window_id := s.find_best_tab_for_url(target_url)!
+	if tab_id <= 0 {
+		return s.attach_to_tab()
+	}
+	resp := s.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}') or {
+		return error(err.msg())
+	}
+	s.activate_tab_context_from_result(resp.result) or {}
+	return resp.result
+}
+
+fn (mut s CdpSession) find_best_tab_for_url(target_url string) !(int, int) {
+	resp := s.send_bridge_command('listTabs', '{}')!
+	return find_best_tab_for_url_from_json(resp.result, target_url)
+}
+
+fn find_best_tab_for_url_from_json(tabs_json string, target_url string) !(int, int) {
+	objects := split_json_array_objects(tabs_json)
+	if objects.len == 0 {
+		return error('no available tab')
+	}
+	needle := target_url.trim_space()
+	mut active_fallback := TabSummary{}
+	mut first_fallback := TabSummary{}
+	mut matched_active := TabSummary{}
+	mut matched := TabSummary{}
+	for obj in objects {
+		tab := TabSummary{
+			id:       cdp_extract_int(obj, '"id":')
+			window_id: cdp_extract_int(obj, '"windowId":')
+			title:    cdp_extract_str(obj, 'title')
+			url:      cdp_extract_str(obj, 'url')
+			active:   cdp_extract_bool(obj, 'active')
+		}
+		if tab.id <= 0 {
+			continue
+		}
+		if !is_connectable_tab_url(tab.url) {
+			continue
+		}
+		if first_fallback.id == 0 {
+			first_fallback = tab
+		}
+		if tab.active && active_fallback.id == 0 {
+			active_fallback = tab
+		}
+		if needle != '' && tab.url.trim_space() == needle {
+			if matched.id == 0 {
+				matched = tab
+			}
+			if tab.active {
+				matched_active = tab
+			}
+		}
+	}
+	if matched_active.id > 0 {
+		return matched_active.id, matched_active.window_id
+	}
+	if matched.id > 0 {
+		return matched.id, matched.window_id
+	}
+	if active_fallback.id > 0 {
+		return active_fallback.id, active_fallback.window_id
+	}
+	if first_fallback.id > 0 {
+		return first_fallback.id, first_fallback.window_id
+	}
+	return error('no available tab')
+}
+
+fn is_connectable_tab_url(url string) bool {
+	trimmed := url.trim_space().to_lower()
+	if trimmed == '' {
+		return false
+	}
+	if trimmed.starts_with('chrome-extension:') {
+		return false
+	}
+	if trimmed.starts_with('chrome:') || trimmed.starts_with('edge:') || trimmed.starts_with('devtools:') {
+		return false
+	}
+	return true
+}
+
+fn split_json_array_objects(raw string) []string {
+	trimmed := raw.trim_space()
+	if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+		return []string{}
+	}
+	mut items := []string{}
+	mut depth := 0
+	mut start := -1
+	mut in_string := false
+	mut escaped := false
+	for i, c in trimmed {
+		if in_string {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == `\\` {
+				escaped = true
+				continue
+			}
+			if c == `"` {
+				in_string = false
+			}
+			continue
+		}
+		if c == `"` {
+			in_string = true
+			continue
+		}
+		if c == `{` {
+			if depth == 0 {
+				start = i
+			}
+			depth++
+			continue
+		}
+		if c == `}` {
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					items << trimmed[start..i + 1]
+					start = -1
+				}
+			}
+		}
+	}
+	return items
 }
 
 fn (mut s CdpSession) activate_tab_context_from_result(result string) ! {
