@@ -890,3 +890,60 @@ fn test_ipc_decode_response_handles_null_result() {
 // 	result := cmd_network(mut sess, '{"action":"body","requestId":"nonexistent"}')
 // 	assert result.contains('ERROR:')
 // }
+
+// ─── clipboard tests ─────────────────────────────────────────
+
+fn test_parse_cli_to_ipc_clipboard_read_routes_action() {
+	method, params := parse_cli_to_ipc('clipboard', ['read', 'image'], false)
+	assert method == 'clipboard'
+	assert params.contains('"action":"read"')
+	assert params.contains('"kind":"image"')
+}
+
+fn test_parse_cli_to_ipc_clipboard_write_routes_action_and_path() {
+	method, params := parse_cli_to_ipc('clipboard', ['write', 'image', 'photo.png'], false)
+	assert method == 'clipboard'
+	assert params.contains('"action":"write"')
+	assert params.contains('"kind":"image"')
+	assert params.contains('"path":"photo.png"')
+}
+
+fn test_parse_cli_to_ipc_clipboard_read_via_flag() {
+	method, params := parse_cli_to_ipc('clipboard', ['--action', 'read', '--kind', 'image'], false)
+	assert method == 'clipboard'
+	assert params.contains('"action":"read"')
+	assert params.contains('"kind":"image"')
+}
+
+fn test_image_mime_type_returns_correct_types() {
+	assert image_mime_type('photo.png') == 'image/png'
+	assert image_mime_type('photo.PNG') == 'image/png'
+	assert image_mime_type('photo.jpg') == 'image/jpeg'
+	assert image_mime_type('photo.jpeg') == 'image/jpeg'
+	assert image_mime_type('photo.gif') == 'image/gif'
+	assert image_mime_type('photo.webp') == 'image/webp'
+	assert image_mime_type('photo.bmp') == 'image/bmp'
+	assert image_mime_type('photo.unknown') == 'image/png' // default
+}
+
+fn test_clipboard_image_extension_matches_mime_type() {
+	assert clipboard_image_extension('image/png') == 'png'
+	assert clipboard_image_extension('image/jpeg') == 'jpg'
+	assert clipboard_image_extension('image/jpg') == 'jpg'
+	assert clipboard_image_extension('image/gif') == 'gif'
+	assert clipboard_image_extension('image/webp') == 'webp'
+	assert clipboard_image_extension('image/bmp') == 'bmp'
+}
+
+fn test_clipboard_js_helpers_include_clipboard_calls() {
+	read_js := build_clipboard_read_image_js()
+	assert read_js.contains('navigator.clipboard.read')
+	assert read_js.contains('btoa(binary)')
+	assert read_js.contains('return type')
+
+	write_js := build_clipboard_write_image_js('image/png', 'YWJj')
+	assert write_js.contains('navigator.clipboard.write')
+	assert write_js.contains('ClipboardItem')
+	assert write_js.contains('atob(')
+	assert write_js.contains('return "ok"')
+}

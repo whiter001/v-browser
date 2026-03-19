@@ -180,7 +180,17 @@ v-browser close
 
 ## 剪贴板操作
 
-v-browser 没有直接的剪贴板命令，但可以通过 `eval` + `press` 组合实现复制粘贴功能。
+v-browser 现在提供了两个直接的图片剪贴板命令：
+
+```bash
+v-browser clipboard read image
+v-browser clipboard write image ./photo.png
+```
+
+- `clipboard read image` 会把剪贴板里的第一张图片保存到临时文件，并返回文件路径和 MIME 类型
+- `clipboard write image <path>` 会把本地图片写入系统剪贴板
+
+如果你只是处理文本，仍然可以继续使用下面的 `eval` + `press` 组合。
 
 ### 复制内容到剪贴板
 

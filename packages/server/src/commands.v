@@ -83,6 +83,7 @@ fn dispatch_command(mut sess CdpSession, method string, params string) string {
 		'profiler' { cmd_profiler(mut sess, params) }
 		'set' { cmd_set(mut sess, params) }
 		'diff' { cmd_diff(mut sess, params) }
+		'clipboard' { cmd_clipboard(mut sess, params) }
 		'state' { cmd_state(mut sess, params) }
 		else { 'ERROR:unknown command: ${method}' }
 	}
@@ -3085,6 +3086,111 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 			return 'ERROR:unknown diff type: ${dtype}'
 		}
 	}
+}
+
+// ─── clipboard ─────────────────────────────────────────────
+// clipboard read image  — read image from system clipboard and save to a temp file
+// clipboard write image <path> — write a local image file to the system clipboard
+fn cmd_clipboard(mut sess CdpSession, params string) string {
+	action := cdp_extract_str(params, 'action')
+	kind := cdp_extract_str(params, 'kind')
+	clipboard_kind := if kind != '' { kind } else { 'image' }
+	match action {
+		'read', 'r' {
+			if clipboard_kind != 'image' {
+				return 'ERROR:clipboard read only supports image'
+			}
+			ensure_clipboard_permissions(mut sess)
+			raw := eval_scoped_expression(mut sess, build_clipboard_read_image_js(), true) or {
+				return 'ERROR:${err}'
+			}
+			if raw == '' {
+				return 'ERROR:no image found in clipboard'
+			}
+			parts := raw.split('\t')
+			if parts.len != 2 {
+				return 'ERROR:unexpected clipboard image payload'
+			}
+			mime_type := parts[0].trim_space()
+			data := parts[1].trim_space()
+			if mime_type == '' || data == '' {
+				return 'ERROR:no image found in clipboard'
+			}
+			raw_bytes := base64.decode(data)
+			ext := clipboard_image_extension(mime_type)
+			out_path := os.join_path(os.temp_dir(), 'v-browser-clipboard-${time.now().unix_milli()}.${ext}')
+			os.write_file_array(out_path, raw_bytes) or { return 'ERROR:write failed: ${err}' }
+			return '{"ok":true,"path":${json_str(out_path)},"mimeType":${json_str(mime_type)}}'
+		}
+		'write', 'w' {
+			if clipboard_kind != 'image' {
+				return 'ERROR:clipboard write only supports image'
+			}
+			path := cdp_extract_str(params, 'path')
+			if path == '' {
+				return 'ERROR:clipboard write requires --path'
+			}
+			img_bytes := os.read_bytes(path) or {
+				return 'ERROR:failed to read ${path}: ${err}'
+			}
+			mime_type := image_mime_type(path)
+			js := build_clipboard_write_image_js(mime_type, base64.encode(img_bytes))
+			ensure_clipboard_permissions(mut sess)
+			val := eval_scoped_expression(mut sess, js, true) or { return 'ERROR:${err}' }
+			if val == '' || val == 'undefined' || val == 'ok' {
+				return '{"ok":true,"mimeType":${json_str(mime_type)}}'
+			}
+			return '{"ok":true,"mimeType":${json_str(mime_type)}}'
+		}
+		else {
+			return 'ERROR:clipboard action must be "read" or "write"'
+		}
+	}
+}
+
+fn image_mime_type(path string) string {
+	lowered := path.to_lower()
+	if lowered.ends_with('.png') {
+		return 'image/png'
+	}
+	if lowered.ends_with('.jpg') || lowered.ends_with('.jpeg') {
+		return 'image/jpeg'
+	}
+	if lowered.ends_with('.gif') {
+		return 'image/gif'
+	}
+	if lowered.ends_with('.webp') {
+		return 'image/webp'
+	}
+	if lowered.ends_with('.bmp') {
+		return 'image/bmp'
+	}
+	return 'image/png'
+}
+
+fn clipboard_image_extension(mime_type string) string {
+	match mime_type.to_lower() {
+		'image/jpeg', 'image/jpg' { return 'jpg' }
+		'image/gif' { return 'gif' }
+		'image/webp' { return 'webp' }
+		'image/bmp' { return 'bmp' }
+		else { return 'png' }
+	}
+}
+
+fn build_clipboard_read_image_js() string {
+	return '(async function(){ const items = await navigator.clipboard.read(); for (const item of items) { for (const type of item.types) { if (type.startsWith("image/")) { const blob = await item.getType(type); const bytes = new Uint8Array(await blob.arrayBuffer()); let binary = ""; for (let i = 0; i < bytes.length; i++) { binary += String.fromCharCode(bytes[i]); } return type + "\t" + btoa(binary); } } } return ""; })()'
+}
+
+fn build_clipboard_write_image_js(mime_type string, img_b64 string) string {
+	mime_js := js_str(mime_type)
+	data_js := js_str(img_b64)
+	return '(async function(){ const binary = atob(${data_js}); const bytes = Uint8Array.from(binary, function(ch){ return ch.charCodeAt(0); }); const blob = new Blob([bytes], { type: ${mime_js} }); await navigator.clipboard.write([new ClipboardItem({ ${mime_js}: blob })]); return "ok"; })()'
+}
+
+fn ensure_clipboard_permissions(mut sess CdpSession) {
+	sess.send_command('Browser.setPermission', '{"permission":{"name":"clipboardReadWrite"},"setting":"granted"}') or {}
+	sess.send_command('Browser.setPermission', '{"permission":{"name":"clipboardSanitizedWrite"},"setting":"granted"}') or {}
 }
 
 // ─── state ──────────────────────────────────────────────────

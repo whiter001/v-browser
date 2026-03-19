@@ -1290,6 +1290,19 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 				}
 			}
 		}
+		// ── clipboard ──
+		'clipboard' {
+			subcmd := flags['action'] or {
+				if positionals.len > 0 { positionals[0] } else { '' }
+			}
+			kind := flags['kind'] or {
+				if positionals.len > 1 { positionals[1] } else { 'image' }
+			}
+			path := flags['path'] or { flags['p'] or {
+				if positionals.len > 2 { positionals[2] } else { '' }
+			} }
+			return 'clipboard', '{"action":${json_str(subcmd)},"kind":${json_str(kind)},"path":${json_str(path)}}'
+		}
 		// ── state ──
 		'state' {
 			action := flags['action'] or {
