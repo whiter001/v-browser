@@ -1,9 +1,9 @@
 ---
-name: v-browser
+name: automate-browser
 description: 面向 AI Agent 的浏览器自动化 CLI 工具，基于 V 语言和 Chrome DevTools Protocol (CDP)。
 ---
 
-# v-browser 使用指南
+# automate-browser 使用指南
 
 ## 前提条件
 
@@ -34,9 +34,23 @@ npm run build
 | `v-browser snapshot`          | 获取无障碍树（`--raw` 返回原始文本，适合 AI 处理） |
 | `v-browser click <sel>`       | 点击元素                                           |
 | `v-browser fill <sel> <text>` | 清空并填充输入框                                   |
-| `v-browser get text <sel>`    | 获取文本内容（**需要 selector**）                  |
+| `v-browser get text <sel>`    | 获取文本内容（需要 selector）                      |
 | `v-browser screenshot [path]` | 截图                                               |
 | `v-browser close`             | 关闭浏览器                                         |
+
+---
+
+### 剪贴板功能
+
+v-browser 现在支持图片剪贴板命令：
+
+```bash
+v-browser clipboard read image
+v-browser clipboard write image ./photo.png
+```
+
+- `clipboard read image` 会把剪贴板里的第一张图片保存到临时文件，并返回路径和 MIME 类型
+- `clipboard write image <path>` 会把本地图片写入系统剪贴板
 
 ---
 
@@ -97,7 +111,7 @@ v-browser keyup <key>                # 释放按键
 ```bash
 v-browser mouse move <x> <y>         # 移动鼠标
 v-browser mouse down [button]        # 按下按钮
-v-browser mouse up [button]           # 释放按钮
+v-browser mouse up [button]          # 释放按钮
 v-browser mouse wheel <dy> [dx]      # 滚动滚轮
 ```
 
@@ -107,7 +121,7 @@ v-browser mouse wheel <dy> [dx]      # 滚动滚轮
 v-browser get text <sel>             # 获取文本内容
 v-browser get html <sel>             # 获取 innerHTML
 v-browser get value <sel>            # 获取输入值
-v-browser get attr <sel> <attr>       # 获取属性
+v-browser get attr <sel> <attr>      # 获取属性
 v-browser get count <sel>            # 计数匹配元素
 v-browser get box <sel>              # 获取边界框
 v-browser get styles <sel>           # 获取计算样式
@@ -153,13 +167,13 @@ v-browser find nth <n> <sel> <action> [value]
 ## 等待条件
 
 ```bash
-v-browser wait <selector>             # 等待元素可见
-v-browser wait <ms>                   # 等待时间（毫秒）
-v-browser wait --text "Welcome"       # 等待文本出现
-v-browser wait --url "**/dash"        # 等待 URL 匹配
+v-browser wait <selector>            # 等待元素可见
+v-browser wait <ms>                  # 等待时间（毫秒）
+v-browser wait --text "Welcome"      # 等待文本出现
+v-browser wait --url "**/dash"       # 等待 URL 匹配
 v-browser wait --load networkidle     # 等待加载状态
-v-browser wait --fn "window.ready"    # 等待 JS 条件
-v-browser wait --download <path>      # 等待下载完成（--timeout 超时时间）
+v-browser wait --fn "window.ready"   # 等待 JS 条件
+v-browser wait --download <path>     # 等待下载完成（--timeout 超时时间）
 ```
 
 **加载状态:** `load`, `domcontentloaded`, `networkidle`
@@ -170,7 +184,7 @@ v-browser wait --download <path>      # 等待下载完成（--timeout 超时时
 
 ```bash
 v-browser screenshot [path]          # 截图（--full 完整页面）
-v-browser screenshot --annotate       # 带编号标注
+v-browser screenshot --annotate      # 带编号标注
 v-browser pdf <path>                 # 保存为 PDF
 ```
 
@@ -179,10 +193,10 @@ v-browser pdf <path>                 # 保存为 PDF
 ## 差异对比
 
 ```bash
-v-browser diff snapshot                              # 当前 vs 上次快照
-v-browser diff snapshot --baseline before.txt       # 当前 vs 快照文件
-v-browser diff screenshot --baseline before.png     # 截图对比
-v-browser diff url <url1> <url2>                    # URL 对比
+v-browser diff snapshot                            # 当前 vs 上次快照
+v-browser diff snapshot --baseline before.txt      # 当前 vs 快照文件
+v-browser diff screenshot --baseline before.png    # 截图对比
+v-browser diff url <url1> <url2>                   # URL 对比
 ```
 
 ---
@@ -190,13 +204,13 @@ v-browser diff url <url1> <url2>                    # URL 对比
 ## 浏览器设置
 
 ```bash
-v-browser set viewport <w> <h> [scale]    # 视口大小
-v-browser set device <name>               # 模拟设备
-v-browser set geo <lat> <lng>             # 地理位置
-v-browser set offline [on|off]            # 离线模式
-v-browser set headers <json>               # HTTP 头
-v-browser set credentials <u> <p>          # HTTP 基本认证
-v-browser set media [dark|light]           # 颜色方案
+v-browser set viewport <w> <h> [scale]   # 视口大小
+v-browser set device <name>              # 模拟设备
+v-browser set geo <lat> <lng>            # 地理位置
+v-browser set offline [on|off]           # 离线模式
+v-browser set headers <json>             # HTTP 头
+v-browser set credentials <u> <p>        # HTTP 基本认证
+v-browser set media [dark|light]         # 颜色方案
 ```
 
 ---
@@ -204,9 +218,9 @@ v-browser set media [dark|light]           # 颜色方案
 ## 网络控制
 
 ```bash
-v-browser network route <url>             # 拦截请求
+v-browser network route <url>            # 拦截请求
 v-browser network route <url> --abort    # 阻止请求
-v-browser network unroute [url]           # 移除路由
+v-browser network unroute [url]          # 移除路由
 v-browser network requests               # 查看请求
 ```
 
@@ -215,11 +229,11 @@ v-browser network requests               # 查看请求
 ## 标签页与窗口
 
 ```bash
-v-browser tab                          # 列出标签页
+v-browser tab                        # 列出标签页
 v-browser tab new [url]               # 新建标签页
-v-browser tab switch <id>             # 切换标签页
-v-browser tab close <id>              # 关闭标签页
-v-browser window new [url]            # 新建窗口
+v-browser tab switch <id>              # 切换标签页
+v-browser tab close <id>               # 关闭标签页
+v-browser window new [url]             # 新建窗口
 ```
 
 ---
@@ -227,14 +241,14 @@ v-browser window new [url]            # 新建窗口
 ## Cookies 和存储
 
 ```bash
-v-browser cookies                      # 获取 cookies
-v-browser cookies set <name> <val>    # 设置 cookie
-v-browser cookies clear               # 清除 cookies
+v-browser cookies                     # 获取 cookies
+v-browser cookies set <name> <val>     # 设置 cookie
+v-browser cookies clear                # 清除 cookies
 
 v-browser storage local                # localStorage
-v-browser storage local <key>         # 获取 key
-v-browser storage local set <k> <v>   # 设置值
-v-browser storage local clear         # 清除
+v-browser storage local <key>          # 获取 key
+v-browser storage local set <k> <v>    # 设置值
+v-browser storage local clear          # 清除
 ```
 
 ---
@@ -242,7 +256,7 @@ v-browser storage local clear         # 清除
 ## 框架 (iframe)
 
 ```bash
-v-browser frame <sel>                  # 切换到 iframe
+v-browser frame <sel>                 # 切换到 iframe
 v-browser frame main                  # 返回主框架
 ```
 
@@ -260,59 +274,15 @@ v-browser dialog dismiss
 ## 调试工具
 
 ```bash
-v-browser trace start [path]           # 录制 trace
-v-browser trace stop [path]           # 停止并保存
-v-browser profiler start               # 性能分析
-v-browser profiler stop [path]        # 停止并保存
-v-browser console                     # 控制台消息
-v-browser errors                      # 页面错误
-v-browser highlight <sel>            # 高亮元素
+v-browser console                     # 查看控制台输出
+v-browser errors                      # 查看页面错误
+v-browser network requests            # 查看网络请求
 ```
 
 ---
 
-## 状态管理
+## 常用技巧
 
-```bash
-v-browser state save <path>
-v-browser state load <path>
-v-browser state list
-```
-
----
-
-## JavaScript 执行
-
-```bash
-v-browser eval <js>
-v-browser eval <js> -b                 # base64 编码
-v-browser eval --stdin                 # 从管道读取
-```
-
----
-
-## JSON 输出
-
-```bash
-v-browser --json status
-v-browser --json get title
-```
-
----
-
-## 选择器引用符
-
-```bash
-v-browser snapshot              # 获取快照（元素显示 @e1, @e2）
-v-browser click @e2             # 使用引用符
-v-browser fill @e3 "text"
-```
-
----
-
-## 传统选择器
-
-```bash
-v-browser click "#submit"
-v-browser fill "#email" "test@example.com"
-```
+- `snapshot` 输出里带 `@eN` 的元素引用符，可以直接复用到后续命令
+- `eval` 适合处理复杂页面、动态渲染和剪贴板操作
+- `--json` 可以让输出更适合机器处理

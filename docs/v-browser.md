@@ -6,7 +6,7 @@
 
 - [最短可执行 SOP](./v-browser-sop.md)
 - [可落地改进清单](./v-browser-improvement-plan.md)
-- [仓库内 skill](../.github/skills/v-browser/SKILL.md)
+- [仓库内 skill](../.agents/skills/automate-browser/SKILL.md)
 
 ## 安装与启动
 
