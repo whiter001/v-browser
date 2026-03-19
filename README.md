@@ -236,4 +236,3 @@ V_BROWSER_IPC_PORT=48079
 - CLI smoke test：运行 `sh packages/test-ui/smoke-cli.sh`
 
 更完整的命令说明见 docs/v-browser.md。
-# test

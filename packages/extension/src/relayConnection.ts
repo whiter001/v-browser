@@ -51,26 +51,18 @@ export class RelayConnection {
     method: string,
     params: any,
   ) => void;
-  private _detachListener: (
-    source: chrome.debugger.Debuggee,
-    reason: string,
-  ) => void;
+  private _detachListener: (source: chrome.debugger.Debuggee, reason: string) => void;
   private _tabPromise: Promise<void>;
   private _tabPromiseResolve!: () => void;
   private _closed = false;
   private _isAttached = false;
 
   onclose?: () => void;
-  onTabIdChanged?: (
-    tabId: number,
-    previousTabId: number | null,
-  ) => void | Promise<void>;
+  onTabIdChanged?: (tabId: number, previousTabId: number | null) => void | Promise<void>;
 
   constructor(ws: WebSocket) {
     this._debuggee = {};
-    this._tabPromise = new Promise(
-      (resolve) => (this._tabPromiseResolve = resolve),
-    );
+    this._tabPromise = new Promise((resolve) => (this._tabPromiseResolve = resolve));
     this._ws = ws;
     this.sendExtensionRegistration();
     this._ws.onmessage = this._onMessage.bind(this);
@@ -133,10 +125,7 @@ export class RelayConnection {
     });
   }
 
-  private _onDebuggerDetach(
-    source: chrome.debugger.Debuggee,
-    reason: string,
-  ): void {
+  private _onDebuggerDetach(source: chrome.debugger.Debuggee, reason: string): void {
     if (source.tabId !== this._debuggee.tabId) return;
     this._isAttached = false;
     if (reason === "target_closed") {
@@ -144,17 +133,11 @@ export class RelayConnection {
       this._debuggee = {};
       return;
     }
-    debugLog(
-      "Debugger detached, keeping relay open for reattach:",
-      reason,
-      this._debuggee,
-    );
+    debugLog("Debugger detached, keeping relay open for reattach:", reason, this._debuggee);
   }
 
   private _onMessage(event: MessageEvent): void {
-    this._onMessageAsync(event).catch((e) =>
-      debugLog("Error handling message:", e),
-    );
+    this._onMessageAsync(event).catch((e) => debugLog("Error handling message:", e));
   }
 
   private async _onMessageAsync(event: MessageEvent): Promise<void> {
@@ -199,9 +182,7 @@ export class RelayConnection {
             tab.id &&
             tab.windowId &&
             tab.url &&
-            !["chrome:", "edge:", "devtools:"].some((scheme) =>
-              tab.url!.startsWith(scheme),
-            ),
+            !["chrome:", "edge:", "devtools:"].some((scheme) => tab.url!.startsWith(scheme)),
         )
         .map((tab) => ({
           id: tab.id,
@@ -214,8 +195,7 @@ export class RelayConnection {
     if (message.method === "createTab") {
       const url = message.params?.url || "about:blank";
       const tab = await chrome.tabs.create({ url, active: true });
-      if (!tab.id || !tab.windowId)
-        throw new Error("Created tab is missing tab identifiers");
+      if (!tab.id || !tab.windowId) throw new Error("Created tab is missing tab identifiers");
       const attached = await this._attachDebuggerToTab(tab.id, tab.windowId);
       return {
         tab: {
@@ -232,8 +212,7 @@ export class RelayConnection {
       const url = message.params?.url || "about:blank";
       const created = await chrome.windows.create({ url, focused: true });
       const tab = created.tabs?.[0];
-      if (!created.id || !tab?.id)
-        throw new Error("Created window is missing tab identifiers");
+      if (!created.id || !tab?.id) throw new Error("Created window is missing tab identifiers");
       const attached = await this._attachDebuggerToTab(tab.id, created.id);
       return {
         windowId: created.id,
@@ -281,10 +260,7 @@ export class RelayConnection {
     throw new Error(`Unknown relay command: ${message.method}`);
   }
 
-  private async _attachDebuggerToTab(
-    tabId: number,
-    windowId?: number,
-  ): Promise<any> {
+  private async _attachDebuggerToTab(tabId: number, windowId?: number): Promise<any> {
     const previousTabId = this._debuggee.tabId || null;
     if (previousTabId && previousTabId !== tabId && this._isAttached)
       await chrome.debugger.detach(this._debuggee).catch(() => {});
@@ -296,26 +272,18 @@ export class RelayConnection {
         await chrome.debugger.attach(this._debuggee, "1.3");
       } catch (error: any) {
         if (!isAlreadyAttachedError(error)) throw error;
-        debugLog(
-          "Reusing existing debugger attachment for tab:",
-          this._debuggee,
-        );
+        debugLog("Reusing existing debugger attachment for tab:", this._debuggee);
       }
       this._isAttached = true;
     }
 
     const updatedTab = await chrome.tabs.update(tabId, { active: true });
     const resolvedWindowId = windowId || updatedTab?.windowId;
-    if (resolvedWindowId)
-      await chrome.windows.update(resolvedWindowId, { focused: true });
+    if (resolvedWindowId) await chrome.windows.update(resolvedWindowId, { focused: true });
 
-    if (previousTabId !== tabId)
-      await this.onTabIdChanged?.(tabId, previousTabId);
+    if (previousTabId !== tabId) await this.onTabIdChanged?.(tabId, previousTabId);
 
-    const result: any = await chrome.debugger.sendCommand(
-      this._debuggee,
-      "Target.getTargetInfo",
-    );
+    const result: any = await chrome.debugger.sendCommand(this._debuggee, "Target.getTargetInfo");
     return {
       tabId,
       windowId: resolvedWindowId,
@@ -333,7 +301,6 @@ export class RelayConnection {
   }
 
   private _sendMessage(message: any): void {
-    if (this._ws.readyState === WebSocket.OPEN)
-      this._ws.send(JSON.stringify(message));
+    if (this._ws.readyState === WebSocket.OPEN) this._ws.send(JSON.stringify(message));
   }
 }

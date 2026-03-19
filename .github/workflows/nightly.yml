@@ -209,13 +209,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          
+
           echo "Cleaning up existing nightly release..."
           gh release delete nightly --yes --cleanup-tag || true
-          
+
           # Wait a bit for GitHub API to sync
           sleep 2
-          
+
           echo "Creating new nightly release..."
           gh release create nightly \
             --title "v-browser nightly build" \
