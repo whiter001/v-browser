@@ -143,7 +143,8 @@ fn handle_connect_command(args []string, json_output bool) {
 		err_msg := err.msg()
 		if is_attach_conflict_error(err_msg) {
 			eprintln('Debugger conflict: another debugger is already attached to the tab. Close Chrome DevTools or other CDP sessions, then run v-browser connect again.')
-		} else if err_msg.contains('no available tab') || err_msg.contains('no tab is currently accessible') {
+		} else if err_msg.contains('no available tab')
+			|| err_msg.contains('no tab is currently accessible') {
 			eprintln('No tab available: switch to a normal webpage tab (not the extension page), then run v-browser connect again.')
 		} else if err_msg.contains('timeout') {
 			eprintln('Connection timed out. Make sure the extension is installed and the extension connect page is open.')
@@ -1156,6 +1157,19 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 				if positionals.len > 2 { positionals[2] } else { '' }
 			}
 			mut request_id := flags['request-id'] or { '' }
+			mut record_id := flags['record-id'] or { '' }
+			method_override := flags['method'] or { '' }
+			url_override := flags['override-url'] or { flags['url-override'] or { '' } }
+			body_override := flags['override-body'] or { flags['body-override'] or { '' } }
+			headers_override := flags['override-headers'] or { flags['headers-override'] or { '' } }
+			dry_run := flags['dry-run'] or { flags['dryRun'] or { 'false' } }
+			capture_body := flags['capture-body'] or { flags['captureBody'] or { 'false' } }
+			capture_response := flags['capture-response'] or {
+				flags['captureResponse'] or { 'false' }
+			}
+			persistent := flags['persistent'] or { 'true' }
+			clear := flags['clear'] or { 'true' }
+			script_id := flags['script-id'] or { flags['scriptId'] or { '' } }
 			// 支持 network body/headers <requestId> 语法
 			if action == 'body' && request_id == '' && positionals.len > 1 {
 				request_id = positionals[1]
@@ -1183,7 +1197,21 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 					path = positionals[2]
 				}
 			}
-			return 'network', '{"action":${json_str(action)},"subaction":${json_str(subaction)},"url":${json_str(url)},"abort":${json_str(abort)},"body":${json_str(body)},"filter":${json_str(filter)},"requestId":${json_str(request_id)},"path":${json_str(path)}}'
+			if action == 'hook' {
+				if subaction == '' && positionals.len > 1 {
+					subaction = positionals[1]
+				}
+				if subaction == '' {
+					subaction = 'start'
+				}
+				if subaction == 'replay' && record_id == '' && positionals.len > 2 {
+					record_id = positionals[2]
+				}
+				if subaction == 'replay' && record_id == '' {
+					record_id = request_id
+				}
+			}
+			return 'network', '{"action":${json_str(action)},"subaction":${json_str(subaction)},"url":${json_str(url)},"abort":${json_str(abort)},"body":${json_str(body)},"filter":${json_str(filter)},"requestId":${json_str(request_id)},"recordId":${json_str(record_id)},"method":${json_str(method_override)},"overrideUrl":${json_str(url_override)},"overrideBody":${json_str(body_override)},"overrideHeaders":${json_str(headers_override)},"dryRun":${json_str(dry_run)},"captureBody":${json_str(capture_body)},"captureResponse":${json_str(capture_response)},"persistent":${json_str(persistent)},"clear":${json_str(clear)},"scriptId":${json_str(script_id)},"path":${json_str(path)}}'
 		}
 		// ── frame ──
 		'frame' {
@@ -1341,9 +1369,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			kind := flags['kind'] or {
 				if positionals.len > 1 { positionals[1] } else { 'image' }
 			}
-			path := flags['path'] or { flags['p'] or {
-				if positionals.len > 2 { positionals[2] } else { '' }
-			} }
+			path := flags['path'] or {
+				flags['p'] or {
+					if positionals.len > 2 { positionals[2] } else { '' }
+				}
+			}
 			return 'clipboard', '{"action":${json_str(subcmd)},"kind":${json_str(kind)},"path":${json_str(path)}}'
 		}
 		// ── state ──

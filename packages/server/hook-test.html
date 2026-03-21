@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>hook test</title>
+  </head>
+  <body>
+    <p id="state">starting</p>
+    <script>
+      window.__loaded = 1;
+      window.__pageFetchWrapped = !!(window.fetch && window.fetch.__vBrowserHookWrapped);
+      document.getElementById('state').textContent = 'loaded';
+      document.getElementById('state').dataset.fetchWrapped = String(window.__pageFetchWrapped);
+      fetch('https://httpbin.org/get').then(function () {
+        window.__fetchDone = 'resolved';
+      }).catch(function () {
+        window.__fetchDone = 'rejected';
+      });
+    </script>
+  </body>
+</html>

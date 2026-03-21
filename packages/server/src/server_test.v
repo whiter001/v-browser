@@ -60,11 +60,15 @@ fn test_extract_connect_target_url_prefers_flag_and_positional_url() {
 
 fn test_find_best_tab_for_url_from_json_prefers_matching_tab_then_active() {
 	tabs_json := '[{"id":11,"windowId":1,"title":"A","url":"https://x.com/a","active":false},{"id":22,"windowId":2,"title":"B","url":"https://wx.mail.qq.com/home/index#/notepad","active":true},{"id":33,"windowId":3,"title":"C","url":"https://x.com/a","active":true}]'
-	tab_id, window_id := find_best_tab_for_url_from_json(tabs_json, 'https://x.com/a') or { panic(err) }
+	tab_id, window_id := find_best_tab_for_url_from_json(tabs_json, 'https://x.com/a') or {
+		panic(err)
+	}
 	assert tab_id == 33
 	assert window_id == 3
 
-	active_tab_id, active_window_id := find_best_tab_for_url_from_json(tabs_json, '') or { panic(err) }
+	active_tab_id, active_window_id := find_best_tab_for_url_from_json(tabs_json, '') or {
+		panic(err)
+	}
 	assert active_tab_id == 22
 	assert active_window_id == 2
 }
@@ -196,7 +200,8 @@ fn test_parse_cli_to_ipc_network_save_images_variants() {
 }
 
 fn test_parse_cli_to_ipc_network_watch_variants() {
-	method_start, params_start := parse_cli_to_ipc('network', ['watch', 'start', './out/watch'], false)
+	method_start, params_start := parse_cli_to_ipc('network', ['watch', 'start', './out/watch'],
+		false)
 	assert method_start == 'network'
 	assert params_start.contains('"action":"watch"')
 	assert params_start.contains('"subaction":"start"')
@@ -213,22 +218,210 @@ fn test_parse_cli_to_ipc_network_watch_variants() {
 	assert params_stop.contains('"subaction":"stop"')
 }
 
+fn test_parse_cli_to_ipc_network_hook_variants() {
+	method_start, params_start := parse_cli_to_ipc('network', ['hook', 'start', '--capture-body',
+		'--capture-response', '--script-id', 'hook-v1'], false)
+	assert method_start == 'network'
+	assert params_start.contains('"action":"hook"')
+	assert params_start.contains('"subaction":"start"')
+	assert params_start.contains('"captureBody":"true"')
+	assert params_start.contains('"captureResponse":"true"')
+	assert params_start.contains('"scriptId":"hook-v1"')
+
+	method_status, params_status := parse_cli_to_ipc('network', ['hook', 'status'], false)
+	assert method_status == 'network'
+	assert params_status.contains('"action":"hook"')
+	assert params_status.contains('"subaction":"status"')
+
+	method_records, params_records := parse_cli_to_ipc('network', ['hook', 'records', '--filter',
+		'home', '--limit', '5'], false)
+	assert method_records == 'network'
+	assert params_records.contains('"action":"hook"')
+	assert params_records.contains('"subaction":"records"')
+	assert params_records.contains('"filter":"home"')
+
+	method_replay, params_replay := parse_cli_to_ipc('network', ['hook', 'replay', 'record-1',
+		'--method', 'POST', '--override-url', 'https://x.com/i/api/test', '--override-body',
+		'{"foo":1}', '--override-headers', '{"x-test":"1"}', '--dry-run'], false)
+	assert method_replay == 'network'
+	assert params_replay.contains('"action":"hook"')
+	assert params_replay.contains('"subaction":"replay"')
+	assert params_replay.contains('"recordId":"record-1"')
+	assert params_replay.contains('"method":"POST"')
+	assert params_replay.contains('"overrideUrl":"https://x.com/i/api/test"')
+	assert params_replay.contains('"overrideBody":"{\\"foo\\":1}"')
+	assert params_replay.contains('"overrideHeaders":"{\\"x-test\\":\\"1\\"}"')
+	assert params_replay.contains('"dryRun":"true"')
+}
+
+fn test_network_hook_replay_url_from_params_prefers_override_url() {
+	record := HookRecord{
+		record_id: 'record-1'
+		raw_json:  '{"recordId":"record-1","method":"GET","url":"https://x.com/original"}'
+	}
+	params := '{"overrideUrl":"https://x.com/override","url":"https://x.com/legacy"}'
+	assert network_hook_replay_url_from_params(params, record) == 'https://x.com/override'
+	assert network_hook_replay_url_from_params('{"url":"https://x.com/legacy"}', record) == 'https://x.com/legacy'
+	assert network_hook_replay_url_from_params('{}', record) == 'https://x.com/original'
+}
+
+fn test_network_hook_bootstrap_js_includes_extended_record_fields() {
+	js := network_hook_bootstrap_js()
+	assert js.contains('__vBrowserHookActive')
+	assert js.contains('localStorage.getItem')
+	assert js.contains('sessionStorage.getItem')
+	assert js.contains('requestMode')
+	assert js.contains('requestCredentials')
+	assert js.contains('requestCache')
+	assert js.contains('requestRedirect')
+	assert js.contains('requestReferrer')
+	assert js.contains('requestReferrerPolicy')
+	assert js.contains('requestIntegrity')
+	assert js.contains('requestKeepalive')
+	assert js.contains('requestPriority')
+	assert js.contains('signature')
+	assert js.contains('statusText')
+	assert js.contains('responseUrl')
+	assert js.contains('responseOk')
+	assert js.contains('responseType')
+	assert js.contains('readyState')
+	assert js.contains('withCredentials')
+}
+
+fn test_network_hook_status_json_from_state_renders_record_count() {
+	state := HookState{
+		active:            true
+		injected:          true
+		script_id:         'hook-v1'
+		script_version:    2
+		filter:            'MiniMax'
+		capture_body:      true
+		capture_response:  true
+		last_injected_at:  '1774041973915'
+		last_synced_index: 5
+		record_count:      12
+	}
+	json := network_hook_status_json_from_state(state)
+	assert json.contains('"active":true')
+	assert json.contains('"injected":true')
+	assert json.contains('"scriptId":"hook-v1"')
+	assert json.contains('"scriptVersion":2')
+	assert json.contains('"filter":"MiniMax"')
+	assert json.contains('"captureBody":true')
+	assert json.contains('"captureResponse":true')
+	assert json.contains('"lastInjectedAt":"1774041973915"')
+	assert json.contains('"lastSyncedIndex":5')
+	assert json.contains('"recordCount":12')
+}
+
+fn test_build_network_replay_js_includes_headers_and_overrides() {
+	js := build_network_replay_js('POST', 'https://x.com/i/api/test', '{"foo":1}', '{"accept":"application/json"}',
+		'{"x-test":"1"}')
+	assert js.contains('mergeHeaders')
+	assert js.contains('requestHeaders: headers')
+	assert js.contains('init.headers = headers')
+	assert js.contains('credentials: "include"')
+	assert js.contains('captureDomFallback')
+	assert js.contains('replayKind: "dom-fallback"')
+	assert js.contains('document.body.innerText')
+	assert js.contains('if (!response.ok)')
+}
+
+fn test_network_hook_control_js_persists_active_flag() {
+	start_js := build_network_replay_js('GET', 'https://x.com', '', '{}', '{}')
+	assert start_js.contains('replayKind')
+	start_hook_js := network_hook_bootstrap_js()
+	assert start_hook_js.contains('localStorage.getItem')
+	assert start_hook_js.contains('__vBrowserHookActive')
+}
+
+fn test_hook_json_object_keys_extracts_top_level_keys() {
+	keys := hook_json_object_keys('{"a":1,"b":{"c":2},"d":"x"}')
+	assert keys == ['a', 'b', 'd']
+}
+
+fn test_hook_template_json_serializes_expected_fields() {
+	template := hook_template_from_signature('POST https://x.com/i/api/test', 'POST',
+		'https://x.com/i/api/test', '["accept"]', '{"foo":1}', '["captureBody":true]',
+		'{"status":200}', ['record-1'], '{}')
+	json := hook_template_json(template)
+	assert json.contains('"templateId":"tpl-post-https-x.com-i-api-test"')
+	assert json.contains('"requestSignature":"POST https://x.com/i/api/test"')
+	assert json.contains('"method":"POST"')
+	assert json.contains('"urlPattern":"https://x.com/i/api/test"')
+	assert json.contains('"requiredHeaders":["accept"]')
+	assert json.contains('"bodyTemplate":"{\\"foo\\":1}"')
+	assert json.contains('"expectedResponseShape":{"status":200}')
+	assert json.contains('"sampleRecordId":"record-1"')
+}
+
+fn test_hook_record_view_json_includes_fallback_text() {
+	record := HookRecord{
+		record_id: 'rec-99'
+		raw_json:  '{"recordId":"rec-99","source":"fetch","phase":"complete","pageUrl":"https://x.com","method":"GET","url":"https://x.com/api","requestHeaders":"{}","responseHeaders":"{}","fallbackText":"home timeline data"}'
+	}
+	view := hook_record_view_from_raw(record)
+	assert view.fallback_text == 'home timeline data'
+	json := hook_record_view_json(view)
+	assert json.contains('"fallbackText":"home timeline data"')
+}
+
+fn test_hook_record_view_prefers_record_fallback_text_field() {
+	record := HookRecord{
+		record_id:     'rec-100'
+		raw_json:      '{"recordId":"rec-100","source":"fetch","phase":"complete","pageUrl":"https://x.com","method":"GET","url":"https://x.com/api","requestHeaders":"{}","responseHeaders":"{}"}'
+		fallback_text: 'from hook record field'
+	}
+	view := hook_record_view_from_raw(record)
+	assert view.fallback_text == 'from hook record field'
+	json := hook_record_view_json(view)
+	assert json.contains('"fallbackText":"from hook record field"')
+}
+
+fn test_hook_record_matches_filter_searches_fallback_text() {
+	record := HookRecord{
+		record_id: 'rec-1'
+		raw_json:  '{"recordId":"rec-1","source":"fetch","phase":"complete","pageUrl":"https://x.com","method":"GET","url":"https://x.com/api","requestHeaders":"{}","responseHeaders":"{}","fallbackText":"timeline snapshot"}'
+	}
+	view := hook_record_view_from_raw(record)
+	assert hook_record_matches_filter(view, 'timeline snapshot')
+	assert hook_record_matches_filter(view, 'timeline')
+	assert !hook_record_matches_filter(view, 'nomatch')
+}
+
+fn test_network_hook_bootstrap_js_parses_xhr_response_headers() {
+	js := network_hook_bootstrap_js()
+	assert js.contains('parseXhrHeaders')
+	assert js.contains('getAllResponseHeaders')
+	assert js.contains('responseHeaders: parseXhrHeaders')
+}
+
+fn test_network_hook_bootstrap_js_uses_response_headers_for_fetch() {
+	js := network_hook_bootstrap_js()
+	// fetch path should use toPlainHeaders on response.headers
+	assert js.contains('toPlainHeaders(response.headers)')
+	assert js.contains('if (!cfg.captureResponse || !response || typeof response.clone !== "function")')
+}
+
 fn test_parse_cli_to_ipc_fill_and_upload_include_verify_flags() {
-	fill_method, fill_params := parse_cli_to_ipc('fill', ['--selector', '#editor', '--text', 'Hello', '--verify', '--verify-timeout', '2750'], false)
+	fill_method, fill_params := parse_cli_to_ipc('fill', ['--selector', '#editor', '--text', 'Hello',
+		'--verify', '--verify-timeout', '2750'], false)
 	assert fill_method == 'fill'
 	assert fill_params.contains('"selector":"#editor"')
 	assert fill_params.contains('"text":"Hello"')
 	assert fill_params.contains('"verify":"true"')
 	assert fill_params.contains('"verifyTimeout":2750')
 
-	type_method, type_params := parse_cli_to_ipc('type', ['--selector', '#editor', '--text', 'Hello', '--verify'], false)
+	type_method, type_params := parse_cli_to_ipc('type', ['--selector', '#editor', '--text', 'Hello',
+		'--verify'], false)
 	assert type_method == 'type'
 	assert type_params.contains('"selector":"#editor"')
 	assert type_params.contains('"text":"Hello"')
 	assert type_params.contains('"verify":"true"')
 	assert type_params.contains('"verifyTimeout":1500')
 
-	upload_method, upload_params := parse_cli_to_ipc('upload', ['--selector', 'input[type=file]', '--files', './a.txt,./b.txt', '--verify'], false)
+	upload_method, upload_params := parse_cli_to_ipc('upload', ['--selector', 'input[type=file]',
+		'--files', './a.txt,./b.txt', '--verify'], false)
 	assert upload_method == 'upload'
 	assert upload_params.contains('"selector":"input[type=file]"')
 	assert upload_params.contains('"files":"./a.txt,./b.txt"')
@@ -237,7 +430,15 @@ fn test_parse_cli_to_ipc_fill_and_upload_include_verify_flags() {
 	assert upload_params.contains('"waitPreview":"false"')
 	assert upload_params.contains('"previewSelector":""')
 
-	upload_preview_method, upload_preview_params := parse_cli_to_ipc('upload', ['--selector', 'input[type=file]', '--files', './a.txt', '--wait-preview', '--preview-selector', '#uploadPreview'], false)
+	upload_preview_method, upload_preview_params := parse_cli_to_ipc('upload', [
+		'--selector',
+		'input[type=file]',
+		'--files',
+		'./a.txt',
+		'--wait-preview',
+		'--preview-selector',
+		'#uploadPreview',
+	], false)
 	assert upload_preview_method == 'upload'
 	assert upload_preview_params.contains('"waitPreview":"true"')
 	assert upload_preview_params.contains('"previewSelector":"#uploadPreview"')
@@ -294,7 +495,8 @@ fn test_parse_cli_to_ipc_keyboard_routes_type_and_inserttext() {
 	assert method_type == 'keyboard'
 	assert params_type == '{"action":"type","text":"Hello"}'
 
-	method_insert, params_insert := parse_cli_to_ipc('keyboard', ['inserttext', 'Hello'], false)
+	method_insert, params_insert := parse_cli_to_ipc('keyboard', ['inserttext', 'Hello'],
+		false)
 	assert method_insert == 'keyboard'
 	assert params_insert == '{"action":"inserttext","text":"Hello"}'
 }
@@ -334,8 +536,12 @@ fn test_tab_context_save_and_restore_keeps_per_tab_state() {
 		active:            true
 		target_dir:        '/tmp/tab-11'
 		filter:            'image'
-		candidate_urls:    {'https://example.com/a.png': true}
-		saved_request_ids: {'req-1': true}
+		candidate_urls:    {
+			'https://example.com/a.png': true
+		}
+		saved_request_ids: {
+			'req-1': true
+		}
 		next_index:        1
 	}
 	sess.console_msgs = ['console-11']
@@ -879,22 +1085,14 @@ fn test_error_code_maps_common_failures() {
 }
 
 fn test_error_suggestion_maps_common_failures() {
-	assert error_suggestion('no extension connected')
-		== 'Run v-browser connect after syncing the extension id. If the extension page is already open, switch to a normal webpage tab before reconnecting.'
-	assert error_suggestion('element not found: #missing')
-		== 'Check the selector or target tab. Use v-browser snapshot to inspect the current page, or use find --list / find --debug to review semantic candidates.'
-	assert error_suggestion('ambiguous text match: Run workflow')
-		== 'Use find --index to select a specific candidate, or add --name / --exact to narrow the match.'
-	assert error_suggestion('CDP command timed out')
-		== 'Wait for the page to finish loading, or increase the command timeout if the page is expected to take longer.'
-	assert error_suggestion('verification failed: expected foo, got bar')
-		== 'Check whether the target element actually changed. If the page is dynamic, increase --verify-timeout or verify a more stable state.'
-	assert error_suggestion('failed to start v-browser server')
-		== 'Check the server log, then try v-browser server restart or v-browser status to verify the daemon is healthy.'
-	assert error_suggestion('Debugger conflict: another debugger is already attached')
-		== 'Close any other CDP sessions (Chrome DevTools, other automation tools) attached to the same tab, then run v-browser connect again.'
-	assert error_suggestion('No available tab: no tab is currently accessible')
-		== 'Switch to a normal webpage tab (not the extension page), then run v-browser connect again.'
+	assert error_suggestion('no extension connected') == 'Run v-browser connect after syncing the extension id. If the extension page is already open, switch to a normal webpage tab before reconnecting.'
+	assert error_suggestion('element not found: #missing') == 'Check the selector or target tab. Use v-browser snapshot to inspect the current page, or use find --list / find --debug to review semantic candidates.'
+	assert error_suggestion('ambiguous text match: Run workflow') == 'Use find --index to select a specific candidate, or add --name / --exact to narrow the match.'
+	assert error_suggestion('CDP command timed out') == 'Wait for the page to finish loading, or increase the command timeout if the page is expected to take longer.'
+	assert error_suggestion('verification failed: expected foo, got bar') == 'Check whether the target element actually changed. If the page is dynamic, increase --verify-timeout or verify a more stable state.'
+	assert error_suggestion('failed to start v-browser server') == 'Check the server log, then try v-browser server restart or v-browser status to verify the daemon is healthy.'
+	assert error_suggestion('Debugger conflict: another debugger is already attached') == 'Close any other CDP sessions (Chrome DevTools, other automation tools) attached to the same tab, then run v-browser connect again.'
+	assert error_suggestion('No available tab: no tab is currently accessible') == 'Switch to a normal webpage tab (not the extension page), then run v-browser connect again.'
 }
 
 fn test_should_retry_after_reconnect_for_connection_failures() {
@@ -1031,7 +1229,8 @@ fn test_parse_cli_to_ipc_clipboard_write_routes_action_and_path() {
 }
 
 fn test_parse_cli_to_ipc_clipboard_read_via_flag() {
-	method, params := parse_cli_to_ipc('clipboard', ['--action', 'read', '--kind', 'image'], false)
+	method, params := parse_cli_to_ipc('clipboard', ['--action', 'read', '--kind', 'image'],
+		false)
 	assert method == 'clipboard'
 	assert params.contains('"action":"read"')
 	assert params.contains('"kind":"image"')
@@ -1075,8 +1274,10 @@ fn test_network_save_path_helpers_infer_extensions() {
 	assert network_file_extension('image/jpeg', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P') == '.jpg'
 	assert network_file_extension('', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium') == '.jpg'
 	assert network_file_extension('application/json', 'https://example.com/api') == '.json'
-	assert network_default_filename('req-1', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P', 'image/jpeg') == 'HDxhU9RWQAAw-2P.jpg'
-	assert resolve_network_save_path('./tmp/image', 'req-1', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P', 'image/jpeg') == './tmp/image.jpg'
+	assert network_default_filename('req-1', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P',
+		'image/jpeg') == 'HDxhU9RWQAAw-2P.jpg'
+	assert resolve_network_save_path('./tmp/image', 'req-1', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P',
+		'image/jpeg') == './tmp/image.jpg'
 }
 
 fn test_build_page_primary_image_urls_js_mentions_container_scoring() {

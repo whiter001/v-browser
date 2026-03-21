@@ -1052,8 +1052,8 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 		remaining := if max_nodes > 0 { max_nodes - (next_counter - 1) } else { 0 }
 		if max_nodes == 0 || remaining > 0 {
 			cursor_limit := if max_nodes > 0 { remaining } else { 0 }
-			cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut sess.axref,
-				cursor_limit) or { '' }
+			cursor_out := render_cursor_interactive_snapshot(mut sess, next_counter, mut
+				sess.axref, cursor_limit) or { '' }
 			if cursor_out != '' {
 				if !ax_out.ends_with('\n') {
 					out.write_string('\n')
@@ -2653,7 +2653,7 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			for path in paths {
 				items << json_str(path)
 			}
-			return '{"ok":true,"count":${count},"paths":[${items.join(",")}]} '
+			return '{"ok":true,"count":${count},"paths":[${items.join(',')}]} '
 		}
 		'watch' {
 			subaction := cdp_extract_str(params, 'subaction')
@@ -2664,7 +2664,9 @@ fn cmd_network(mut sess CdpSession, params string) string {
 					if target_dir == '' {
 						return 'ERROR:missing path'
 					}
-					return start_network_watch(mut sess, target_dir, filter) or { return 'ERROR:${err}' }
+					return start_network_watch(mut sess, target_dir, filter) or {
+						return 'ERROR:${err}'
+					}
 				}
 				'stop' {
 					return stop_network_watch(mut sess)
@@ -2719,6 +2721,37 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			}()
 			return 'null'
 		}
+		'hook' {
+			subaction := cdp_extract_str(params, 'subaction')
+			match subaction {
+				'', 'start' {
+					return start_network_hook(mut sess, params) or { return 'ERROR:${err}' }
+				}
+				'stop' {
+					return stop_network_hook(mut sess)
+				}
+				'status' {
+					return network_hook_status_json(mut sess)
+				}
+				'records' {
+					return network_hook_records_json(mut sess, params) or { return 'ERROR:${err}' }
+				}
+				'summary' {
+					return network_hook_summary_json(mut sess, params) or { return 'ERROR:${err}' }
+				}
+				'templates' {
+					return network_hook_templates_json(mut sess, params) or {
+						return 'ERROR:${err}'
+					}
+				}
+				'replay' {
+					return network_hook_replay_json(mut sess, params) or { return 'ERROR:${err}' }
+				}
+				else {
+					return 'ERROR:unknown network hook subaction: ${subaction}'
+				}
+			}
+		}
 		'unroute' {
 			sess.send_command('Fetch.disable', '{}') or { return 'ERROR:${err}' }
 			return 'null'
@@ -2727,6 +2760,1019 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			return 'ERROR:unknown network action: ${action}'
 		}
 	}
+}
+
+fn start_network_hook(mut sess CdpSession, params string) !string {
+	filter := cdp_extract_str(params, 'filter')
+	capture_body := cdp_extract_str(params, 'captureBody') == 'true'
+	capture_response := cdp_extract_str(params, 'captureResponse') == 'true'
+	persistent := cdp_extract_str(params, 'persistent') != 'false'
+	clear := cdp_extract_str(params, 'clear') != 'false'
+	mut script_id := cdp_extract_str(params, 'scriptId')
+	if script_id == '' {
+		script_id = 'hook-v1'
+	}
+	install_network_hook(mut sess, script_id, persistent)!
+	if clear {
+		clear_network_hook_records(mut sess)
+	}
+	activate_js := 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} window.__vBrowserHookConfig.active = true; window.__vBrowserHookConfig.filter = ${json_str(filter)}; window.__vBrowserHookConfig.captureBody = ${capture_body}; window.__vBrowserHookConfig.captureResponse = ${capture_response}; window.__vBrowserHookConfig.scriptId = ${json_str(script_id)}; window.__vBrowserHookState = window.__vBrowserHookState || { events: [], nextId: 0 }; if (${clear}) { window.__vBrowserHookState.events = []; window.__vBrowserHookState.nextId = 0; } window.__vBrowserHookInstalled = true; "ok"'
+	eval_scoped_expression(mut sess, activate_js, false)!
+	sess.hook_mu.@lock()
+	sess.hook_state.active = true
+	sess.hook_state.injected = true
+	sess.hook_state.script_id = script_id
+	sess.hook_state.script_version = 2
+	sess.hook_state.filter = filter
+	sess.hook_state.capture_body = capture_body
+	sess.hook_state.capture_response = capture_response
+	sess.hook_state.last_injected_at = time.now().unix_milli().str()
+	if clear {
+		sess.hook_state.last_synced_index = 0
+		sess.hook_state.record_count = 0
+	}
+	sess.hook_mu.unlock()
+	return network_hook_status_json(mut sess)
+}
+
+fn stop_network_hook(mut sess CdpSession) string {
+	stop_js := 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} window.__vBrowserHookConfig.active = false; window.__vBrowserHookInstalled = true; "ok"'
+	eval_scoped_expression(mut sess, stop_js, false) or {}
+	sess.hook_mu.@lock()
+	sess.hook_state.active = false
+	sess.hook_mu.unlock()
+	return network_hook_status_json(mut sess)
+}
+
+fn network_hook_status_json(mut sess CdpSession) string {
+	sync_network_hook_records(mut sess) or {}
+	sess.hook_mu.@lock()
+	defer { sess.hook_mu.unlock() }
+	return network_hook_status_json_from_state(sess.hook_state)
+}
+
+fn network_hook_status_json_from_state(state HookState) string {
+	return '{"active":${state.active},"injected":${state.injected},"scriptId":${json_str(state.script_id)},"scriptVersion":${state.script_version},"filter":${json_str(state.filter)},"captureBody":${state.capture_body},"captureResponse":${state.capture_response},"lastInjectedAt":${json_str(state.last_injected_at)},"lastSyncedIndex":${state.last_synced_index},"recordCount":${state.record_count}}'
+}
+
+fn network_hook_records_json(mut sess CdpSession, params string) !string {
+	sync_network_hook_records(mut sess) or { return error(err.msg()) }
+	filter := cdp_extract_str(params, 'filter').to_lower()
+	limit := cdp_extract_str(params, 'limit').int()
+	format := cdp_extract_str(params, 'format').to_lower()
+	sess.hook_mu.@lock()
+	defer { sess.hook_mu.unlock() }
+	mut items := []string{}
+	for record_id in sess.hook_record_order {
+		record := sess.hook_records[record_id] or { continue }
+		view := hook_record_view_from_raw(record)
+		if filter != '' && !hook_record_matches_filter(view, filter) {
+			continue
+		}
+		if format == 'raw' {
+			items << record.raw_json
+		} else {
+			items << hook_record_view_json(view)
+		}
+		if limit > 0 && items.len >= limit {
+			break
+		}
+	}
+	return '[' + items.join(',') + ']'
+}
+
+fn network_hook_summary_json(mut sess CdpSession, params string) !string {
+	sync_network_hook_records(mut sess) or { return error(err.msg()) }
+	filter := cdp_extract_str(params, 'filter').to_lower()
+	limit := cdp_extract_str(params, 'limit').int()
+	return hook_summary_json_from_session(mut sess, filter, limit)
+}
+
+fn network_hook_templates_json(mut sess CdpSession, params string) !string {
+	sync_network_hook_records(mut sess) or { return error(err.msg()) }
+	filter := cdp_extract_str(params, 'filter').to_lower()
+	limit := cdp_extract_str(params, 'limit').int()
+	return hook_templates_json_from_session(mut sess, filter, limit)
+}
+
+fn network_hook_replay_json(mut sess CdpSession, params string) !string {
+	sync_network_hook_records(mut sess) or { return error(err.msg()) }
+	record_id := cdp_extract_str(params, 'recordId')
+	if record_id == '' {
+		return error('missing recordId')
+	}
+	override_method := cdp_extract_str(params, 'method')
+	override_body := cdp_extract_str(params, 'body')
+	mut override_headers := cdp_extract_str(params, 'overrideHeaders')
+	dry_run := cdp_extract_str(params, 'dryRun') == 'true'
+	record := sess.hook_records[record_id] or {
+		return error('hook record not found: ${record_id}')
+	}
+	method := if override_method != '' {
+		override_method
+	} else {
+		cdp_extract_str(record.raw_json, 'method')
+	}
+	url := network_hook_replay_url_from_params(params, record)
+	body := if override_body != '' {
+		override_body
+	} else {
+		cdp_extract_str(record.raw_json, 'requestBody')
+	}
+	mut request_headers := cdp_extract_obj(record.raw_json, 'requestHeaders')
+	if request_headers == '' {
+		request_headers = '{}'
+	}
+	if override_headers == '' {
+		override_headers = '{}'
+	}
+	if method == '' || url == '' {
+		return error('replay record is missing method or url')
+	}
+	if dry_run {
+		return '{"ok":true,"dryRun":true,"recordId":${json_str(record_id)},"method":${json_str(method)},"url":${json_str(url)},"body":${json_str(body)},"requestHeaders":${request_headers},"overrideHeaders":${json_str(override_headers)}}'
+	}
+	replay_js := build_network_replay_js(method, url, body, request_headers, override_headers)
+	raw := eval_scoped_expression(mut sess, replay_js, true) or { return error(err.msg()) }
+	// If replay returned a fallback, persist fallbackText into the stored record
+	// so it shows up in subsequent records/summary exports.
+	if raw.contains('"fallback"') {
+		fb := cdp_extract_obj(raw, 'fallback')
+		if fb != '' {
+			fb_text := cdp_extract_str(fb, 'text')
+			if fb_text != '' {
+				sess.hook_mu.@lock()
+				if record_id in sess.hook_records {
+					sess.hook_records[record_id] = HookRecord{
+						record_id:     record_id
+						raw_json:      sess.hook_records[record_id].raw_json
+						fallback_text: fb_text
+					}
+				}
+				sess.hook_mu.unlock()
+			}
+		}
+	}
+	return raw
+}
+
+fn network_hook_replay_url_from_params(params string, record HookRecord) string {
+	override_url := cdp_extract_str(params, 'overrideUrl')
+	if override_url != '' {
+		return override_url
+	}
+	legacy_url := cdp_extract_str(params, 'url')
+	if legacy_url != '' {
+		return legacy_url
+	}
+	return cdp_extract_str(record.raw_json, 'url')
+}
+
+fn hook_record_view_from_raw(record HookRecord) RequestRecord {
+	raw := record.raw_json
+	request_headers := hook_extract_json_object(raw, 'requestHeaders')
+	response_headers := hook_extract_json_object(raw, 'responseHeaders')
+	request_body := cdp_extract_str(raw, 'requestBody')
+	response_body := cdp_extract_str(raw, 'responseBody')
+	url := cdp_extract_str(raw, 'url')
+	fallback_text := if record.fallback_text != '' {
+		record.fallback_text
+	} else {
+		cdp_extract_str(raw, 'fallbackText')
+	}
+	return RequestRecord{
+		record_id:        record.record_id
+		source:           hook_extract_string(raw, 'source', 'unknown')
+		phase:            hook_extract_string(raw, 'phase', '')
+		page_url:         cdp_extract_str(raw, 'pageUrl')
+		method:           hook_extract_string(raw, 'method', 'GET')
+		url:              url
+		signature:        hook_record_signature(raw)
+		cursor_hint:      hook_record_cursor_hint(raw)
+		request_headers:  if request_headers == '' { '{}' } else { request_headers }
+		request_body:     request_body
+		response_status:  cdp_extract_int(raw, 'status')
+		status_text:      cdp_extract_str(raw, 'statusText')
+		response_url:     cdp_extract_str(raw, 'responseUrl')
+		response_ok:      cdp_extract_bool(raw, 'responseOk')
+		response_type:    cdp_extract_str(raw, 'responseType')
+		ready_state:      cdp_extract_int(raw, 'readyState')
+		with_credentials: cdp_extract_bool(raw, 'withCredentials')
+		response_headers: if response_headers == '' { '{}' } else { response_headers }
+		response_body:    response_body
+		error_text:       cdp_extract_str(raw, 'errorText')
+		timestamp:        cdp_extract_int(raw, 'timestamp')
+		fallback_text:    fallback_text
+	}
+}
+
+fn hook_record_view_json(view RequestRecord) string {
+	return '{"recordId":${json_str(view.record_id)},"source":${json_str(view.source)},"phase":${json_str(view.phase)},"pageUrl":${json_str(view.page_url)},"method":${json_str(view.method)},"url":${json_str(view.url)},"signature":${json_str(view.signature)},"cursorHint":${json_str(view.cursor_hint)},"requestHeaders":${view.request_headers},"requestBody":${json_str(view.request_body)},"responseStatus":${view.response_status},"statusText":${json_str(view.status_text)},"responseUrl":${json_str(view.response_url)},"responseOk":${view.response_ok},"responseType":${json_str(view.response_type)},"readyState":${view.ready_state},"withCredentials":${view.with_credentials},"responseHeaders":${view.response_headers},"responseBody":${json_str(view.response_body)},"errorText":${json_str(view.error_text)},"timestamp":${view.timestamp},"fallbackText":${json_str(view.fallback_text)}}'
+}
+
+fn hook_record_matches_filter(view RequestRecord, filter string) bool {
+	if filter == '' {
+		return true
+	}
+	haystack := '${view.record_id} ${view.source} ${view.phase} ${view.page_url} ${view.method} ${view.url} ${view.signature} ${view.cursor_hint} ${view.request_body} ${view.response_body} ${view.status_text} ${view.response_url} ${view.error_text} ${view.fallback_text}'.to_lower()
+	return haystack.contains(filter)
+}
+
+fn hook_summary_json_from_session(mut sess CdpSession, filter string, limit int) string {
+	mut method_counts := map[string]int{}
+	mut signature_counts := map[string]int{}
+	mut signature_order := []string{}
+	mut signature_record_ids := map[string][]string{}
+	mut signature_cursor_hints := map[string][]string{}
+	mut signature_samples := map[string]string{}
+	mut signature_methods := map[string]string{}
+	mut signature_url_patterns := map[string]string{}
+	mut signature_body_templates := map[string]string{}
+	mut signature_required_headers := map[string]string{}
+	mut signature_transform_rules := map[string]string{}
+	mut signature_expected_shapes := map[string]string{}
+	mut cursor_counts := map[string]int{}
+	sess.hook_mu.@lock()
+	defer { sess.hook_mu.unlock() }
+	for record_id in sess.hook_record_order {
+		record := sess.hook_records[record_id] or { continue }
+		view := hook_record_view_from_raw(record)
+		if filter != '' && !hook_record_matches_filter(view, filter) {
+			continue
+		}
+		method_key := if view.method == '' { 'GET' } else { view.method }
+		method_counts[method_key] = method_counts[method_key] + 1
+		signature_key := if view.signature == '' {
+			'${method_key} ${view.url}'
+		} else {
+			view.signature
+		}
+		if signature_key !in signature_counts {
+			signature_order << signature_key
+			signature_samples[signature_key] = hook_record_view_json(view)
+			signature_record_ids[signature_key] = []string{}
+			signature_cursor_hints[signature_key] = []string{}
+			signature_methods[signature_key] = method_key
+			signature_url_patterns[signature_key] = hook_normalize_signature_url(view.url)
+			signature_body_templates[signature_key] = hook_request_body_signature(view.request_body)
+			signature_required_headers[signature_key] = hook_required_headers_json(view.request_headers)
+			signature_transform_rules[signature_key] = hook_transform_rules_json(view)
+			signature_expected_shapes[signature_key] = hook_expected_shape_json(view)
+		}
+		signature_counts[signature_key] = signature_counts[signature_key] + 1
+		signature_record_ids[signature_key] << view.record_id
+		if view.cursor_hint != '' {
+			cursor_counts[view.cursor_hint] = cursor_counts[view.cursor_hint] + 1
+			if view.cursor_hint !in signature_cursor_hints[signature_key]
+				&& signature_cursor_hints[signature_key].len < 5 {
+				signature_cursor_hints[signature_key] << view.cursor_hint
+			}
+		}
+	}
+	mut method_items := []string{}
+	mut method_keys := method_counts.keys()
+	method_keys.sort()
+	for key in method_keys {
+		method_items << '"${json_object_key(key)}":${method_counts[key]}'
+	}
+	mut cursor_items := []string{}
+	mut cursor_keys := cursor_counts.keys()
+	cursor_keys.sort()
+	for key in cursor_keys {
+		cursor_items << '{"hint":${json_str(key)},"count":${cursor_counts[key]}}'
+	}
+	mut groups := []string{}
+	for signature_key in signature_order {
+		count := signature_counts[signature_key]
+		if limit > 0 && groups.len >= limit {
+			break
+		}
+		record_ids := signature_record_ids[signature_key] or { []string{} }
+		hints := signature_cursor_hints[signature_key] or { []string{} }
+		mut record_id_items := []string{}
+		for record_id in record_ids {
+			record_id_items << json_str(record_id)
+		}
+		mut hint_items := []string{}
+		for hint in hints {
+			hint_items << json_str(hint)
+		}
+		groups << '{"signature":${json_str(signature_key)},"count":${count},"recordIds":[${record_id_items.join(',')}],"cursorHints":[${hint_items.join(',')}],"sample":${signature_samples[signature_key] or {
+			'{}'
+		}}}'
+	}
+	mut templates := []string{}
+	for signature_key in signature_order {
+		if limit > 0 && templates.len >= limit {
+			break
+		}
+		templates << hook_template_json(hook_template_from_signature(signature_key, signature_methods[signature_key] or {
+			'GET'
+		}, signature_url_patterns[signature_key] or { '' }, signature_required_headers[signature_key] or {
+			'[]'
+		}, signature_body_templates[signature_key] or { '' }, signature_transform_rules[signature_key] or {
+			'[]'
+		}, signature_expected_shapes[signature_key] or { '{}' }, signature_record_ids[signature_key] or {
+			[]string{}
+		}, signature_samples[signature_key] or { '{}' }))
+	}
+	return '{"totalRecords":${sess.hook_record_order.len},"uniqueSignatures":${signature_counts.len},"methodCounts":{${method_items.join(',')}},"cursorHints":[${cursor_items.join(',')}],"groups":[${groups.join(',')}],"templates":[${templates.join(',')}]}'
+}
+
+fn hook_templates_json_from_session(mut sess CdpSession, filter string, limit int) string {
+	summary := hook_summary_json_from_session(mut sess, filter, limit)
+	return cdp_extract_obj(summary, 'templates')
+}
+
+fn hook_record_signature(raw string) string {
+	method := hook_extract_string(raw, 'method', 'GET')
+	url := cdp_extract_str(raw, 'url')
+	return '${method} ${hook_normalize_signature_url(url)} ${hook_request_body_signature(cdp_extract_str(raw,
+		'requestBody'))}'
+}
+
+fn hook_record_cursor_hint(raw string) string {
+	url := cdp_extract_str(raw, 'url')
+	body := cdp_extract_str(raw, 'requestBody')
+	keys := ['cursor', 'cursorToken', 'cursor_token', 'paginationToken', 'pagination_token',
+		'nextCursor', 'next_cursor', 'max_id', 'since_id']
+	for key in keys {
+		mut hint := hook_extract_query_value(url, key)
+		if hint != '' {
+			return '${key}=${hint}'
+		}
+		hint = hook_extract_query_value(body, key)
+		if hint != '' {
+			return '${key}=${hint}'
+		}
+		hint = cdp_extract_str(body, key)
+		if hint != '' {
+			return '${key}=${hint}'
+		}
+	}
+	return ''
+}
+
+fn hook_extract_string(raw string, key string, fallback string) string {
+	value := cdp_extract_str(raw, key)
+	if value != '' {
+		return value
+	}
+	return fallback
+}
+
+fn hook_extract_json_object(raw string, key string) string {
+	value := cdp_extract_obj(raw, key)
+	if value != '' {
+		return value
+	}
+	return '{}'
+}
+
+fn hook_extract_query_value(text string, key string) string {
+	if text == '' {
+		return ''
+	}
+	search := '${key}='
+	idx := text.index(search) or { return '' }
+	rest := text[idx + search.len..]
+	end := rest.index('&') or { rest.len }
+	value := rest[..end].trim_space()
+	if value == '' {
+		return ''
+	}
+	return value.trim('"')
+}
+
+fn json_object_key(key string) string {
+	quoted := json_str(key)
+	if quoted.len >= 2 {
+		return quoted[1..quoted.len - 1]
+	}
+	return quoted
+}
+
+fn hook_normalize_signature_url(url string) string {
+	if url == '' {
+		return ''
+	}
+	mut base := url
+	if hash_index := base.index('#') {
+		base = base[..hash_index]
+	}
+	mut query_keys := []string{}
+	if question_index := base.index('?') {
+		query := base[question_index + 1..]
+		base = base[..question_index]
+		for part in query.split('&') {
+			if part.trim_space() == '' {
+				continue
+			}
+			key := part.all_before('=').trim_space()
+			if key != '' && key !in query_keys {
+				query_keys << key
+			}
+		}
+	}
+	if query_keys.len == 0 {
+		return base
+	}
+	return '${base}?keys=${query_keys.join(',')}'
+}
+
+fn hook_request_body_signature(body string) string {
+	if body == '' {
+		return ''
+	}
+	trimmed := body.trim_space()
+	if trimmed.len <= 120 {
+		return trimmed
+	}
+	return trimmed[..120]
+}
+
+fn hook_required_headers_json(headers_json string) string {
+	keys := hook_json_object_keys(headers_json)
+	mut items := []string{}
+	for key in keys {
+		items << json_str(key)
+	}
+	return '[' + items.join(',') + ']'
+}
+
+fn hook_transform_rules_json(view RequestRecord) string {
+	rules := [
+		'"captureBody":${view.request_body != ''}',
+		'"captureResponse":${view.response_body != ''}',
+		'"hasCursorHint":${view.cursor_hint != ''}',
+		'"method":"${json_object_key(view.method)}"',
+	]
+	return '[' + rules.join(',') + ']'
+}
+
+fn hook_expected_shape_json(view RequestRecord) string {
+	return '{"status":${view.response_status},"responseOk":${view.response_ok},"responseType":${json_str(view.response_type)},"statusText":${json_str(view.status_text)}}'
+}
+
+fn hook_template_from_signature(signature string, method string, url_pattern string, required_headers string, body_template string, transform_rules string, expected_response_shape string, record_ids []string, sample string) ReplayTemplate {
+	first_record_id := if record_ids.len > 0 { record_ids[0] } else { '' }
+	return ReplayTemplate{
+		template_id:             'tpl-${hook_safe_id_component(signature)}'
+		request_signature:       signature
+		method:                  method
+		url_pattern:             url_pattern
+		required_headers:        required_headers
+		body_template:           body_template
+		transform_rules:         transform_rules
+		expected_response_shape: expected_response_shape
+		sample_record_id:        first_record_id
+	}
+}
+
+fn hook_template_json(template ReplayTemplate) string {
+	return '{"templateId":${json_str(template.template_id)},"requestSignature":${json_str(template.request_signature)},"method":${json_str(template.method)},"urlPattern":${json_str(template.url_pattern)},"requiredHeaders":${template.required_headers},"bodyTemplate":${json_str(template.body_template)},"transformRules":${template.transform_rules},"expectedResponseShape":${template.expected_response_shape},"sampleRecordId":${json_str(template.sample_record_id)}}'
+}
+
+fn hook_json_object_keys(raw string) []string {
+	trimmed := raw.trim_space()
+	if trimmed == '' || trimmed == '{}' {
+		return []string{}
+	}
+	mut keys := []string{}
+	mut depth := 0
+	mut in_string := false
+	mut escaped := false
+	mut collecting_key := false
+	mut expecting_key := true
+	mut current_key := ''
+	for c in trimmed {
+		if in_string {
+			if escaped {
+				escaped = false
+				if collecting_key {
+					current_key += c.ascii_str()
+				}
+				continue
+			}
+			if c == `\\` {
+				escaped = true
+				if collecting_key {
+					current_key += c.ascii_str()
+				}
+				continue
+			}
+			if c == `"` {
+				in_string = false
+				if collecting_key && current_key != '' {
+					keys << current_key
+				}
+				collecting_key = false
+				continue
+			}
+			if collecting_key {
+				current_key += c.ascii_str()
+			}
+			continue
+		}
+		if c == `"` {
+			in_string = true
+			collecting_key = depth == 1 && expecting_key
+			if collecting_key {
+				current_key = ''
+			}
+			continue
+		}
+		if c == `{` {
+			depth++
+			expecting_key = true
+			continue
+		}
+		if c == `}` {
+			if depth > 0 {
+				depth--
+			}
+			expecting_key = false
+			continue
+		}
+		if c == `:` && depth == 1 {
+			expecting_key = false
+			continue
+		}
+		if c == `,` && depth == 1 {
+			expecting_key = true
+			continue
+		}
+	}
+	return keys
+}
+
+fn hook_safe_id_component(value string) string {
+	if value == '' {
+		return 'empty'
+	}
+	mut out := value.to_lower()
+	replacements := [
+		['://', '-'],
+		[' ', '-'],
+		['/', '-'],
+		['?', '-'],
+		['&', '-'],
+		['=', '-'],
+		[':', '-'],
+		['"', ''],
+		['\\', '-'],
+		['{', '-'],
+		['}', '-'],
+		['[', '-'],
+		[']', '-'],
+		['(', '-'],
+		[')', '-'],
+	]
+	for pair in replacements {
+		out = out.replace(pair[0], pair[1])
+	}
+	for out.contains('--') {
+		out = out.replace('--', '-')
+	}
+	return out.trim('-')
+}
+
+fn install_network_hook(mut sess CdpSession, script_id string, persistent bool) !string {
+	bootstrap_js := network_hook_bootstrap_js()
+	if persistent {
+		sess.hook_mu.@lock()
+		should_install := !sess.hook_state.injected || sess.hook_state.script_id != script_id
+			|| sess.hook_state.script_version != 2
+		sess.hook_mu.unlock()
+		if should_install {
+			sess.send_command('Page.addScriptToEvaluateOnNewDocument', '{"source":${json_str(bootstrap_js)}}')!
+			sess.hook_mu.@lock()
+			sess.hook_state.injected = true
+			sess.hook_state.script_id = script_id
+			sess.hook_state.script_version = 2
+			sess.hook_mu.unlock()
+		}
+	}
+	eval_scoped_expression(mut sess, bootstrap_js, false)!
+	return 'ok'
+}
+
+fn clear_network_hook_records(mut sess CdpSession) {
+	sess.hook_mu.@lock()
+	sess.hook_records = map[string]HookRecord{}
+	sess.hook_record_order = []string{}
+	sess.hook_state.last_synced_index = 0
+	sess.hook_state.record_count = 0
+	sess.hook_mu.unlock()
+}
+
+fn sync_network_hook_records(mut sess CdpSession) !int {
+	sess.hook_mu.@lock()
+	last_synced_index := sess.hook_state.last_synced_index
+	sess.hook_mu.unlock()
+	read_js := 'JSON.stringify(window.__vBrowserHookState && window.__vBrowserHookState.events ? window.__vBrowserHookState.events.slice(${last_synced_index}) : [])'
+	raw := eval_scoped_expression(mut sess, read_js, false) or { return error(err.msg()) }
+	trimmed := raw.trim_space()
+	if trimmed == '' || trimmed == 'null' || trimmed == 'undefined' || trimmed == '[]' {
+		return 0
+	}
+	items := split_json_array_objects(trimmed)
+	if items.len == 0 {
+		return 0
+	}
+	mut added := 0
+	sess.hook_mu.@lock()
+	defer { sess.hook_mu.unlock() }
+	for item in items {
+		record_id := cdp_extract_str(item, 'recordId')
+		if record_id == '' {
+			continue
+		}
+		if record_id in sess.hook_records {
+			continue
+		}
+		sess.hook_records[record_id] = HookRecord{
+			record_id: record_id
+			raw_json:  item
+		}
+		sess.hook_record_order << record_id
+		added++
+	}
+	sess.hook_state.last_synced_index += items.len
+	sess.hook_state.record_count = sess.hook_record_order.len
+	return added
+}
+
+fn network_hook_bootstrap_js() string {
+	return [
+		'(function() {',
+		'  var SCRIPT_VERSION = 2;',
+		'  var cfg = window.__vBrowserHookConfig = window.__vBrowserHookConfig || {};',
+		'  function readPersistedActive() {',
+		'    try {',
+		'      var value = window.localStorage && window.localStorage.getItem("__vBrowserHookActive");',
+		'      if (value === "true") { return true; }',
+		'      if (value === "false") { return false; }',
+		'      value = window.sessionStorage && window.sessionStorage.getItem("__vBrowserHookActive");',
+		'      if (value === "true") { return true; }',
+		'      if (value === "false") { return false; }',
+		'    } catch (err) {}',
+		'    return null;',
+		'  }',
+		'  var persistedActive = readPersistedActive();',
+		'  if (persistedActive !== null) { cfg.active = persistedActive; }',
+		'  var state = window.__vBrowserHookState = window.__vBrowserHookState || { events: [], nextId: 0 };',
+		'  if (window.__vBrowserHookInstalled && window.__vBrowserHookVersion === SCRIPT_VERSION) { return "ok"; }',
+		'  window.__vBrowserHookVersion = SCRIPT_VERSION;',
+		'  function truncateText(value, limit) {',
+		'    var text = String(value == null ? "" : value);',
+		'    if (!limit || text.length <= limit) { return text; }',
+		'    return text.slice(0, limit) + "...";',
+		'  }',
+		'  function toPlainHeaders(headers) {',
+		'    var out = {};',
+		'    if (!headers) { return out; }',
+		'    try {',
+		'      if (typeof Headers !== "undefined" && headers instanceof Headers) {',
+		'        headers.forEach(function(value, key) { out[String(key)] = String(value); });',
+		'        return out;',
+		'      }',
+		'      if (Array.isArray(headers)) {',
+		'        headers.forEach(function(item) {',
+		'          if (Array.isArray(item) && item.length >= 2) { out[String(item[0])] = String(item[1]); }',
+		'        });',
+		'        return out;',
+		'      }',
+		'      if (typeof headers === "object") {',
+		'        Object.keys(headers).forEach(function(key) {',
+		'          var value = headers[key];',
+		'          if (value != null) { out[String(key)] = String(value); }',
+		'        });',
+		'      }',
+		'    } catch (err) {}',
+		'    return out;',
+		'  }',
+		'  function normalizeBody(body) {',
+		'    if (body == null) { return ""; }',
+		'    if (typeof body === "string") { return body; }',
+		'    if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) { return body.toString(); }',
+		'    if (typeof FormData !== "undefined" && body instanceof FormData) {',
+		'      var items = [];',
+		'      body.forEach(function(value, key) { items.push([String(key), String(value)]); });',
+		'      return JSON.stringify(items);',
+		'    }',
+		'    if (typeof body === "number" || typeof body === "boolean") { return String(body); }',
+		'    if (typeof body === "object") {',
+		'      if (typeof body.byteLength === "number") { return "[binary:" + body.byteLength + "]"; }',
+		'      try { return JSON.stringify(body); } catch (err) { return String(body); }',
+		'    }',
+		'    return String(body);',
+		'  }',
+		'  function shouldCapture(method, url) {',
+		'    var filter = String(cfg.filter || "");',
+		'    if (!filter) { return true; }',
+		'    var haystack = String(method || "") + " " + String(url || "");',
+		'    return haystack.toLowerCase().indexOf(filter.toLowerCase()) >= 0;',
+		'  }',
+		'  function pushRecord(record) {',
+		'    record.recordId = String(++state.nextId);',
+		'    record.scriptId = String(cfg.scriptId || "");',
+		'    record.pageUrl = String(location.href || "");',
+		'    record.timestamp = Date.now();',
+		'    state.events.push(record);',
+		'    if (state.events.length > 1000) { state.events.splice(0, state.events.length - 1000); }',
+		'  }',
+		'  var nativeToStringMap = window.__vBrowserHookNativeToStringMap = window.__vBrowserHookNativeToStringMap || (typeof WeakMap !== "undefined" ? new WeakMap() : null);',
+		'  function nativeCodeString(name) {',
+		'    return "function " + String(name || "") + "() { [native code] }";',
+		'  }',
+		'  function registerNativeLike(fn, name, length) {',
+		'    if (!fn) { return; }',
+		'    try {',
+		'      if (nativeToStringMap) { nativeToStringMap.set(fn, nativeCodeString(name)); }',
+		'    } catch (err) {}',
+		'    try {',
+		'      if (name) { Object.defineProperty(fn, "name", { value: String(name), configurable: true }); }',
+		'    } catch (err) {}',
+		'    try {',
+		'      if (length != null) { Object.defineProperty(fn, "length", { value: Number(length), configurable: true }); }',
+		'    } catch (err) {}',
+		'  }',
+		'  var originalFunctionToString = Function.prototype.toString;',
+		'  if (!Function.prototype.__vBrowserHookToStringPatched) {',
+		'    var patchedFunctionToString = function() {',
+		'      try {',
+		'        if (nativeToStringMap && nativeToStringMap.has(this)) { return nativeToStringMap.get(this); }',
+		'      } catch (err) {}',
+		'      return originalFunctionToString.apply(this, arguments);',
+		'    };',
+		'    try {',
+		'      Object.defineProperty(Function.prototype, "toString", { value: patchedFunctionToString, configurable: true, writable: true });',
+		'    } catch (err) {',
+		'      Function.prototype.toString = patchedFunctionToString;',
+		'    }',
+		'    try {',
+		'      Object.defineProperty(Function.prototype, "__vBrowserHookToStringPatched", { value: true, configurable: true });',
+		'    } catch (err) {',
+		'      Function.prototype.__vBrowserHookToStringPatched = true;',
+		'    }',
+		'  }',
+		'  function captureFetchRequest(input, init) {',
+		'    var method = "GET";',
+		'    var url = "";',
+		'    var headers = {};',
+		'    var body = "";',
+		'    var mode = "";',
+		'    var credentials = "";',
+		'    var cache = "";',
+		'    var redirect = "";',
+		'    var referrer = "";',
+		'    var referrerPolicy = "";',
+		'    var integrity = "";',
+		'    var keepalive = "";',
+		'    var priority = "";',
+		'    try {',
+		'      if (typeof input === "string") {',
+		'        url = input;',
+		'      } else if (input && typeof input.url === "string") {',
+		'        url = input.url;',
+		'        method = input.method || method;',
+		'        headers = toPlainHeaders(input.headers);',
+		'        body = normalizeBody(input.body);',
+		'        mode = input.mode || mode;',
+		'        credentials = input.credentials || credentials;',
+		'        cache = input.cache || cache;',
+		'        redirect = input.redirect || redirect;',
+		'        referrer = input.referrer || referrer;',
+		'        referrerPolicy = input.referrerPolicy || referrerPolicy;',
+		'        integrity = input.integrity || integrity;',
+		'        keepalive = input.keepalive != null ? String(input.keepalive) : keepalive;',
+		'        priority = input.priority || priority;',
+		'      }',
+		'      if (init) {',
+		'        if (init.method) { method = init.method; }',
+		'        if (init.headers) {',
+		'          var initHeaders = toPlainHeaders(init.headers);',
+		'          Object.keys(initHeaders).forEach(function(key) { headers[key] = initHeaders[key]; });',
+		'        }',
+		'        if (init.body !== undefined) { body = normalizeBody(init.body); }',
+		'        if (init.mode) { mode = init.mode; }',
+		'        if (init.credentials) { credentials = init.credentials; }',
+		'        if (init.cache) { cache = init.cache; }',
+		'        if (init.redirect) { redirect = init.redirect; }',
+		'        if (init.referrer !== undefined) { referrer = String(init.referrer); }',
+		'        if (init.referrerPolicy) { referrerPolicy = init.referrerPolicy; }',
+		'        if (init.integrity) { integrity = init.integrity; }',
+		'        if (init.keepalive != null) { keepalive = String(init.keepalive); }',
+		'        if (init.priority) { priority = init.priority; }',
+		'      }',
+		'    } catch (err) {}',
+		'    return { method: String(method || "GET"), url: String(url || ""), headers: headers, body: body, mode: String(mode || ""), credentials: String(credentials || ""), cache: String(cache || ""), redirect: String(redirect || ""), referrer: String(referrer || ""), referrerPolicy: String(referrerPolicy || ""), integrity: String(integrity || ""), keepalive: String(keepalive || ""), priority: String(priority || "") };',
+		'  }',
+		'  function captureFetchResult(meta, response, error, responseBody) {',
+		'    pushRecord({',
+		'      source: "fetch",',
+		'      phase: error ? "error" : "complete",',
+		'      method: meta.method,',
+		'      url: meta.url,',
+		'      status: response ? Number(response.status || 0) : 0,',
+		'      statusText: response ? String(response.statusText || "") : "",',
+		'      responseUrl: response ? String(response.url || "") : "",',
+		'      responseOk: response ? Boolean(response.ok) : false,',
+		'      requestHeaders: meta.headers,',
+		'      requestBody: meta.body,',
+		'      requestMode: meta.mode,',
+		'      requestCredentials: meta.credentials,',
+		'      requestCache: meta.cache,',
+		'      requestRedirect: meta.redirect,',
+		'      requestReferrer: meta.referrer,',
+		'      requestReferrerPolicy: meta.referrerPolicy,',
+		'      requestIntegrity: meta.integrity,',
+		'      requestKeepalive: meta.keepalive,',
+		'      requestPriority: meta.priority,',
+		'      signature: [String(meta.method || "GET"), String(meta.url || ""), String(meta.body || "").slice(0, 120)].join(" "),',
+		'      responseBody: responseBody ? truncateText(responseBody, 4000) : "",',
+		'      responseHeaders: typeof response.headers === "object" && response.headers ? toPlainHeaders(response.headers) : {},',
+		'      errorText: error ? truncateText(error, 2000) : ""',
+		'    });',
+		'  }',
+		'  function captureXhrResult(meta, xhr, errorText) {',
+		'    var responseBody = "";',
+		'    if (cfg.captureResponse) {',
+		'      try { responseBody = String(xhr.responseText == null ? "" : xhr.responseText); } catch (err) {}',
+		'    }',
+		'    function parseXhrHeaders(raw) {',
+		'      var out = {};',
+		'      if (!raw) { return out; }',
+		'      var lines = String(raw).split("\\n");',
+		'      for (var i = 0; i < lines.length; i++) {',
+		'        var line = lines[i];',
+		'        var idx = line.indexOf(":");',
+		'        if (idx > 0) {',
+		'          var key = line.slice(0, idx).trim();',
+		'          var val = line.slice(idx + 1).trim();',
+		'          if (key) { out[key] = val; }',
+		'        }',
+		'      }',
+		'      return out;',
+		'    }',
+		'    pushRecord({',
+		'      source: "xhr",',
+		'      phase: errorText ? "error" : "complete",',
+		'      method: meta.method,',
+		'      url: meta.url,',
+		'      status: Number(xhr.status || 0),',
+		'      statusText: String(xhr.statusText || ""),',
+		'      responseUrl: String(xhr.responseURL || ""),',
+		'      responseOk: xhr.status >= 200 && xhr.status < 300,',
+		'      responseType: String(xhr.responseType || ""),',
+		'      readyState: Number(xhr.readyState || 0),',
+		'      withCredentials: Boolean(xhr.withCredentials),',
+		'      requestHeaders: meta.headers,',
+		'      requestBody: meta.body,',
+		'      responseBody: responseBody ? truncateText(responseBody, 4000) : "",',
+		'      responseHeaders: parseXhrHeaders(xhr.getAllResponseHeaders ? xhr.getAllResponseHeaders() : ""),',
+		'      errorText: errorText ? truncateText(errorText, 2000) : ""',
+		'    });',
+		'  }',
+		'  function captureFetchResponse(meta, response, onDone, onError) {',
+		'    if (!cfg.captureResponse || !response || typeof response.clone !== "function") {',
+		'      onDone("");',
+		'      return;',
+		'    }',
+		'    try {',
+		'      response.clone().text().then(function(text) {',
+		'        onDone(String(text == null ? "" : text));',
+		'      }, function() {',
+		'        onDone("");',
+		'      });',
+		'    } catch (err) {',
+		'      onError(err);',
+		'    }',
+		'  }',
+		'  var originalFetch = window.fetch;',
+		'  if (typeof originalFetch === "function" && !originalFetch.__vBrowserHookWrapped) {',
+		'    var fetchWrapper = function(input, init) {',
+		'      if (!cfg.active) { return originalFetch.apply(this, arguments); }',
+		'      var meta = captureFetchRequest(input, init);',
+		'      if (!shouldCapture(meta.method, meta.url)) { return originalFetch.apply(this, arguments); }',
+		'      try {',
+		'        return originalFetch.apply(this, arguments).then(function(response) {',
+		'          return new Promise(function(resolve) {',
+		'            captureFetchResponse(meta, response, function(responseBody) {',
+		'              captureFetchResult(meta, response, null, responseBody);',
+		'              resolve(response);',
+		'            }, function() {',
+		'              captureFetchResult(meta, response, null, "");',
+		'              resolve(response);',
+		'            });',
+		'          });',
+		'        }, function(error) {',
+		'          captureFetchResult(meta, null, error, "");',
+		'          throw error;',
+		'        });',
+		'      } catch (error) {',
+		'        captureFetchResult(meta, null, error, "");',
+		'        throw error;',
+		'      }',
+		'    };',
+		'    fetchWrapper.__vBrowserHookWrapped = true;',
+		'    registerNativeLike(fetchWrapper, "fetch", 2);',
+		'    window.fetch = fetchWrapper;',
+		'  }',
+		'  var XHR = window.XMLHttpRequest;',
+		'  if (XHR && XHR.prototype && !XHR.prototype.__vBrowserHookWrapped) {',
+		'    var originalOpen = XHR.prototype.open;',
+		'    var originalSend = XHR.prototype.send;',
+		'    var originalSetRequestHeader = XHR.prototype.setRequestHeader;',
+		'    XHR.prototype.open = function(method, url, async, user, password) {',
+		'      this.__vBrowserHookMeta = { method: String(method || "GET"), url: String(url || ""), headers: {}, body: "" };',
+		'      return originalOpen.apply(this, arguments);',
+		'    };',
+		'    registerNativeLike(XHR.prototype.open, "open", 5);',
+		'    XHR.prototype.setRequestHeader = function(name, value) {',
+		'      if (this.__vBrowserHookMeta) { this.__vBrowserHookMeta.headers[String(name)] = String(value); }',
+		'      return originalSetRequestHeader.apply(this, arguments);',
+		'    };',
+		'    registerNativeLike(XHR.prototype.setRequestHeader, "setRequestHeader", 2);',
+		'    XHR.prototype.send = function(body) {',
+		'      var xhr = this;',
+		'      var meta = xhr.__vBrowserHookMeta || { method: "GET", url: "", headers: {}, body: "" };',
+		'      meta.body = normalizeBody(body);',
+		'      if (cfg.active && shouldCapture(meta.method, meta.url)) {',
+		'        var finalized = false;',
+		'        var finalize = function(errorText) {',
+		'          if (finalized) { return; }',
+		'          finalized = true;',
+		'          captureXhrResult(meta, xhr, errorText);',
+		'        };',
+		'        xhr.addEventListener("loadend", function() { finalize(""); }, { once: true });',
+		'        xhr.addEventListener("error", function() { finalize("xhr error"); }, { once: true });',
+		'        xhr.addEventListener("abort", function() { finalize("xhr abort"); }, { once: true });',
+		'        xhr.addEventListener("timeout", function() { finalize("xhr timeout"); }, { once: true });',
+		'      }',
+		'      return originalSend.apply(this, arguments);',
+		'    };',
+		'    registerNativeLike(XHR.prototype.send, "send", 1);',
+		'    XHR.prototype.__vBrowserHookWrapped = true;',
+		'  }',
+		'  window.__vBrowserHookInstalled = true;',
+		'  return "ok";',
+		'})()',
+	].join('\n')
+}
+
+fn build_network_replay_js(method string, url string, body string, headers string, override_headers string) string {
+	method_js := js_str(method)
+	url_js := js_str(url)
+	body_js := js_str(body)
+	headers_js := if headers.trim_space() != '' { headers } else { '{}' }
+	override_headers_js := if override_headers.trim_space() != '' { override_headers } else { '{}' }
+	return [
+		'(async function(){',
+		'  function mergeHeaders(baseHeaders, overrideHeaders) {',
+		'    var out = {};',
+		'    Object.keys(baseHeaders || {}).forEach(function(key) { out[String(key)] = String(baseHeaders[key]); });',
+		'    Object.keys(overrideHeaders || {}).forEach(function(key) { out[String(key)] = String(overrideHeaders[key]); });',
+		'    return out;',
+		'  }',
+		'  function captureDomFallback(reason, responseStatus) {',
+		'    var text = "";',
+		'    var title = "";',
+		'    try {',
+		'      text = String((document.body && document.body.innerText) || (document.documentElement && document.documentElement.innerText) || "");',
+		'      title = String(document.title || "");',
+		'    } catch (err) {}',
+		'    if (text.length > 4000) { text = text.slice(0, 4000); }',
+		'    return { kind: "dom", reason: String(reason || ""), status: Number(responseStatus || 0), title: title, pageUrl: String(location.href || ""), text: text };',
+		'  }',
+		'  var headers = mergeHeaders(' + headers_js + ', ' + override_headers_js + ');',
+		'  var init = { method: ' + method_js + ', credentials: "include" };',
+		'  if (Object.keys(headers).length > 0) { init.headers = headers; }',
+		'  if (' + method_js + ' !== "GET" && ' + method_js + ' !== "HEAD" && ' + body_js +
+			' !== "") { init.body = ' + body_js + '; }',
+		'  try {',
+		'    var response = await fetch(' + url_js + ', init);',
+		'    var text = "";',
+		'    try { text = await response.text(); } catch (err) { text = ""; }',
+		'    if (!response.ok) {',
+			'      return JSON.stringify({ ok: false, replayKind: "dom-fallback", reason: "http-status", method: ' +
+			method_js + ', url: ' + url_js +
+			', status: response.status, statusText: response.statusText, responseUrl: response.url || ' +
+			url_js +
+			', requestHeaders: headers, responseBody: text.slice(0, 4000), fallback: captureDomFallback("http-status", response.status) });',
+		'    }',
+		'    return JSON.stringify({ ok: true, replayKind: "fetch", method: ' + method_js +
+			', url: ' + url_js +
+			', status: response.status, statusText: response.statusText, responseUrl: response.url || ' +
+			url_js + ', requestHeaders: headers, body: text.slice(0, 4000) });',
+		'  } catch (error) {',
+			'    return JSON.stringify({ ok: false, replayKind: "dom-fallback", reason: String(error && error.message ? error.message : error), method: ' +
+			method_js + ', url: ' + url_js + ', status: 0, statusText: "", responseUrl: ' + url_js +
+			', requestHeaders: headers, responseBody: "", fallback: captureDomFallback(String(error && error.message ? error.message : error), 0) });',
+		'  }',
+		'})()',
+	].join('\n')
 }
 
 fn save_network_response(mut sess CdpSession, request_id string, target_path string) !(string, string) {
@@ -2771,9 +3817,8 @@ fn save_network_images(mut sess CdpSession, target_dir string, filter string) !(
 		}
 		seq := saved_paths.len + 1
 		output_name := network_image_output_name(seq, entry)
-		out_path, _ := save_network_response(mut sess, request_id, os.join_path(target_dir, output_name)) or {
-			continue
-		}
+		out_path, _ := save_network_response(mut sess, request_id, os.join_path(target_dir,
+			output_name)) or { continue }
 		saved_paths << out_path
 	}
 	return saved_paths, saved_paths.len
@@ -2856,7 +3901,8 @@ fn sync_network_watch_existing_requests(mut sess CdpSession) {
 		}
 		sess.network_watch.next_index++
 		seq := sess.network_watch.next_index
-		paths << os.join_path(sess.network_watch.target_dir, network_image_output_name(seq, entry))
+		paths << os.join_path(sess.network_watch.target_dir, network_image_output_name(seq,
+			entry))
 		sess.network_watch.saved_request_ids[request_id] = true
 		request_ids << request_id
 	}
@@ -2864,7 +3910,9 @@ fn sync_network_watch_existing_requests(mut sess CdpSession) {
 	for i, request_id in request_ids {
 		path := paths[i]
 		spawn fn [mut sess, request_id, path] () {
-			if err := save_network_response_with_retry(mut sess, request_id, path, 3, 150 * time.millisecond) {
+			if err := save_network_response_with_retry(mut sess, request_id, path, 3,
+				150 * time.millisecond)
+			{
 				eprintln('[network watch] sync save failed for ${request_id}: ${err}')
 			}
 		}()
@@ -2994,7 +4042,8 @@ fn network_image_output_name(index int, entry TrackedNetworkRequest) string {
 fn resolve_network_save_path(target_path string, request_id string, url string, mime_type string) string {
 	mut base_path := target_path.trim_space()
 	if base_path == '' {
-		base_path = os.join_path(os.temp_dir(), network_default_filename(request_id, url, mime_type))
+		base_path = os.join_path(os.temp_dir(), network_default_filename(request_id, url,
+			mime_type))
 		return base_path
 	}
 	if base_path.ends_with('/') || base_path.ends_with('\\') {
@@ -3592,9 +4641,7 @@ fn cmd_clipboard(mut sess CdpSession, params string) string {
 			if path == '' {
 				return 'ERROR:clipboard write requires --path'
 			}
-			img_bytes := os.read_bytes(path) or {
-				return 'ERROR:failed to read ${path}: ${err}'
-			}
+			img_bytes := os.read_bytes(path) or { return 'ERROR:failed to read ${path}: ${err}' }
 			mime_type := image_mime_type(path)
 			js := build_clipboard_write_image_js(mime_type, base64.encode(img_bytes))
 			ensure_clipboard_permissions(mut sess)

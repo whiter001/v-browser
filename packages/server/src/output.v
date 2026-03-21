@@ -92,7 +92,8 @@ fn error_code(message string) string {
 	if msg.contains('missing ') || msg.contains('requires ') || msg.contains('invalid ') {
 		return 'INVALID_ARGUMENT'
 	}
-	if msg.contains('not found') || msg.contains('no target tab available') || msg.contains('no tab is currently accessible') {
+	if msg.contains('not found') || msg.contains('no target tab available')
+		|| msg.contains('no tab is currently accessible') {
 		return 'NOT_FOUND'
 	}
 	if msg.contains('debugger conflict') || msg.contains('another debugger is already attached') {
@@ -127,7 +128,8 @@ fn error_suggestion(message string) string {
 	if msg.contains('debugger conflict') || msg.contains('another debugger is already attached') {
 		return 'Close any other CDP sessions (Chrome DevTools, other automation tools) attached to the same tab, then run v-browser connect again.'
 	}
-	if msg.contains('no available tab') || msg.contains('no tab is currently accessible') || msg.contains('no target tab available') {
+	if msg.contains('no available tab') || msg.contains('no tab is currently accessible')
+		|| msg.contains('no target tab available') {
 		return 'Switch to a normal webpage tab (not the extension page), then run v-browser connect again.'
 	}
 	if msg.contains('no extension connected') || msg.contains('no tab is connected') {

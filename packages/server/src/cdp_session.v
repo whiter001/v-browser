@@ -33,38 +33,101 @@ mut:
 	next_index        int
 }
 
+struct HookState {
+mut:
+	active            bool
+	injected          bool
+	script_id         string
+	script_version    int
+	filter            string
+	capture_body      bool
+	capture_response  bool
+	last_injected_at  string
+	last_synced_index int
+	record_count      int
+}
+
+struct HookRecord {
+mut:
+	record_id     string
+	raw_json      string
+	fallback_text string
+}
+
+struct RequestRecord {
+mut:
+	record_id        string
+	source           string
+	phase            string
+	page_url         string
+	method           string
+	url              string
+	signature        string
+	cursor_hint      string
+	request_headers  string
+	request_body     string
+	response_status  int
+	status_text      string
+	response_url     string
+	response_ok      bool
+	response_type    string
+	ready_state      int
+	with_credentials bool
+	response_headers string
+	response_body    string
+	error_text       string
+	timestamp        int
+	fallback_text    string
+}
+
+struct ReplayTemplate {
+mut:
+	template_id             string
+	request_signature       string
+	method                  string
+	url_pattern             string
+	required_headers        string
+	body_template           string
+	transform_rules         string
+	expected_response_shape string
+	sample_record_id        string
+}
+
 struct TabContext {
 mut:
 	current_frame_selector string
-	axref_refs            map[string]AxRef
-	network_requests      map[string]TrackedNetworkRequest
-	network_request_order []string
-	network_watch         NetworkWatchState
-	console_msgs          []string
-	page_errors           []string
-	dialog_events         []string
+	axref_refs             map[string]AxRef
+	network_requests       map[string]TrackedNetworkRequest
+	network_request_order  []string
+	network_watch          NetworkWatchState
+	hook_state             HookState
+	hook_records           map[string]HookRecord
+	hook_record_order      []string
+	console_msgs           []string
+	page_errors            []string
+	dialog_events          []string
 }
 
 struct TabSummary {
-	id       int
+	id        int
 	window_id int
-	title    string
-	url      string
-	active   bool
+	title     string
+	url       string
+	active    bool
 }
 
 struct TrackedNetworkRequest {
 mut:
-	request_id        string
-	url               string
-	method            string
-	resource_type     string
-	status            int
-	status_text       string
-	error_text        string
-	finished          bool
-	request_headers   string
-	response_headers  string
+	request_id       string
+	url              string
+	method           string
+	resource_type    string
+	status           int
+	status_text      string
+	error_text       string
+	finished         bool
+	request_headers  string
+	response_headers string
 }
 
 // CdpSession 管理一个 WebSocket 连接上的 CDP 会话
@@ -86,6 +149,10 @@ mut:
 	network_mu             sync.Mutex
 	network_watch          NetworkWatchState
 	network_watch_mu       sync.Mutex
+	hook_state             HookState
+	hook_records           map[string]HookRecord
+	hook_record_order      []string
+	hook_mu                sync.Mutex
 	current_tab_id         int
 	tab_contexts           map[int]TabContext
 	tab_contexts_mu        sync.Mutex
@@ -99,15 +166,18 @@ mut:
 
 fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 	return &CdpSession{
-		send_fn:          send_fn
-		pending:          map[int]chan ProtocolResponse{}
-		event_subs:       map[string][]chan ProtocolResponse{}
-		network_requests: map[string]TrackedNetworkRequest{}
-		tab_contexts:     map[int]TabContext{}
-		network_watch:    NetworkWatchState{
+		send_fn:           send_fn
+		pending:           map[int]chan ProtocolResponse{}
+		event_subs:        map[string][]chan ProtocolResponse{}
+		network_requests:  map[string]TrackedNetworkRequest{}
+		hook_records:      map[string]HookRecord{}
+		hook_record_order: []string{}
+		tab_contexts:      map[int]TabContext{}
+		network_watch:     NetworkWatchState{
 			candidate_urls:    map[string]bool{}
 			saved_request_ids: map[string]bool{}
 		}
+		hook_state:        HookState{}
 	}
 }
 
@@ -326,11 +396,11 @@ fn find_best_tab_for_url_from_json(tabs_json string, target_url string) !(int, i
 	mut matched := TabSummary{}
 	for obj in objects {
 		tab := TabSummary{
-			id:       cdp_extract_int(obj, '"id":')
+			id:        cdp_extract_int(obj, '"id":')
 			window_id: cdp_extract_int(obj, '"windowId":')
-			title:    cdp_extract_str(obj, 'title')
-			url:      cdp_extract_str(obj, 'url')
-			active:   cdp_extract_bool(obj, 'active')
+			title:     cdp_extract_str(obj, 'title')
+			url:       cdp_extract_str(obj, 'url')
+			active:    cdp_extract_bool(obj, 'active')
 		}
 		if tab.id <= 0 {
 			continue
@@ -376,7 +446,8 @@ fn is_connectable_tab_url(url string) bool {
 	if trimmed.starts_with('chrome-extension:') {
 		return false
 	}
-	if trimmed.starts_with('chrome:') || trimmed.starts_with('edge:') || trimmed.starts_with('devtools:') {
+	if trimmed.starts_with('chrome:') || trimmed.starts_with('edge:')
+		|| trimmed.starts_with('devtools:') {
 		return false
 	}
 	return true
@@ -479,16 +550,37 @@ fn (mut s CdpSession) save_current_tab_context() {
 		saved_request_ids: clone_bool_map(s.network_watch.saved_request_ids)
 		next_index:        s.network_watch.next_index
 	}
+	mut hook_state := HookState{
+		active:            s.hook_state.active
+		injected:          s.hook_state.injected
+		script_id:         s.hook_state.script_id
+		filter:            s.hook_state.filter
+		capture_body:      s.hook_state.capture_body
+		capture_response:  s.hook_state.capture_response
+		last_injected_at:  s.hook_state.last_injected_at
+		last_synced_index: s.hook_state.last_synced_index
+		record_count:      s.hook_state.record_count
+	}
+	mut hook_records := map[string]HookRecord{}
+	s.hook_mu.@lock()
+	for key, value in s.hook_records {
+		hook_records[key] = value
+	}
+	hook_record_order := s.hook_record_order.clone()
+	s.hook_mu.unlock()
 	s.tab_contexts_mu.@lock()
 	s.tab_contexts[s.current_tab_id] = TabContext{
 		current_frame_selector: s.current_frame_selector
-		axref_refs:            axref_refs
-		network_requests:      network_requests
-		network_request_order: network_request_order
-		network_watch:         network_watch
-		console_msgs:          s.console_msgs.clone()
-		page_errors:           s.page_errors.clone()
-		dialog_events:         s.dialog_events.clone()
+		axref_refs:             axref_refs
+		network_requests:       network_requests
+		network_request_order:  network_request_order
+		network_watch:          network_watch
+		hook_state:             hook_state
+		hook_records:           hook_records
+		hook_record_order:      hook_record_order
+		console_msgs:           s.console_msgs.clone()
+		page_errors:            s.page_errors.clone()
+		dialog_events:          s.dialog_events.clone()
 	}
 	s.tab_contexts_mu.unlock()
 }
@@ -512,6 +604,11 @@ fn (mut s CdpSession) restore_tab_context(tab_id int) {
 			saved_request_ids: map[string]bool{}
 		}
 		s.network_watch_mu.unlock()
+		s.hook_mu.@lock()
+		s.hook_state = HookState{}
+		s.hook_records = map[string]HookRecord{}
+		s.hook_record_order = []string{}
+		s.hook_mu.unlock()
 		s.console_msgs = []string{}
 		s.page_errors = []string{}
 		s.dialog_events = []string{}
@@ -530,6 +627,11 @@ fn (mut s CdpSession) restore_tab_context(tab_id int) {
 	s.network_watch_mu.@lock()
 	s.network_watch = clone_network_watch_state(ctx.network_watch)
 	s.network_watch_mu.unlock()
+	s.hook_mu.@lock()
+	s.hook_state = clone_hook_state(ctx.hook_state)
+	s.hook_records = clone_hook_record_map(ctx.hook_records)
+	s.hook_record_order = ctx.hook_record_order.clone()
+	s.hook_mu.unlock()
 	s.console_msgs = ctx.console_msgs.clone()
 	s.page_errors = ctx.page_errors.clone()
 	s.dialog_events = ctx.dialog_events.clone()
@@ -716,6 +818,29 @@ fn clone_bool_map(src map[string]bool) map[string]bool {
 	return dst
 }
 
+fn clone_hook_state(src HookState) HookState {
+	return HookState{
+		active:            src.active
+		injected:          src.injected
+		script_id:         src.script_id
+		script_version:    src.script_version
+		filter:            src.filter
+		capture_body:      src.capture_body
+		capture_response:  src.capture_response
+		last_injected_at:  src.last_injected_at
+		last_synced_index: src.last_synced_index
+		record_count:      src.record_count
+	}
+}
+
+fn clone_hook_record_map(src map[string]HookRecord) map[string]HookRecord {
+	mut dst := map[string]HookRecord{}
+	for key, value in src {
+		dst[key] = value
+	}
+	return dst
+}
+
 fn clone_network_watch_state(src NetworkWatchState) NetworkWatchState {
 	return NetworkWatchState{
 		active:            src.active
@@ -825,9 +950,7 @@ fn (mut s CdpSession) get_response_body_bytes(request_id string) ![]u8 {
 fn (mut s CdpSession) get_response_headers(request_id string) !string {
 	s.enable_network_tracking()!
 	// 从本地追踪的请求中获取响应头
-	entry := s.network_requests[request_id] or {
-		return error('request not found: ${request_id}')
-	}
+	entry := s.network_requests[request_id] or { return error('request not found: ${request_id}') }
 	if entry.response_headers == '' {
 		return error('response headers not available for: ${request_id}')
 	}
