@@ -115,11 +115,6 @@ fn handle_connect_command(args []string, json_output bool) {
 	window_id := extract_flag_value(args, '--window-id').int()
 	target_url := extract_connect_target_url(args)
 	extension_id := resolve_extension_id(args)
-	// connect 命令自动启动 server，无需手动运行 v-browser server
-	ensure_server_running() or {
-		print_error('failed to start v-browser server: ${err}', json_output)
-		exit(1)
-	}
 	status_before := send_ipc('status', '{}') or {
 		print_error(err.msg(), json_output)
 		exit(1)
@@ -1497,7 +1492,7 @@ fn print_usage() {
   v-browser server stop         停止中继服务
   v-browser server restart      重启中继服务
   v-browser status              检查服务状态
-  v-browser connect             连接扩展 (--extension-id <id>, --tab-id <id>)
+	v-browser connect [<url>]     连接扩展/标签页 (--extension-id <id>, --tab-id <id>, --window-id <id>, --url <url>)
   v-browser open <url>          导航到 URL
   v-browser close               关闭标签页
   v-browser back                后退
