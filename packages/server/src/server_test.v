@@ -24,6 +24,18 @@ fn test_parse_cli_to_ipc_connect_routes_to_connect() {
 	assert params == '{}'
 }
 
+fn test_parse_cli_to_ipc_connect_routes_tab_and_window_ids() {
+	method, params := parse_cli_to_ipc('connect', ['--tab-id', '12', '--window-id', '34'],
+		false)
+	assert method == 'connect'
+	assert params == '{"tabId":12,"windowId":34}'
+}
+
+fn test_build_connect_ipc_params_includes_tab_window_and_url() {
+	params := build_connect_ipc_params(12, 34, 'https://example.com/path')
+	assert params == '{"tabId":12,"windowId":34,"url":"https://example.com/path"}'
+}
+
 fn test_parse_cli_to_ipc_frame_routes_selector() {
 	method, params := parse_cli_to_ipc('frame', ['#child'], false)
 	assert method == 'frame'
@@ -58,7 +70,7 @@ fn test_extract_connect_target_url_prefers_flag_and_positional_url() {
 	assert extract_connect_target_url([]) == ''
 }
 
-fn test_find_best_tab_for_url_from_json_prefers_matching_tab_then_active() {
+fn test_find_best_tab_for_url_from_json_prefers_matching_tab_then_last_tab_fallback() {
 	tabs_json := '[{"id":11,"windowId":1,"title":"A","url":"https://x.com/a","active":false},{"id":22,"windowId":2,"title":"B","url":"https://wx.mail.qq.com/home/index#/notepad","active":true},{"id":33,"windowId":3,"title":"C","url":"https://x.com/a","active":true}]'
 	tab_id, window_id := find_best_tab_for_url_from_json(tabs_json, 'https://x.com/a') or {
 		panic(err)
@@ -66,11 +78,9 @@ fn test_find_best_tab_for_url_from_json_prefers_matching_tab_then_active() {
 	assert tab_id == 33
 	assert window_id == 3
 
-	active_tab_id, active_window_id := find_best_tab_for_url_from_json(tabs_json, '') or {
-		panic(err)
-	}
-	assert active_tab_id == 22
-	assert active_window_id == 2
+	last_tab_id, last_window_id := find_best_tab_for_url_from_json(tabs_json, '') or { panic(err) }
+	assert last_tab_id == 33
+	assert last_window_id == 3
 }
 
 fn test_find_best_tab_for_url_from_json_ignores_extension_tabs_when_selecting() {
@@ -78,6 +88,15 @@ fn test_find_best_tab_for_url_from_json_ignores_extension_tabs_when_selecting() 
 	tab_id, window_id := find_best_tab_for_url_from_json(tabs_json, '') or { panic(err) }
 	assert tab_id == 22
 	assert window_id == 2
+}
+
+fn test_find_best_tab_for_url_from_json_falls_back_to_last_connectable_tab_when_no_match() {
+	tabs_json := '[{"id":11,"windowId":1,"title":"A","url":"https://x.com/a","active":false},{"id":22,"windowId":2,"title":"B","url":"https://wx.mail.qq.com/home/index#/notepad","active":true},{"id":33,"windowId":3,"title":"C","url":"https://y.com/b","active":false}]'
+	tab_id, window_id := find_best_tab_for_url_from_json(tabs_json, 'https://missing.example/path') or {
+		panic(err)
+	}
+	assert tab_id == 33
+	assert window_id == 3
 }
 
 fn test_browser_open_candidates_prefer_explicit_app() {
