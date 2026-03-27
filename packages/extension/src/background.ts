@@ -191,38 +191,57 @@ class TabShareExtension {
   ): Promise<void> {
     try {
       debugLog(`Connecting tab ${tabId} to relay at ${mcpRelayUrl}`);
-      try {
-        this._activeConnection?.close("Another connection is requested");
-      } catch (error: any) {
-        debugLog(`Error closing active connection:`, error);
-      }
-      await this._setConnectedTabId(null);
+      const previousConnection = this._activeConnection;
+      const nextConnection = this._pendingTabSelection.get(selectorTabId)?.connection;
+      if (!nextConnection) throw new Error("No active MCP relay connection");
 
-      this._activeConnection = this._pendingTabSelection.get(selectorTabId)?.connection;
-      if (!this._activeConnection) throw new Error("No active MCP relay connection");
-      this._pendingTabSelection.delete(selectorTabId);
-
-      this._activeConnection.onTabIdChanged = (nextTabId) => {
+      nextConnection.onTabIdChanged = (nextTabId) => {
         void this._setConnectedTabId(nextTabId);
-      };
-      this._activeConnection.setTabId(tabId);
-      this._activeConnection.onclose = () => {
-        debugLog("MCP connection closed");
-        this._activeConnection = undefined;
-        void this._setConnectedTabId(null);
       };
 
       await Promise.all([
-        this._setConnectedTabId(tabId),
         chrome.tabs.update(tabId, { active: true }),
         chrome.windows.update(windowId, { focused: true }),
       ]);
+
+      nextConnection.setTabId(tabId);
+      this._installActiveConnection(nextConnection);
+      await this._setConnectedTabId(tabId);
+
+      if (previousConnection) {
+        try {
+          previousConnection.close("Another connection is requested");
+        } catch (error: any) {
+          debugLog(`Error closing previous connection:`, error);
+        }
+      }
+
+      this._pendingTabSelection.delete(selectorTabId);
+
       debugLog(`Connected to MCP bridge`);
     } catch (error: any) {
-      await this._setConnectedTabId(null);
+      const pendingConnection = this._pendingTabSelection.get(selectorTabId)?.connection;
+      if (pendingConnection) {
+        try {
+          pendingConnection.close("Connection switch failed");
+        } catch (closeError: any) {
+          debugLog(`Error closing pending connection after failed switch:`, closeError);
+        }
+        this._pendingTabSelection.delete(selectorTabId);
+      }
       debugLog(`Failed to connect tab ${tabId}:`, error.message);
       throw error;
     }
+  }
+
+  private _installActiveConnection(connection: RelayConnection): void {
+    this._activeConnection = connection;
+    connection.onclose = () => {
+      if (this._activeConnection !== connection) return;
+      debugLog("MCP connection closed");
+      this._activeConnection = undefined;
+      void this._setConnectedTabId(null);
+    };
   }
 
   private async _setConnectedTabId(tabId: number | null): Promise<void> {
