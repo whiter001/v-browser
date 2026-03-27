@@ -25,6 +25,8 @@ type EvalStdinReader = fn () !string
 
 type EvalFileReader = fn (string) !string
 
+type IPCSender = fn (string, string) !string
+
 fn main() {
 	raw_args := os.args[1..]
 	if raw_args.len == 0 {
@@ -190,12 +192,13 @@ fn run_cli_command(method string, params string) !string {
 }
 
 fn connect_active_session(params string) !string {
-	result := send_ipc('connect', params) or {
+	return connect_active_session_with(send_ipc, params)
+}
+
+fn connect_active_session_with(send_ipc_fn IPCSender, params string) !string {
+	result := send_ipc_fn('connect', params) or {
 		if is_attach_conflict_error(err.msg()) {
-			status_after := send_ipc('status', '{}') or { return error(err.msg()) }
-			if is_extension_connected(status_after) {
-				return '{"connected":true,"reusedDebugger":true}'
-			}
+			return error(err.msg())
 		}
 		return error(err.msg())
 	}
