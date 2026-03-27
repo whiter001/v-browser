@@ -45,6 +45,15 @@ type PageMessage =
       tabId?: number;
     };
 
+function isConnectableTabUrl(url: string): boolean {
+  return ![
+    "chrome-extension:",
+    "chrome:",
+    "edge:",
+    "devtools:",
+  ].some((scheme) => url.startsWith(scheme));
+}
+
 class TabShareExtension {
   private _activeConnection: RelayConnection | undefined;
   private _connectedTabId: number | null = null;
@@ -158,17 +167,17 @@ class TabShareExtension {
     const candidate = tabs.findLast((tab) => {
       if (!tab.id || !tab.windowId || !tab.url) return false;
       if (tab.id === sender.tab?.id) return false;
-      return (
-        !tab.url.startsWith("chrome-extension://") &&
-        !tab.url.startsWith("chrome:") &&
-        !tab.url.startsWith("edge:") &&
-        !tab.url.startsWith("devtools:")
-      );
+      return isConnectableTabUrl(tab.url);
     });
     if (candidate?.id && candidate.windowId)
       return { tabId: candidate.id, windowId: candidate.windowId };
 
-    if (sender.tab?.id && sender.tab.windowId)
+    if (
+      sender.tab?.id &&
+      sender.tab.windowId &&
+      sender.tab.url &&
+      isConnectableTabUrl(sender.tab.url)
+    )
       return { tabId: sender.tab.id, windowId: sender.tab.windowId };
 
     throw new Error("No target tab available for extension connection");
@@ -287,8 +296,7 @@ class TabShareExtension {
   private async _getTabs(): Promise<chrome.tabs.Tab[]> {
     const tabs = await chrome.tabs.query({});
     return tabs.filter(
-      (tab) =>
-        tab.url && !["chrome:", "edge:", "devtools:"].some((scheme) => tab.url!.startsWith(scheme)),
+      (tab) => tab.url !== undefined && isConnectableTabUrl(tab.url),
     );
   }
 
