@@ -18,6 +18,13 @@ fn failing_eval_file_reader(path string) !string {
 	return error('cannot read ${path}')
 }
 
+fn mock_send_ipc_attach_conflict_no_status(method string, params string) !string {
+	if method == 'connect' {
+		return error('Debugger conflict: another debugger is already attached to the tab.')
+	}
+	panic('unexpected IPC method: ${method} ${params}')
+}
+
 fn test_parse_cli_to_ipc_connect_routes_to_connect() {
 	method, params := parse_cli_to_ipc('connect', []string{}, false)
 	assert method == 'connect'
@@ -1124,6 +1131,14 @@ fn test_should_retry_after_reconnect_for_connection_failures() {
 fn test_is_attach_conflict_error_matches_debugger_conflict() {
 	assert is_attach_conflict_error('Another debugger is already attached to the tab with id: 123')
 	assert !is_attach_conflict_error('no extension connected')
+}
+
+fn test_connect_active_session_propagates_attach_conflict_without_reuse() {
+	result := connect_active_session_with(mock_send_ipc_attach_conflict_no_status, '{"tabId":12,"windowId":34}') or {
+		assert err.msg() == 'Debugger conflict: another debugger is already attached to the tab.'
+		return
+	}
+	panic('expected attach conflict, got ${result}')
 }
 
 fn test_cmd_eval_returns_read_error_before_missing_expression() {
