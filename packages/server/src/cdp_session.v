@@ -390,8 +390,7 @@ fn find_best_tab_for_url_from_json(tabs_json string, target_url string) !(int, i
 		return error('no available tab')
 	}
 	needle := target_url.trim_space()
-	mut active_fallback := TabSummary{}
-	mut first_fallback := TabSummary{}
+	mut last_fallback := TabSummary{}
 	mut matched_active := TabSummary{}
 	mut matched := TabSummary{}
 	for obj in objects {
@@ -408,12 +407,7 @@ fn find_best_tab_for_url_from_json(tabs_json string, target_url string) !(int, i
 		if !is_connectable_tab_url(tab.url) {
 			continue
 		}
-		if first_fallback.id == 0 {
-			first_fallback = tab
-		}
-		if tab.active && active_fallback.id == 0 {
-			active_fallback = tab
-		}
+		last_fallback = tab
 		if needle != '' && tab.url.trim_space() == needle {
 			if matched.id == 0 {
 				matched = tab
@@ -429,11 +423,8 @@ fn find_best_tab_for_url_from_json(tabs_json string, target_url string) !(int, i
 	if matched.id > 0 {
 		return matched.id, matched.window_id
 	}
-	if active_fallback.id > 0 {
-		return active_fallback.id, active_fallback.window_id
-	}
-	if first_fallback.id > 0 {
-		return first_fallback.id, first_fallback.window_id
+	if last_fallback.id > 0 {
+		return last_fallback.id, last_fallback.window_id
 	}
 	return error('no available tab')
 }
