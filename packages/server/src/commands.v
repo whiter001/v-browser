@@ -1441,13 +1441,11 @@ fn cmd_click(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	// Prefer CDP mouse events first — they do not block on dialogs.
-	// JS el.click() can freeze the CDP session when it triggers a
-	// window.alert / window.prompt because those are synchronous in Blink.
-	pointer_action_for_selector(mut sess, sel, 'click') or {
-		run_element_action(mut sess, sel, build_click_action_body()) or {
-			return 'ERROR:${err}'
-		}
+	// Prefer the in-page JS click path: it is the most faithful to the page's
+	// own event handling and works for the fixture buttons that update state.
+	// If the DOM click cannot be resolved, fall back to CDP mouse input.
+	run_element_action(mut sess, sel, build_click_action_body()) or {
+		pointer_action_for_selector(mut sess, sel, 'click') or { return 'ERROR:${err}' }
 	}
 	return 'null'
 }
