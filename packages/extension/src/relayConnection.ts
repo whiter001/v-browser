@@ -36,6 +36,7 @@ type ProtocolResponse = {
   error?: string;
 };
 
+// 判断 debugger attach 冲突是否来自已有调试会话。
 function isAlreadyAttachedError(error: unknown): boolean {
   const message = String(
     (error as { message?: string } | undefined)?.message || error || "",
@@ -43,6 +44,7 @@ function isAlreadyAttachedError(error: unknown): boolean {
   return message.includes("another debugger is already attached");
 }
 
+// RelayConnection 负责把 WebSocket relay 和 chrome.debugger 连接起来。
 export class RelayConnection {
   private _debuggee: chrome.debugger.Debuggee;
   private _ws: WebSocket;
@@ -74,12 +76,13 @@ export class RelayConnection {
     chrome.debugger.onDetach.addListener(this._detachListener);
   }
 
-  // Either setTabId or close is called after creating the connection.
+  // 连接建立后必须尽快绑定目标 tab，或者由 close 主动释放。
   setTabId(tabId: number): void {
     this._debuggee = { tabId };
     this._tabPromiseResolve();
   }
 
+  // 向 relay 发送扩展注册消息，附带当前浏览器信息。
   sendExtensionRegistration(extraParams?: Record<string, unknown>): void {
     this._sendMessage({
       method: "registerExtension",
@@ -90,6 +93,7 @@ export class RelayConnection {
     });
   }
 
+  // 主动关闭 relay，并同步执行清理逻辑。
   close(message: string): void {
     this._ws.close(1000, message);
     // ws.onclose is called asynchronously, so we call it here to avoid forwarding
@@ -97,6 +101,7 @@ export class RelayConnection {
     this._onClose();
   }
 
+  // 统一处理连接关闭后的资源清理。
   private _onClose() {
     if (this._closed) return;
     this._closed = true;
@@ -107,6 +112,7 @@ export class RelayConnection {
     this.onclose?.();
   }
 
+  // 将 chrome.debugger 事件转发给 relay 侧。
   private _onDebuggerEvent(
     source: chrome.debugger.DebuggerSession,
     method: string,
@@ -125,6 +131,7 @@ export class RelayConnection {
     });
   }
 
+  // 处理 debugger detach；目标页关闭时直接断开连接。
   private _onDebuggerDetach(source: chrome.debugger.Debuggee, reason: string): void {
     if (source.tabId !== this._debuggee.tabId) return;
     this._isAttached = false;
@@ -136,10 +143,12 @@ export class RelayConnection {
     debugLog("Debugger detached, keeping relay open for reattach:", reason, this._debuggee);
   }
 
+  // WebSocket 收到消息时转入异步处理，避免阻塞事件循环。
   private _onMessage(event: MessageEvent): void {
     this._onMessageAsync(event).catch((e) => debugLog("Error handling message:", e));
   }
 
+  // 解析 relay 消息并分发到具体命令处理器。
   private async _onMessageAsync(event: MessageEvent): Promise<void> {
     let message: ProtocolCommand;
     try {
@@ -169,6 +178,7 @@ export class RelayConnection {
     this._sendMessage(response);
   }
 
+  // 将 relay 命令翻译成 chrome.tabs / chrome.debugger 调用。
   private async _handleCommand(message: ProtocolCommand): Promise<any> {
     if (message.method === "attachToTab") {
       await this._tabPromise;

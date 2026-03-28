@@ -14,6 +14,7 @@ fn hex_char_to_int(c u8) int {
 	return 0
 }
 
+// 根据输出模式决定是否包装成 JSON 结果对象。
 fn format_output(result string, json_output bool) string {
 	if !json_output {
 		return result
@@ -59,6 +60,7 @@ fn print_error(message string, json_output bool) {
 	}
 }
 
+// 尽量把原始字符串保持为 JSON 字面量，否则按普通字符串转义。
 fn json_value_or_string(value string) string {
 	trimmed := value.trim_space()
 	if trimmed == '' {
@@ -70,6 +72,7 @@ fn json_value_or_string(value string) string {
 	return json_str(value)
 }
 
+// 判断字符串是否已经是可直接输出的 JSON 字面量。
 fn is_json_literal(value string) bool {
 	if value.len == 0 {
 		return false
@@ -84,6 +87,7 @@ fn is_json_literal(value string) bool {
 	return (first >= `0` && first <= `9`) || first == `-`
 }
 
+// 把常见错误消息归类成稳定的错误码。
 fn error_code(message string) string {
 	msg := message.to_lower()
 	if msg.contains('unknown command') {
@@ -123,6 +127,7 @@ fn error_code(message string) string {
 	return 'COMMAND_FAILED'
 }
 
+// 为常见错误消息生成可操作的修复建议。
 fn error_suggestion(message string) string {
 	msg := message.to_lower()
 	if msg.contains('debugger conflict') || msg.contains('another debugger is already attached') {

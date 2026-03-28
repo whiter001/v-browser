@@ -21,6 +21,7 @@ import "./authToken.css";
 
 const authTokenStorageKey = "auth-token";
 
+// 展示和管理本地扩展 token，方便用户复制到 MCP 客户端配置中。
 export const AuthTokenSection: React.FC<{}> = ({}) => {
   const [authToken, setAuthToken] = useState<string>(getOrCreateAuthToken);
   const [isExampleExpanded, setIsExampleExpanded] = useState<boolean>(false);
@@ -83,10 +84,12 @@ export const AuthTokenSection: React.FC<{}> = ({}) => {
   );
 };
 
+// 生成可直接复制的环境变量写法。
 function authTokenCode(authToken: string) {
   return `PLAYWRIGHT_MCP_EXTENSION_TOKEN=${authToken}`;
 }
 
+// 生成 MCP 客户端示例配置。
 function exampleConfig(authToken: string) {
   return `{
   "mcpServers": {
@@ -102,6 +105,7 @@ function exampleConfig(authToken: string) {
 }`;
 }
 
+// 生成可用于扩展认证的随机 token。
 function generateAuthToken(): string {
   // Generate a cryptographically secure random token
   const array = new Uint8Array(32);
@@ -121,6 +125,7 @@ function generateAuthToken(): string {
   });
 }
 
+// 读取本地 token；若不存在则创建并持久化。
 export const getOrCreateAuthToken = (): string => {
   let token = getStoredAuthToken();
   if (!token) {
@@ -130,10 +135,12 @@ export const getOrCreateAuthToken = (): string => {
   return token;
 };
 
+// 只读取本地保存的 token，不触发创建。
 export const getStoredAuthToken = (): string => {
   return localStorage.getItem(authTokenStorageKey) || "";
 };
 
+// 使用外部传入的 token 覆盖本地值。
 export const seedAuthToken = (token: string): string => {
   const normalized = token.trim();
   if (!normalized) return getOrCreateAuthToken();

@@ -15,11 +15,13 @@ struct IpcResponse {
 	err    string // 错误消息（失败时）
 }
 
+// 将请求编码为一行 JSON，便于 TCP 行协议传输。
 fn ipc_encode_request(req IpcRequest) string {
 	p := if req.params == '' { '{}' } else { req.params }
 	return '{"id":${req.id},"method":${json_str(req.method)},"params":${p}}\n'
 }
 
+// 将响应编码为一行 JSON，成功时写 result，失败时写 error。
 fn ipc_encode_response(resp IpcResponse) string {
 	if resp.err != '' {
 		return '{"id":${resp.id},"error":${json_str(resp.err)}}\n'
@@ -28,6 +30,7 @@ fn ipc_encode_response(resp IpcResponse) string {
 	return '{"id":${resp.id},"result":${result}}\n'
 }
 
+// 从一行 JSON 中解析 CLI 发来的请求。
 fn ipc_decode_request(line string) !IpcRequest {
 	t := line.trim_space()
 	if t.len == 0 {
@@ -69,6 +72,7 @@ fn ipc_decode_request(line string) !IpcRequest {
 	}
 }
 
+// 从一行 JSON 中解析 server 返回的响应。
 fn ipc_decode_response(line string) !IpcResponse {
 	t := line.trim_space()
 	if t.len == 0 {

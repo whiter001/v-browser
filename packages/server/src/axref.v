@@ -24,6 +24,7 @@ struct AxRef {
 	has_coords bool
 }
 
+// 清空当前 snapshot 生成的引用缓存。
 fn axref_clear(mut store AxRefStore) {
 	store.mu.@lock()
 	store.refs.clear()
@@ -38,6 +39,7 @@ fn axref_set(mut store AxRefStore, key string, r AxRef) {
 }
 
 // axref_get 查找引用，返回 Option
+// 按引用名读取缓存中的元素信息。
 fn axref_get(store &AxRefStore, key string) ?AxRef {
 	unsafe {
 		mut mu := &store.mu

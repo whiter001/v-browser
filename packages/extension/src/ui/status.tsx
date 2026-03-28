@@ -34,6 +34,7 @@ type SyncStatus =
   | { type: "success"; message: string }
   | { type: "error"; message: string };
 
+// 状态页主界面：展示连接状态、同步扩展身份和断开连接。
 const StatusApp: React.FC = () => {
   const [status, setStatus] = useState<ConnectionStatus>({
     isConnected: false,
@@ -43,10 +44,12 @@ const StatusApp: React.FC = () => {
   });
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({ type: "idle" });
 
+  // 页面挂载后立即拉取后台状态。
   useEffect(() => {
     void loadStatus();
   }, []);
 
+  // 从后台脚本读取最新连接状态并刷新 UI。
   const loadStatus = async () => {
     // Get current connection status from background script
     const { connectedTabId, extensionId, browserName } = await chrome.runtime.sendMessage({
@@ -77,6 +80,7 @@ const StatusApp: React.FC = () => {
     }
   };
 
+  // 将当前扩展身份同步到本地 server。
   const syncExtensionInfo = async () => {
     setSyncStatus({ type: "idle" });
     const relayUrl = buildRelayRegistrationUrl(getOrCreateAuthToken());
@@ -98,6 +102,7 @@ const StatusApp: React.FC = () => {
     });
   };
 
+  // 切回已连接的页面，并关闭当前状态页。
   const openConnectedTab = async () => {
     if (!status.connectedTabId) return;
     await chrome.tabs.update(status.connectedTabId, { active: true });
@@ -106,6 +111,7 @@ const StatusApp: React.FC = () => {
     });
   };
 
+  // 断开当前连接并关闭状态页。
   const disconnect = async () => {
     await chrome.runtime.sendMessage({ type: "disconnect" });
     chrome.tabs.getCurrent((tab) => {
@@ -173,10 +179,12 @@ if (container) {
   root.render(<StatusApp />);
 }
 
+// 生成用于同步扩展身份的 relay 地址。
 function buildRelayRegistrationUrl(token: string): string {
   return `ws://127.0.0.1:47978?token=${encodeURIComponent(token)}`;
 }
 
+// 从浏览器品牌信息中推断当前运行环境。
 function detectBrowserName(): string {
   const navigatorWithBrands = navigator as Navigator & {
     userAgentData?: {

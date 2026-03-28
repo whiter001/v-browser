@@ -139,6 +139,7 @@ fn get_dom_node_ref(mut sess CdpSession, sel string) !DomNodeRef {
 	}
 }
 
+// 在当前 frame 或主文档上下文中包装一段 JS。
 fn build_document_scope_js(sess &CdpSession, body string) string {
 	if sess.current_frame_selector == '' {
 		return '(function(){ var frame=null; var doc=document; var win=window; ${body} })()'
@@ -147,6 +148,7 @@ fn build_document_scope_js(sess &CdpSession, body string) string {
 	return '(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${body} })()'
 }
 
+// 生成带单个元素查询的 JS 包装器。
 fn build_element_scope_js(sess &CdpSession, sel string, body string) string {
 	query := if sel.starts_with('//') || sel.starts_with('(//') {
 		'var el=doc.evaluate(${js_str(sel)}, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;'
@@ -156,16 +158,19 @@ fn build_element_scope_js(sess &CdpSession, sel string, body string) string {
 	return build_document_scope_js(sess, '${query} ${body}')
 }
 
+// 生成带多元素查询的 JS 包装器。
 fn build_elements_scope_js(sess &CdpSession, sel string, body string) string {
 	return build_document_scope_js(sess, 'var els=doc.querySelectorAll(${js_str(sel)}); ${body}')
 }
 
+// 构造获取元素边界框的 JS 查询。
 fn build_rect_query_js(sess &CdpSession, sel string) string {
 	return build_element_scope_js(sess, sel, 'if(!el) return null; var r=el.getBoundingClientRect(); if(frame){ var fr=frame.getBoundingClientRect(); return {x:fr.x+r.x,y:fr.y+r.y,width:r.width,height:r.height}; } return r;')
 }
 
 // ─── 帮助函数 ────────────────────────────────────────────────
 
+// 从一段 JSON 文本里提取指定字段的浮点数。
 fn cdp_extract_float(s string, key string) f64 {
 	search := '"${key}":'
 	idx := s.index(search) or { return 0.0 }
@@ -177,11 +182,13 @@ fn cdp_extract_float(s string, key string) f64 {
 	return rest[..end].f64()
 }
 
+// 将字符串转换为可直接嵌入 JS 的字面量。
 fn js_str(s string) string {
 	return json_str(s) // JSON 字符串恰好也是合法 JS 字符串字面量
 }
 
 // scroll_into_view_js 返回让元素进入视野的 JS 代码片段（injectElement 用）
+// 生成把目标元素滚动到视口中央的 JS 片段。
 fn scroll_into_view_js(sel string) string {
 	return "document.querySelector(${js_str(sel)})?.scrollIntoView({block:'center',inline:'center'})"
 }

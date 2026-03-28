@@ -34,6 +34,7 @@ type Status =
 
 const SUPPORTED_PROTOCOL_VERSION = 1;
 
+// 连接页主界面：负责接收 relay 地址、展示 tab 列表并完成连接。
 const ConnectApp: React.FC = () => {
   const [tabs, setTabs] = useState<TabInfo[]>([]);
   const [status, setStatus] = useState<Status | null>(null);
@@ -43,6 +44,7 @@ const ConnectApp: React.FC = () => {
   const [mcpRelayUrl, setMcpRelayUrl] = useState("");
   const [newTab, setNewTab] = useState<boolean>(false);
 
+  // 页面加载后根据 URL 参数完成连接流程。
   useEffect(() => {
     const runAsync = async () => {
       const params = new URLSearchParams(window.location.search);
@@ -129,12 +131,14 @@ const ConnectApp: React.FC = () => {
     void runAsync();
   }, []);
 
+  // 统一处理用户拒绝或流程失败时的错误状态。
   const handleReject = useCallback((message: string) => {
     setShowButtons(false);
     setShowTabList(false);
     setStatus({ type: "error", message });
   }, []);
 
+  // 连接到本地 relay，为后续 tab 附加建立通道。
   const connectToMCPRelay = useCallback(
     async (mcpRelayUrl: string) => {
       const response = await chrome.runtime.sendMessage({ type: "connectToMCPRelay", mcpRelayUrl });
@@ -143,12 +147,14 @@ const ConnectApp: React.FC = () => {
     [handleReject],
   );
 
+  // 加载当前窗口中可连接的标签页列表。
   const loadTabs = useCallback(async () => {
     const response = await chrome.runtime.sendMessage({ type: "getTabs" });
     if (response.success) setTabs(response.tabs);
     else setStatus({ type: "error", message: "Failed to load tabs: " + response.error });
   }, []);
 
+  // 让用户选择的标签页与 relay 建立关联。
   const handleConnectToTab = useCallback(
     async (tab?: TabInfo, relayUrlOverride?: string, clientInfoOverride?: string) => {
       setShowButtons(false);
@@ -186,6 +192,7 @@ const ConnectApp: React.FC = () => {
     [clientInfo, mcpRelayUrl],
   );
 
+  // 监听后台发来的超时通知，及时关闭连接流程。
   useEffect(() => {
     const listener = (message: any) => {
       if (message.type === "connectionTimeout") handleReject("Connection timed out.");
@@ -254,6 +261,7 @@ const ConnectApp: React.FC = () => {
   );
 };
 
+// 版本不兼容时显示的替代说明页。
 const VersionMismatchError: React.FC<{ extensionVersion: string }> = ({ extensionVersion }) => {
   const readmeUrl = "https://github.com/microsoft/playwright-mcp/blob/main/extension/README.md";
   const latestReleaseUrl = "https://github.com/microsoft/playwright-mcp/releases/latest";

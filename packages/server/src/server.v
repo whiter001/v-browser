@@ -10,6 +10,7 @@ import sync
 pub const relay_port = 47978
 pub const ipc_port = 47979
 
+// 读取 relay 端口；环境变量优先，其次是配置文件，最后回退默认值。
 fn configured_relay_port() int {
 	override := get_env_with_config('V_BROWSER_RELAY_PORT').trim_space().int()
 	if override > 0 {
@@ -18,6 +19,7 @@ fn configured_relay_port() int {
 	return relay_port
 }
 
+// 读取 IPC 端口；环境变量优先，其次是配置文件，最后回退默认值。
 fn configured_ipc_port() int {
 	override := get_env_with_config('V_BROWSER_IPC_PORT').trim_space().int()
 	if override > 0 {
@@ -26,6 +28,7 @@ fn configured_ipc_port() int {
 	return ipc_port
 }
 
+// 解析 v-browser 的状态目录根路径。
 fn v_browser_home_dir() string {
 	override := os.getenv('V_BROWSER_HOME').trim_space()
 	if override != '' {
@@ -34,10 +37,12 @@ fn v_browser_home_dir() string {
 	return os.home_dir()
 }
 
+// 返回全局配置文件路径。
 fn v_browser_config_path() string {
 	return os.join_path(os.home_dir(), '.config', 'v-browser', 'config')
 }
 
+// 从 key=value 格式的配置文件读取全局配置。
 fn load_config_from_file() map[string]string {
 	mut config := map[string]string{}
 	config_path := v_browser_config_path()
@@ -61,6 +66,7 @@ fn load_config_from_file() map[string]string {
 	return config
 }
 
+// 按“环境变量 > 配置文件 > 空字符串”的顺序读取配置项。
 fn get_env_with_config(key string) string {
 	env_val := os.getenv(key).trim_space()
 	if env_val != '' {
@@ -73,26 +79,32 @@ fn get_env_with_config(key string) string {
 	return ''
 }
 
+// 返回 IPC 就绪标记文件路径。
 fn ipc_sock_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.sock')
 }
 
+// 返回连接 token 的持久化路径。
 fn token_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'token')
 }
 
+// 返回扩展 ID 的持久化路径。
 fn extension_id_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'extension_id')
 }
 
+// 返回 server 日志文件路径。
 fn server_log_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.log')
 }
 
+// 返回 pueue 任务标识缓存路径。
 fn server_task_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.task')
 }
 
+// 返回 server pid 文件路径。
 fn server_pid_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.pid')
 }
@@ -105,6 +117,7 @@ mut:
 	client_ptr voidptr // unsafe &websocket.Client，用于从其他 goroutine 向扩展发消息
 }
 
+// 向已连接的扩展转发一条 WebSocket 消息。
 fn (mut ec ExtensionConn) send(data string) ! {
 	if ec.client_ptr == 0 {
 		return error('no client')
@@ -125,6 +138,7 @@ mut:
 	running  bool
 }
 
+// 初始化 server 实例并加载连接 token。
 fn new_server() !&VBrowserServer {
 	token := load_or_create_token()!
 	return &VBrowserServer{
@@ -134,6 +148,7 @@ fn new_server() !&VBrowserServer {
 }
 
 // start 启动所有监听（阻塞，直至 WebSocket server 退出）
+// 启动 IPC 和 WebSocket 两个监听入口，并在退出后清理现场。
 fn (mut s VBrowserServer) start() ! {
 	dir := os.dir(ipc_sock_path())
 	os.mkdir_all(dir) or {}
@@ -148,6 +163,7 @@ fn (mut s VBrowserServer) start() ! {
 	os.rm(server_pid_path()) or {}
 }
 
+// 启动 WebSocket relay，用于接收扩展连接和转发 CDP 消息。
 fn (mut s VBrowserServer) run_ws_server() ! {
 	relay := configured_relay_port()
 	mut ws := websocket.new_server(.ip, relay, '', websocket.ServerOpt{})
@@ -212,6 +228,7 @@ fn (mut s VBrowserServer) run_ws_server() ! {
 	ws.listen()!
 }
 
+// 解析扩展注册消息，提取 extensionId。
 fn parse_extension_registration(raw string) string {
 	msg := cdp_parse_message(raw)
 	if msg.id != 0 || msg.method != 'registerExtension' {
@@ -220,6 +237,7 @@ fn parse_extension_registration(raw string) string {
 	return cdp_extract_str(msg.params, 'extensionId').trim_space()
 }
 
+// 启动本地 IPC 服务器，供 CLI 与 relay 侧交互。
 fn (mut s VBrowserServer) run_ipc_server() {
 	ipc := configured_ipc_port()
 	mut listener := net.listen_tcp(.ip, ':${ipc}') or {
@@ -245,6 +263,7 @@ fn (mut s VBrowserServer) run_ipc_server() {
 	srv_log('IPC server stopped.')
 }
 
+// 处理单个 IPC 连接，按行读取请求并逐条回复。
 fn (mut s VBrowserServer) handle_ipc_client(mut conn net.TcpConn) {
 	defer { conn.close() or {} }
 	conn.set_read_timeout(120 * time.second)

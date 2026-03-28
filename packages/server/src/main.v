@@ -224,6 +224,7 @@ fn reconnect_current_session() ! {
 	}
 }
 
+// 判断当前命令是否适合在重连后自动重试。
 fn should_retry_after_reconnect(method string, err_msg string) bool {
 	if method in ['connect', 'status'] {
 		return false
@@ -233,12 +234,14 @@ fn should_retry_after_reconnect(method string, err_msg string) bool {
 		|| lower.contains('cdp session is closed')
 }
 
+// 识别“已经有其他调试器附加到同一标签页”的冲突错误。
 fn is_attach_conflict_error(err_msg string) bool {
 	lower := err_msg.to_lower()
 	return lower.contains('another debugger is already attached')
 		|| lower.contains('debugger is already attached to the tab')
 }
 
+// 确保后台 server 已启动；如果 IPC 不可达则先拉起守护进程。
 fn ensure_server_running() ! {
 	if can_reach_ipc_server() {
 		return
@@ -247,6 +250,7 @@ fn ensure_server_running() ! {
 	wait_for_server_ready()!
 }
 
+// 轮询等待 server 对外可连接。
 fn wait_for_server_ready() ! {
 	deadline := time.now().add(8 * time.second)
 	for time.now() < deadline {
@@ -258,6 +262,7 @@ fn wait_for_server_ready() ! {
 	return error('v-browser server did not become ready. Check ${background_server_diagnostics_hint()}')
 }
 
+// 通过本地 IPC 标记和 TCP 连接判断 server 是否可用。
 fn can_reach_ipc_server() bool {
 	port_str := os.read_file(ipc_sock_path()) or { return false }
 	port := port_str.trim_space().int()
@@ -269,6 +274,7 @@ fn can_reach_ipc_server() bool {
 	return true
 }
 
+// 优先通过 pueue 启动后台 server，失败时回退到 nohup。
 fn start_server_daemon() ! {
 	os.mkdir_all(os.dir(server_log_path()))!
 	executable := os.executable()
@@ -293,11 +299,13 @@ fn start_server_daemon() ! {
 	}
 }
 
+// 构造 pueue 任务命令，并保留当前可执行文件所在目录。
 fn build_pueue_add_command(executable string) string {
 	work_dir := os.dir(executable)
 	return 'pueue add --immediate --print-task-id --label ${host_shell_quote('v-browser server')} --working-directory ${host_shell_quote(work_dir)} --escape ${host_shell_quote(executable)} server'
 }
 
+// 返回后台 server 的排查入口，优先给出 pueue log。
 fn background_server_diagnostics_hint() string {
 	task_id := (os.read_file(server_task_path()) or { '' }).trim_space()
 	if task_id != '' {
@@ -307,6 +315,7 @@ fn background_server_diagnostics_hint() string {
 }
 
 // ─── 停止服务 ────────────────────────────────────────────────
+// 尝试用 IPC、PID 和端口三种方式停止 server。
 fn handle_server_stop(json_output bool, allow_missing bool, emit_output bool) !bool {
 	pid := read_server_pid()
 	mut found_running_server := pid > 0 && is_process_running(pid)
@@ -363,6 +372,7 @@ fn handle_server_stop(json_output bool, allow_missing bool, emit_output bool) !b
 	return error(err_msg)
 }
 
+// 按 JSON 或普通文本输出 server 停止结果。
 fn report_server_stop(message string, json_output bool) {
 	if json_output {
 		println('{"ok":true,"result":${json_str(message)}}')
@@ -371,6 +381,7 @@ fn report_server_stop(message string, json_output bool) {
 	}
 }
 
+// 清理 server 的 pid、socket 和 pueue 任务残留。
 fn cleanup_server_runtime_state() {
 	for path in [ipc_sock_path(), server_pid_path()] {
 		os.rm(path) or {}
@@ -382,11 +393,13 @@ fn cleanup_server_runtime_state() {
 	os.write_file(server_task_path(), '') or {}
 }
 
+// 读取记录在磁盘上的 server pid。
 fn read_server_pid() int {
 	pid_str := os.read_file(server_pid_path()) or { return 0 }
 	return pid_str.trim_space().int()
 }
 
+// 检查指定 pid 是否仍在运行。
 fn is_process_running(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -400,6 +413,7 @@ fn is_process_running(pid int) bool {
 	}
 }
 
+// 跨平台终止指定进程。
 fn terminate_process(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -413,6 +427,7 @@ fn terminate_process(pid int) bool {
 	}
 }
 
+// 通过监听端口反查并终止残留的 server 进程。
 fn kill_server_by_ports() bool {
 	$if windows {
 		return false
@@ -432,6 +447,7 @@ fn kill_server_by_ports() bool {
 	}
 }
 
+// 等待 server 的进程和监听端口都退出。
 fn wait_for_server_shutdown(pid int, timeout time.Duration) bool {
 	deadline := time.now().add(timeout)
 	for time.now() < deadline {
@@ -443,6 +459,7 @@ fn wait_for_server_shutdown(pid int, timeout time.Duration) bool {
 	return server_is_stopped(pid)
 }
 
+// 判断 server 是否已经完全停止。
 fn server_is_stopped(pid int) bool {
 	if pid > 0 && is_process_running(pid) {
 		return false
@@ -450,6 +467,7 @@ fn server_is_stopped(pid int) bool {
 	return !is_port_listening(configured_relay_port()) && !is_port_listening(configured_ipc_port())
 }
 
+// 测试本地 TCP 端口是否还在监听。
 fn is_port_listening(port int) bool {
 	mut conn := net.dial_tcp('127.0.0.1:${port}') or { return false }
 	conn.close() or {}
@@ -457,6 +475,7 @@ fn is_port_listening(port int) bool {
 }
 
 // ─── 启动服务 ────────────────────────────────────────────────
+// 启动 server 主循环，并在失败时直接退出。
 fn run_server() {
 	mut s := new_server() or {
 		eprintln('Error: ${err}')
@@ -469,6 +488,7 @@ fn run_server() {
 	}
 }
 
+// 按 CLI 参数、环境变量和持久化配置的优先级解析扩展 ID。
 fn resolve_extension_id(args []string) string {
 	explicit := extract_flag_value(args, '--extension-id')
 	if explicit != '' {
@@ -483,6 +503,7 @@ fn resolve_extension_id(args []string) string {
 	return stored.trim_space()
 }
 
+// 从参数数组中提取指定 flag 的值。
 fn extract_flag_value(args []string, flag string) string {
 	mut i := 0
 	for i < args.len {
@@ -497,6 +518,7 @@ fn extract_flag_value(args []string, flag string) string {
 	return ''
 }
 
+// 将扩展 ID 持久化到本地状态目录。
 fn save_extension_id(extension_id string) ! {
 	if extension_id.trim_space() == '' {
 		return
@@ -505,12 +527,14 @@ fn save_extension_id(extension_id string) ! {
 	os.write_file(extension_id_path(), extension_id.trim_space())!
 }
 
+// 生成扩展 connect 页面所需的完整 URL。
 fn build_extension_connect_url(extension_id string, token string) string {
 	relay_url := 'ws://127.0.0.1:${configured_relay_port()}'
 	client_info := '{"name":"v-browser","version":"0.1.0"}'
 	return 'chrome-extension://${extension_id}/connect.html?mcpRelayUrl=${urllib.query_escape(relay_url)}&client=${urllib.query_escape(client_info)}&protocolVersion=1&token=${urllib.query_escape(token)}'
 }
 
+// 打开扩展 connect 页面，并返回实际使用的 URL。
 fn open_extension_connect_page(extension_id string) !string {
 	if extension_id.trim_space() == '' {
 		return error('missing extension id')
@@ -521,6 +545,7 @@ fn open_extension_connect_page(extension_id string) !string {
 	return connect_url
 }
 
+// 按平台选择可用的 Chromium 浏览器打开指定 URL。
 fn open_url_in_browser(url string) ! {
 	$if macos {
 		candidates := browser_open_candidates(get_env_with_config('V_BROWSER_BROWSER_APP').trim_space())
@@ -564,6 +589,7 @@ fn open_url_in_browser(url string) ! {
 	}
 }
 
+// 返回 macOS 下尝试打开 URL 的浏览器候选列表。
 fn browser_open_candidates(preferred string) []string {
 	mut candidates := []string{}
 	if preferred != '' {
@@ -577,10 +603,12 @@ fn browser_open_candidates(preferred string) []string {
 	return candidates
 }
 
+// 构造 macOS open 命令。
 fn build_macos_open_command(app string, url string) string {
 	return 'open -a ${shell_quote(app)} ${shell_quote(url)}'
 }
 
+// 构造 Windows start 命令。
 fn build_windows_open_command(url string, browser_app string) string {
 	if browser_app.trim_space() != '' {
 		return 'cmd /c start "" ${host_shell_quote(browser_app)} ${host_shell_quote(url)}'
@@ -588,6 +616,7 @@ fn build_windows_open_command(url string, browser_app string) string {
 	return 'cmd /c start "" ${host_shell_quote(url)}'
 }
 
+// 按宿主 shell 的规则包裹并转义参数。
 fn host_shell_quote(value string) string {
 	$if windows {
 		return '"' + value.replace('"', '""') + '"'
@@ -595,10 +624,12 @@ fn host_shell_quote(value string) string {
 	return shell_quote(value)
 }
 
+// 用单引号构造安全的 shell 字符串。
 fn shell_quote(value string) string {
 	return "'" + value.replace("'", "'\\''") + "'"
 }
 
+// 轮询等待扩展和 relay 建立连接。
 fn wait_for_extension_connection(timeout time.Duration) bool {
 	deadline := time.now().add(timeout)
 	for time.now() < deadline {
@@ -614,18 +645,22 @@ fn wait_for_extension_connection(timeout time.Duration) bool {
 	return false
 }
 
+// 判断 status 响应里是否已经有扩展连接。
 fn is_extension_connected(status string) bool {
 	return status.contains('"connected":true')
 }
 
+// 默认从标准输入读取 eval 表达式。
 fn default_eval_stdin_reader() !string {
 	return os.get_raw_lines_joined()
 }
 
+// 默认从文件读取 eval 表达式。
 fn default_eval_file_reader(path string) !string {
 	return os.read_file(path)!
 }
 
+// 统一解析 eval 输入来源，兼容 base64、stdin、文件和位置参数。
 fn resolve_eval_input(flags map[string]string, positionals []string, stdin_reader EvalStdinReader, file_reader EvalFileReader) (string, bool, string) {
 	base64_value := flags['b'] or { flags['base64'] or { 'false' } }
 	as_b64 := base64_value != 'false'
@@ -654,11 +689,13 @@ fn resolve_eval_input(flags map[string]string, positionals []string, stdin_reade
 
 // ─── CLI → IPC 参数解析 ──────────────────────────────────────
 // 将命令行参数转换为 (method, params_json) 对
+// 将 CLI 命令翻译成 IPC method/params。
 fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string) {
 	return parse_cli_to_ipc_with_readers(cmd, args, raw_output, default_eval_stdin_reader,
 		default_eval_file_reader)
 }
 
+// 带可注入输入源的 CLI 转 IPC 版本，便于测试 eval 读取逻辑。
 fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, stdin_reader EvalStdinReader, file_reader EvalFileReader) (string, string) {
 	// 解析标志位
 	mut flags := map[string]string{}

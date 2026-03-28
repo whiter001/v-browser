@@ -45,6 +45,7 @@ type PageMessage =
       tabId?: number;
     };
 
+// 过滤掉扩展页和浏览器内置页，只允许连接普通网页标签。
 function isConnectableTabUrl(url: string): boolean {
   return ![
     "chrome-extension:",
@@ -54,6 +55,7 @@ function isConnectableTabUrl(url: string): boolean {
   ].some((scheme) => url.startsWith(scheme));
 }
 
+// 背景脚本：管理 relay 连接、目标 tab 选择和 badge 状态。
 class TabShareExtension {
   private _activeConnection: RelayConnection | undefined;
   private _connectedTabId: number | null = null;
@@ -70,7 +72,7 @@ class TabShareExtension {
     chrome.action.onClicked.addListener(this._onActionClicked.bind(this));
   }
 
-  // Promise-based message handling is not supported in Chrome: https://issues.chromium.org/issues/40753031
+  // Chrome 仍然不支持直接返回 Promise 的消息处理器。
   private _onMessage(
     message: PageMessage,
     sender: chrome.runtime.MessageSender,
@@ -130,6 +132,7 @@ class TabShareExtension {
     return false;
   }
 
+  // 先连上 relay，但暂不绑定 tab，等待用户选择或自动选择目标页。
   private async _connectToRelay(selectorTabId: number, mcpRelayUrl: string): Promise<void> {
     try {
       debugLog(`Connecting to relay at ${mcpRelayUrl}`);
@@ -155,6 +158,7 @@ class TabShareExtension {
     }
   }
 
+  // 根据显式参数、当前窗口和发送者 tab 解析最终目标页。
   private async _resolveTargetTab(
     sender: chrome.runtime.MessageSender,
     requestedTabId?: number,
@@ -183,6 +187,7 @@ class TabShareExtension {
     throw new Error("No target tab available for extension connection");
   }
 
+  // 将 relay 连接切换到选中的 tab，并更新当前 badge 状态。
   private async _connectTab(
     selectorTabId: number,
     tabId: number,
@@ -234,6 +239,7 @@ class TabShareExtension {
     }
   }
 
+  // 记录当前激活的 relay 连接，并接管关闭回调。
   private _installActiveConnection(connection: RelayConnection): void {
     this._activeConnection = connection;
     connection.onclose = () => {
@@ -244,6 +250,7 @@ class TabShareExtension {
     };
   }
 
+  // 同步当前已连接 tab，并更新扩展图标角标。
   private async _setConnectedTabId(tabId: number | null): Promise<void> {
     const oldTabId = this._connectedTabId;
     this._connectedTabId = tabId;
@@ -256,6 +263,7 @@ class TabShareExtension {
       });
   }
 
+  // 更新扩展图标上的 badge 和 tooltip。
   private async _updateBadge(
     tabId: number,
     { text, color, title }: { text: string; color?: string; title?: string },
@@ -269,6 +277,7 @@ class TabShareExtension {
     }
   }
 
+  // 目标 tab 被关闭时，清理 pending/active 连接。
   private async _onTabRemoved(tabId: number): Promise<void> {
     const pendingConnection = this._pendingTabSelection.get(tabId)?.connection;
     if (pendingConnection) {
@@ -282,6 +291,7 @@ class TabShareExtension {
     this._connectedTabId = null;
   }
 
+  // 只允许短时间内保持待选 tab，避免用户长时间无操作。
   private _onTabActivated(activeInfo: chrome.tabs.TabActiveInfo) {
     for (const [tabId, pending] of this._pendingTabSelection) {
       if (tabId === activeInfo.tabId) {
@@ -304,6 +314,7 @@ class TabShareExtension {
     }
   }
 
+  // 当前已连接 tab 更新时，重新刷新 badge 状态。
   private _onTabUpdated(
     tabId: number,
     _changeInfo: chrome.tabs.TabChangeInfo,
@@ -312,6 +323,7 @@ class TabShareExtension {
     if (this._connectedTabId === tabId) void this._setConnectedTabId(tabId);
   }
 
+  // 获取可连接的普通网页标签列表。
   private async _getTabs(): Promise<chrome.tabs.Tab[]> {
     const tabs = await chrome.tabs.query({});
     return tabs.filter(
@@ -319,6 +331,7 @@ class TabShareExtension {
     );
   }
 
+  // 点击扩展图标时打开状态页。
   private async _onActionClicked(): Promise<void> {
     await chrome.tabs.create({
       url: chrome.runtime.getURL("status.html"),
@@ -326,12 +339,14 @@ class TabShareExtension {
     });
   }
 
+  // 主动断开当前连接并清空连接状态。
   private async _disconnect(): Promise<void> {
     this._activeConnection?.close("User disconnected");
     this._activeConnection = undefined;
     await this._setConnectedTabId(null);
   }
 
+  // 将扩展身份同步到本地 server，兼容主动连接和手动同步两种路径。
   private async _syncExtensionRegistration(mcpRelayUrl?: string): Promise<{
     extensionId: string;
     browserName: string;
@@ -397,6 +412,7 @@ class TabShareExtension {
   }
 }
 
+// 从 userAgent / UA-CH 中推断浏览器名称。
 function detectBrowserName(): string {
   const navigatorWithBrands = navigator as Navigator & {
     userAgentData?: {

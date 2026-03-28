@@ -24,6 +24,7 @@ export interface TabInfo {
   favIconUrl?: string;
 }
 
+// 统一的按钮样式封装，供 connect/status 两个页面复用。
 export const Button: React.FC<{
   variant: "primary" | "default" | "reject";
   onClick: () => void;
@@ -42,6 +43,7 @@ export interface TabItemProps {
   button?: React.ReactNode;
 }
 
+// 标签页卡片，展示标题、URL 和可选操作按钮。
 export const TabItem: React.FC<TabItemProps> = ({ tab, onClick, button }) => {
   return (
     <div className="tab-item" onClick={onClick} style={onClick ? { cursor: "pointer" } : undefined}>
