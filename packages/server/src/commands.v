@@ -139,6 +139,38 @@ fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) 
 	return cdp_extract_value_from_result(result)
 }
 
+// Short-timeout (3 s) variant for use during dialog-triggering actions to avoid
+// blocking the whole CLI when the CDP session is frozen by a synchronous alert/prompt.
+fn eval_scoped_expression_short(mut sess CdpSession, expr string) !string {
+	encoded_expr := base64.encode_str(expr)
+	scoped_expr := build_scoped_runtime_js(&sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
+	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":false}'
+	resp := sess.send_command_to('Runtime.evaluate', p, '', 3 * time.second)!
+	result := cdp_extract_obj_key(resp.result, '"result":')
+	return cdp_extract_value_from_result(result)
+}
+
+// Run element action with a short (3 s) timeout — used when the action may
+// trigger a blocking dialog so we do not want to wait the full CDP timeout.
+fn run_element_action_short(mut sess CdpSession, sel string, body string) ! {
+	query := if sel.starts_with('//') || sel.starts_with('(//') {
+		'var el=doc.evaluate(${js_str(sel)}, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;'
+	} else {
+		'var el=doc.querySelector(${js_str(sel)});'
+	}
+	js := if sess.current_frame_selector == '' {
+		'(function(){ var frame=null; var doc=document; var win=window; ${query} if(el === null) return false; ${body} })()'
+	} else {
+		frame_sel := js_str(sess.current_frame_selector)
+		'(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${query} if(el === null) return false; ${body} })()'
+	}
+	result := eval_scoped_expression_short(mut sess, js)!
+	ok := result == 'true'
+	if !ok {
+		return error('element not found: ${sel}')
+	}
+}
+
 fn resolve_object_id_by_selector(mut sess CdpSession, sel string) !string {
 	js := build_scoped_runtime_js(&sess, 'return document.querySelector(${js_str(sel)});')
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}')!
@@ -1409,8 +1441,13 @@ fn cmd_click(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	run_element_action(mut sess, sel, build_click_action_body()) or {
-		pointer_action_for_selector(mut sess, sel, 'click') or { return 'ERROR:${err}' }
+	// Prefer CDP mouse events first — they do not block on dialogs.
+	// JS el.click() can freeze the CDP session when it triggers a
+	// window.alert / window.prompt because those are synchronous in Blink.
+	pointer_action_for_selector(mut sess, sel, 'click') or {
+		run_element_action(mut sess, sel, build_click_action_body()) or {
+			return 'ERROR:${err}'
+		}
 	}
 	return 'null'
 }
@@ -4464,6 +4501,22 @@ fn cmd_dialog(mut sess CdpSession, params string) string {
 			sess.enable_page_events() or { return 'ERROR:${err}' }
 			handle_dialog_with_retry(mut sess, '{"accept":false}') or { return 'ERROR:${err}' }
 		}
+		'wait' {
+			// Wait for a dialog to appear (up to timeout ms, default 5000).
+			timeout_ms := cdp_extract_int(params, '"timeout":')
+			mut timeout := if timeout_ms > 0 { time.millisecond * time.Duration(timeout_ms) } else { 5 * time.second }
+			sess.enable_page_events() or { return 'ERROR:${err}' }
+			deadline := time.now().add(timeout)
+			for time.now() < deadline {
+				for ev in sess.dialog_events {
+					if ev.contains('javascriptDialogOpening') {
+						return 'true'
+					}
+				}
+				time.sleep(50 * time.millisecond)
+			}
+			return 'false'
+		}
 		else {
 			return 'ERROR:unknown dialog action: ${action}'
 		}
@@ -4473,11 +4526,29 @@ fn cmd_dialog(mut sess CdpSession, params string) string {
 
 fn handle_dialog_with_retry(mut sess CdpSession, params string) ! {
 	mut last_err := ''
-	for _ in 0 .. 10 {
+	// First, poll for a dialog-opening event (up to 3 s).  When the trigger
+	// click is dispatched via CDP Input.dispatchMouseEvent the CDP message
+	// returns immediately, so the browser receives the click and shows the
+	// dialog in its own event loop — we just need to wait for the
+	// Page.javascriptDialogOpening event to arrive before we call
+	// Page.handleJavaScriptDialog, otherwise it fails with "No dialog is showing".
+	mut event_deadline := time.now().add(3 * time.second)
+	for time.now() < event_deadline {
+		if sess.dialog_events.len > 0 {
+			for ev in sess.dialog_events {
+				if ev.contains('javascriptDialogOpening') {
+					event_deadline = time.now() // dialog is open, stop waiting
+					break
+				}
+			}
+		}
+		time.sleep(50 * time.millisecond)
+	}
+	for i := 0; i < 30; i++ {
 		sess.send_command('Page.handleJavaScriptDialog', params) or {
 			last_err = err.msg()
 			if last_err.contains('No dialog is showing') {
-				time.sleep(100 * time.millisecond)
+				time.sleep(200 * time.millisecond)
 				continue
 			}
 			return error(last_err)
