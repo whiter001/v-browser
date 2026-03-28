@@ -162,6 +162,10 @@ mut:
 	console_msgs  []string
 	page_errors   []string
 	dialog_events []string
+	// network route 状态
+	route_ch      chan ProtocolResponse
+	route_stop_ch chan bool
+	has_route     bool
 }
 
 fn new_cdp_session(send_fn fn (string) !) &CdpSession {

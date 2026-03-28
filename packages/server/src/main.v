@@ -787,7 +787,9 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			interactive := flags['interactive'] or { 'false' }
 			// maxNodes 限制最终输出的引用总数，AX Tree 和补全共享同一预算。
 			max_nodes := flags['maxNodes'] or { '0' }
-			return 'snapshot', '{"raw":${raw},"extra":${extra},"interactive":${interactive},"maxNodes":${max_nodes}}'
+			// selector 限制快照范围到指定元素子树。
+			sel_filter := flags['selector'] or { flags['sel'] or { '' } }
+			return 'snapshot', '{"raw":${raw},"extra":${extra},"interactive":${interactive},"maxNodes":${max_nodes},"selector":${json_str(sel_filter)}}'
 		}
 		// ── 元素操作 ──
 		'click' {
@@ -997,6 +999,10 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			}
 			if fn_e := flags['fn'] {
 				return 'wait', '{"fn":${json_str(fn_e)}}'
+			}
+			if stable := flags['stable'] {
+				timeout := flags['timeout'] or { '30000' }
+				return 'wait', '{"stable":${json_str(stable)},"timeout":${timeout}}'
 			}
 			return 'wait', '{"ms":"1000"}'
 		}

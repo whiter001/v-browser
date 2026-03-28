@@ -1027,6 +1027,93 @@ const snapshot_interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'ra
 	'definition', 'directory', 'document', 'feed', 'figure', 'log', 'marquee', 'math', 'note',
 	'progressbar', 'status', 'table', 'term', 'timer', 'tooltip', 'tree']
 
+// parse_json_string_array 解析简单的 JSON 字符串数组 ["a","b"]
+fn parse_json_string_array(json string) []string {
+	mut result := []string{}
+	if !json.starts_with('[') {
+		return result
+	}
+	mut i := 1
+	for i < json.len {
+		if json[i] == `"` {
+			j := json.index_after('"', i + 1) or { break }
+			result << json[i + 1..j]
+			i = j + 1
+		} else {
+			i++
+		}
+	}
+	return result
+}
+
+// get_backend_node_id_for_selector 通过 CSS 选择器获取元素的 backendNodeId
+fn get_backend_node_id_for_selector(mut sess CdpSession, sel string) !int {
+	doc_resp := sess.send_command('DOM.getDocument', '{"depth":0}')!
+	root_node_id := cdp_extract_int(doc_resp.result, '"nodeId":')
+	if root_node_id == 0 {
+		return error('could not get document root')
+	}
+	qs_resp := sess.send_command('DOM.querySelector', '{"nodeId":${root_node_id},"selector":${json_str(sel)}}')!
+	target_node_id := cdp_extract_int(qs_resp.result, '"nodeId":')
+	if target_node_id == 0 {
+		return error('selector not found: ${sel}')
+	}
+	desc_resp := sess.send_command('DOM.describeNode', '{"nodeId":${target_node_id}}')!
+	bnid := cdp_extract_int(desc_resp.result, '"backendNodeId":')
+	return bnid
+}
+
+// collect_ax_subtree_bnids 从 AX tree JSON 中收集属于给定 backendNodeId 子树的所有 backendDOMNodeId
+fn collect_ax_subtree_bnids(nodes_json string, target_bnid int) map[int]bool {
+	mut node_bnid := map[string]int{}
+	mut node_children := map[string][]string{}
+	mut root_ax_id := ''
+	mut pos := 1
+	mut safety := 0
+	for pos < nodes_json.len - 1 {
+		if nodes_json[pos] == `{` {
+			node_str := cdp_balanced(nodes_json[pos..])
+			ax_id := cdp_extract_str(node_str, 'nodeId')
+			bnid := cdp_extract_int(node_str, '"backendDOMNodeId":')
+			child_ids_json := cdp_extract_obj_key(node_str, '"childIds":')
+			if ax_id != '' {
+				node_bnid[ax_id] = bnid
+				node_children[ax_id] = parse_json_string_array(child_ids_json)
+				if bnid == target_bnid {
+					root_ax_id = ax_id
+				}
+			}
+			pos += node_str.len
+		} else {
+			pos++
+		}
+		safety++
+		if safety > 10000 {
+			break
+		}
+	}
+	if root_ax_id == '' {
+		return map[int]bool{}
+	}
+	mut allowed := map[int]bool{}
+	mut queue := [root_ax_id]
+	for queue.len > 0 {
+		cur_id := queue[0]
+		queue = unsafe { queue[1..] }
+		if bnid := node_bnid[cur_id] {
+			if bnid > 0 {
+				allowed[bnid] = true
+			}
+		}
+		if children := node_children[cur_id] {
+			for child_id in children {
+				queue << child_id
+			}
+		}
+	}
+	return allowed
+}
+
 fn cmd_snapshot(mut sess CdpSession, params string) string {
 	// 解析参数
 	raw := cdp_extract_bool(params, 'raw')
@@ -1034,6 +1121,8 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 	extra := cdp_extract_bool(params, 'extra') || cdp_extract_bool(params, 'interactive')
 	// maxNodes 限制的是最终返回的引用总数，AX Tree 和补全共用同一预算。
 	max_nodes := cdp_extract_int(params, 'maxNodes')
+	// --selector 限剑对指定元素子树进行快照
+	filter_selector := cdp_extract_str(params, 'selector')
 
 	resp := sess.send_command('Accessibility.getFullAXTree', '{}') or { return 'ERROR:${err}' }
 	nodes_json := cdp_extract_obj_key(resp.result, '"nodes":')
@@ -1041,14 +1130,27 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 		return 'ERROR:no AX tree returned'
 	}
 
+	// 如果指定了 selector，先获取目标元素的 backendNodeId，再收集子树节点 ID
+	mut filter_bnids := map[int]bool{}
+	if filter_selector != '' {
+		target_bnid := get_backend_node_id_for_selector(mut sess, filter_selector) or {
+			return 'ERROR:${err}'
+		}
+		filter_bnids = collect_ax_subtree_bnids(nodes_json, target_bnid)
+		if filter_bnids.len == 0 {
+			return 'ERROR:selector matched no accessible nodes: ${filter_selector}'
+		}
+	}
+
 	axref_clear(mut sess.axref)
 	mut out := strings.new_builder(4096)
 	out.write_string('= Accessibility Snapshot =\n')
-	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref, extra, max_nodes)
+	ax_out, next_counter := render_ax_tree(nodes_json, 1, mut sess.axref, extra, max_nodes,
+		filter_bnids)
 	out.write_string(ax_out)
 
 	// extra 模式下才会在 AX Tree 之外附加 cursor-interactive 补全。
-	if extra {
+	if extra && filter_selector == '' {
 		remaining := if max_nodes > 0 { max_nodes - (next_counter - 1) } else { 0 }
 		if max_nodes == 0 || remaining > 0 {
 			cursor_limit := if max_nodes > 0 { remaining } else { 0 }
@@ -1073,7 +1175,7 @@ fn cmd_snapshot(mut sess CdpSession, params string) string {
 }
 
 fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, include_extra bool,
-	max_nodes int) (string, int) {
+	max_nodes int, filter_bnids map[int]bool) (string, int) {
 	mut out := strings.new_builder(4096)
 	mut counter := start_counter
 	mut pos := 1 // skip opening '['
@@ -1088,6 +1190,16 @@ fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, in
 			role := ax_prop(node_str, 'role')
 			name := ax_prop(node_str, 'name')
 			bnid := cdp_extract_int(node_str, '"backendDOMNodeId":')
+
+			// 如果指定了 selector 过滤，跳过不属于子树的节点
+			if filter_bnids.len > 0 && (bnid == 0 || filter_bnids[bnid] == false) {
+				pos += node_str.len
+				i++
+				if i > 10000 {
+					break
+				}
+				continue
+			}
 
 			// extra 模式只保留明确可交互的角色；默认模式则保留更多可读节点。
 			should_include := if include_extra {
@@ -1503,7 +1615,7 @@ fn cmd_select(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	js := build_element_scope_js(&sess, sel, 'if(!el) return false; el.value=${js_str(value)}; el.dispatchEvent(new Event("change",{bubbles:true})); return true;')
+	js := build_element_scope_js(&sess, sel, 'if(!el) return false; el.value=${js_str(value)}; el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true})); return true;')
 	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 		return 'ERROR:${err}'
 	}
@@ -1688,10 +1800,39 @@ fn cmd_is(mut sess CdpSession, params string) string {
 	}
 
 	js := match state {
-		'visible' { build_element_scope_js(&sess, sel, "if(!el) return false; var r=el.getBoundingClientRect(); return r.width>0&&r.height>0&&getComputedStyle(el).visibility!=='hidden'&&getComputedStyle(el).display!=='none';") }
-		'enabled' { build_element_scope_js(&sess, sel, 'return !el?.disabled;') }
-		'checked' { build_element_scope_js(&sess, sel, 'return !!el?.checked;') }
-		else { return 'ERROR:unknown state: ${state}' }
+		// visible：排除 visibility:hidden、display:none、opacity:0 以及零尺寸元素
+		'visible' {
+			build_element_scope_js(&sess, sel, "if(!el) return false; var r=el.getBoundingClientRect(); if(r.width<=0||r.height<=0) return false; var s=getComputedStyle(el); return s.visibility!=='hidden'&&s.display!=='none'&&s.opacity!=='0';")
+		}
+		'enabled' {
+			build_element_scope_js(&sess, sel, 'return !el?.disabled;')
+		}
+		'checked' {
+			build_element_scope_js(&sess, sel, 'return !!el?.checked;')
+		}
+		// disabled
+		'disabled' {
+			build_element_scope_js(&sess, sel, 'return !!el?.disabled;')
+		}
+		// focused：是否是当前获得焦点的元素
+		'focused' {
+			build_element_scope_js(&sess, sel, 'return el === doc.activeElement;')
+		}
+		// selected：option 被选中 或 aria-selected=true
+		'selected' {
+			build_element_scope_js(&sess, sel, "return el?.selected === true || el?.getAttribute('aria-selected') === 'true';")
+		}
+		// editable：可编辑（非只读、非禁用)
+		'editable' {
+			build_element_scope_js(&sess, sel, "if(!el) return false; if(el.disabled) return false; if(el.readOnly) return false; return el.isContentEditable || 'value' in el;")
+		}
+		// expanded：aria-expanded=true
+		'expanded' {
+			build_element_scope_js(&sess, sel, "return el?.getAttribute('aria-expanded') === 'true';")
+		}
+		else {
+			return 'ERROR:unknown state: ${state}'
+		}
 	}
 
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
@@ -1728,6 +1869,16 @@ fn cmd_wait(mut sess CdpSession, params string) string {
 			}
 		}
 		return json_str(final_path)
+	}
+	// wait --stable
+	stable := cdp_extract_str(params, 'stable')
+	if stable != '' {
+		stable_timeout := if timeout_ms > 0 {
+			timeout_ms * time.millisecond
+		} else {
+			30 * time.second
+		}
+		return wait_stable(mut sess, stable, stable_timeout)
 	}
 	// wait --load
 	load := cdp_extract_str(params, 'load')
@@ -1864,6 +2015,38 @@ fn wait_selector(mut sess CdpSession, sel string) string {
 	return 'ERROR:timeout waiting for selector ${sel}'
 }
 
+// wait_stable 连续两次读取内容相同则认为元素内容已稳定
+fn wait_stable(mut sess CdpSession, sel string, timeout time.Duration) string {
+	deadline := time.now().add(timeout)
+	poll_interval := 300 * time.millisecond
+	settled_threshold := 2 // 连续相同次数
+	js := build_element_scope_js(&sess, sel, "if(!el) return null; return el.innerText||el.value||'';")
+	mut last_val := ''
+	mut stable_count := 0
+	for time.now() < deadline {
+		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
+			break
+		}
+		result := cdp_extract_obj_key(resp.result, '"result":')
+		cur_val := cdp_extract_value_from_result(result)
+		if cur_val == 'null' || cur_val == '' {
+			time.sleep(poll_interval)
+			continue
+		}
+		if cur_val == last_val {
+			stable_count++
+			if stable_count >= settled_threshold {
+				return 'null'
+			}
+		} else {
+			last_val = cur_val
+			stable_count = 1
+		}
+		time.sleep(poll_interval)
+	}
+	return 'ERROR:timeout waiting for ${sel} to stabilize'
+}
+
 // ─── find（语义定位器）──────────────────────────────────────
 fn cmd_find(mut sess CdpSession, params string) string {
 	locator := cdp_extract_str(params, 'locator')
@@ -1955,12 +2138,6 @@ fn build_semantic_text_report_js(sess &CdpSession, query string, exact bool, sel
 		}
 		function candidateText(el) {
 			return normalizeText(el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("alt") || "");
-		}
-		function matchesText(actual, expected, exactMatch) {
-			var left = normalizeText(actual);
-			var right = normalizeText(expected);
-			if (!right) return false;
-			return exactMatch ? left === right : left.toLowerCase().includes(right.toLowerCase());
 		}
 		function roleOf(el) {
 			if (!el) return "";
@@ -2691,19 +2868,29 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			url := cdp_extract_str(params, 'url')
 			abort := cdp_extract_str(params, 'abort') == 'true'
 			body := cdp_extract_str(params, 'body')
+			// 如果已存在 route，先停止旧 goroutine 并取消订阅
+			if sess.has_route {
+				sess.route_stop_ch <- true
+				sess.unsubscribe('Fetch.requestPaused', sess.route_ch)
+				sess.has_route = false
+			}
 			// 启用 Fetch 拦截
 			sess.send_command('Fetch.enable', '{"patterns":[{"urlPattern":${json_str(url)}}]}') or {
 				return 'ERROR:${err}'
 			}
 			// 订阅 Fetch.requestPaused 事件并处理
 			ch := sess.subscribe('Fetch.requestPaused')
-			spawn fn [mut sess, ch, abort, body] () {
+			stop_ch := chan bool{cap: 1}
+			sess.route_ch = ch
+			sess.route_stop_ch = stop_ch
+			sess.has_route = true
+			spawn fn [mut sess, ch, stop_ch, abort, body] () {
 				for {
 					select {
 						evt := <-ch {
 							request_id := cdp_extract_str(evt.params, 'requestId')
 							if request_id == '' {
-								break
+								continue
 							}
 							if abort {
 								sess.send_command('Fetch.failRequest', '{"requestId":${json_str(request_id)},"errorReason":"Aborted"}') or {}
@@ -2713,7 +2900,7 @@ fn cmd_network(mut sess CdpSession, params string) string {
 								sess.send_command('Fetch.continueRequest', '{"requestId":${json_str(request_id)}}') or {}
 							}
 						}
-						else {
+						_ := <-stop_ch {
 							break
 						}
 					}
@@ -2753,6 +2940,12 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			}
 		}
 		'unroute' {
+			// 停止 route goroutine 并取消订阅
+			if sess.has_route {
+				sess.route_stop_ch <- true
+				sess.unsubscribe('Fetch.requestPaused', sess.route_ch)
+				sess.has_route = false
+			}
 			sess.send_command('Fetch.disable', '{}') or { return 'ERROR:${err}' }
 			return 'null'
 		}
