@@ -95,6 +95,11 @@ fn main() {
 		print_error(err.msg(), json_output)
 		exit(1)
 	}
+	// Server 侧把可恢复/可提示的命令错误封装成 ERROR:，这里统一转成真正的错误输出。
+	if is_cli_error_result(result) {
+		print_error(cli_error_message(result), json_output)
+		exit(1)
+	}
 	// status 命令：未连接时显示友好提示
 	if method == 'status' && !json_output && result.contains('"connected":false') {
 		eprintln('Not connected. Run `v-browser connect` to connect.')

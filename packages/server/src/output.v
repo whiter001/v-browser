@@ -60,6 +60,19 @@ fn print_error(message string, json_output bool) {
 	}
 }
 
+// 识别 server 返回的 CLI 错误包装，避免把 ERROR: 前缀当作普通结果输出。
+fn is_cli_error_result(result string) bool {
+	return result.starts_with('ERROR:')
+}
+
+// 去掉 ERROR: 前缀，保留原始错误消息，交给统一的错误码/建议生成逻辑处理。
+fn cli_error_message(result string) string {
+	if result.starts_with('ERROR:') && result.len > 6 {
+		return result[6..].trim_space()
+	}
+	return result.trim_space()
+}
+
 // 尽量把原始字符串保持为 JSON 字面量，否则按普通字符串转义。
 fn json_value_or_string(value string) string {
 	trimmed := value.trim_space()
@@ -130,6 +143,10 @@ fn error_code(message string) string {
 // 为常见错误消息生成可操作的修复建议。
 fn error_suggestion(message string) string {
 	msg := message.to_lower()
+	// 命令名或子命令拼错时，先把用户导回帮助入口，再给出更精确的子命令帮助。
+	if msg.contains('unknown command') || msg.contains('unknown action') || msg.contains('unsupported subcommand') {
+		return 'Run v-browser --help to see the full command list, then use v-browser <command> --help for syntax details.'
+	}
 	if msg.contains('debugger conflict') || msg.contains('another debugger is already attached') {
 		return 'Close any other CDP sessions (Chrome DevTools, other automation tools) attached to the same tab, then run v-browser connect again.'
 	}
@@ -159,7 +176,7 @@ fn error_suggestion(message string) string {
 		return 'Verify the relay server and extension are running, then run v-browser connect again.'
 	}
 	if msg.contains('invalid ') || msg.contains('missing ') || msg.contains('requires ') {
-		return 'Check the command arguments and try again. Use v-browser --help or the command reference if the syntax is unclear.'
+		return 'Check the command arguments and try again. Use v-browser --help for the command list, or v-browser <command> --help for the exact syntax.'
 	}
 	return ''
 }

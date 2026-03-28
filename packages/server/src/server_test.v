@@ -1114,11 +1114,20 @@ fn test_error_suggestion_maps_common_failures() {
 	assert error_suggestion('no extension connected') == 'Run v-browser connect after syncing the extension id. If the extension page is already open, switch to a normal webpage tab before reconnecting.'
 	assert error_suggestion('element not found: #missing') == 'Check the selector or target tab. Use v-browser snapshot to inspect the current page, or use find --list / find --debug to review semantic candidates.'
 	assert error_suggestion('ambiguous text match: Run workflow') == 'Use find --index to select a specific candidate, or add --name / --exact to narrow the match.'
+	assert error_suggestion('unknown command: frobnicate').contains('v-browser --help')
+	assert error_suggestion('unsupported subcommand: foo').contains('v-browser <command> --help')
 	assert error_suggestion('CDP command timed out') == 'Wait for the page to finish loading, or increase the command timeout if the page is expected to take longer.'
 	assert error_suggestion('verification failed: expected foo, got bar') == 'Check whether the target element actually changed. If the page is dynamic, increase --verify-timeout or verify a more stable state.'
 	assert error_suggestion('failed to start v-browser server') == 'Check the server log, then try v-browser server restart or v-browser status to verify the daemon is healthy.'
 	assert error_suggestion('Debugger conflict: another debugger is already attached') == 'Close any other CDP sessions (Chrome DevTools, other automation tools) attached to the same tab, then run v-browser connect again.'
 	assert error_suggestion('No available tab: no tab is currently accessible') == 'Switch to a normal webpage tab (not the extension page), then run v-browser connect again.'
+}
+
+fn test_cli_error_result_helpers_extract_messages() {
+	assert is_cli_error_result('ERROR:missing selector')
+	assert cli_error_message('ERROR:missing selector') == 'missing selector'
+	assert !is_cli_error_result('{"ok":true}')
+	assert cli_error_message('plain text') == 'plain text'
 }
 
 fn test_should_retry_after_reconnect_for_connection_failures() {
