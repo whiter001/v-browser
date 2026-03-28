@@ -177,13 +177,18 @@ Chrome Tab (CDP 1.3)
 - [ ] **P8-32** 再验证 `uitestingplayground.com` 的定位消歧和动态 DOM 场景
 - [ ] **P8-33** 再验证 `testpages.eviltester.com` 的 dialog、frame、upload、storage 场景
 - [ ] **P8-34** 再验证 `selenium.dev` 表单页的标准输入和提交流程
-- [ ] **P8-35** 再验证 GitHub 公共页和 X / Twitter 公共页的真实 SPA 场景
-- [ ] **P8-36** 再验证一个公开表单站点、一个 iframe demo、一个长列表站点、一个电商 demo
+- [x] **P8-35** 再验证 GitHub 公共页和 X / Twitter 公共页的真实 SPA 场景
+- [x] **P8-36** 再验证一个公开表单站点、一个 iframe demo、一个长列表站点、一个电商 demo
 
 ### 8.8 实测观察
 
 - [x] **P8-37** X 搜索页上，`find role tab click --name` 可稳定切换 `最新`、`用户` 这类结果分类
-- [x] **P8-38** `the-internet.herokuapp.com/add_remove_elements/` 上，`find text` + `click` 可稳定完成新增与删除闭环
+- [x] **P8-38** `the-internet.herokuapp.com/add_remove_elements/` 上，`find text "Add Element" click` 添加，`find text "Delete" click --index 0` 删除；动态元素类名 `added-manually`；重复 Delete 按钮需 `--index 0`
 - [x] **P8-39** `selenium.dev/selenium/web/web-form.html` 上，`fill`、`select`、`upload` 可稳定驱动文本框、文本域、下拉框和文件输入
 - [x] **P8-40** `select` 命令当前按 option `value` 生效，不是按可见文本匹配；例如 `Two` 对应值是 `2`
 - [x] **P8-41** 外站导航时的 frame 上下文残留已通过 `open` 导航后清理 `currentFrameSelector` 解决；后续继续观察是否还存在真实的 `session closed` 超时问题
+- [x] **P8-42** `uitestingplayground.com/dynamicid`：`find text "Button with Dynamic ID" click` 稳定；`click '.btn-primary'` 稳定（按钮无状态变化故从文本无法观测，但点击无报错）
+- [x] **P8-43** `uitestingplayground.com/alerts`：`find text "Alert" click --index 0` + 后台触发 + `dialog accept` 成功关闭弹窗；Confirm 和 Prompt 流程相同
+- [x] **P8-44** `testpages.eviltester.com`：Alerts JS (`find text "Show alert box" click` + 后台触发 + `dialog accept`)、Frames (`frame 'frame[name="top"]'` ✅、`frame 'frame[name="left"]'` ✅、`frame main` ✅)、File Upload (`upload '#fileinput' <path>` ✅，`phase:selected`)、Storage (`storage set/get` ✅) 均验证通过
+- [x] **P8-45** GitHub + X.com SPA：`goto` 直接 URL 跳转到 Issues 列表 ✅、`snapshot`/`eval` 正常读取 ✅；X.com 首页加载正常，显示"为你推荐"、"正在关注"等 SPA 内容 ✅；GitHub Issues 面包屑文本不是链接，需用 `goto` 直接 URL
+- [x] **P8-46** 表单/iframe/列表/电商：w3schools iframe 演示页 ✅、`frame` 命令因 iframe 无 name 属性无法定位（`<iframe>` 在 AX tree 中可见，但 CSS 属性选择器无法匹配）；Hacker News 长列表 ✅（30 条标题 `document.querySelectorAll(".titleline").length`）；Shopify ✅ 和 Amazon ✅ 首页加载正常
