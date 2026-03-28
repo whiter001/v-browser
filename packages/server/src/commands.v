@@ -150,7 +150,18 @@ fn resolve_object_id_by_selector(mut sess CdpSession, sel string) !string {
 }
 
 fn run_element_action(mut sess CdpSession, sel string, body string) ! {
-	js := build_element_scope_js(&sess, sel, 'if(el === null) return false; ${body}')
+	// Build a self-contained page script so selector lookup and event dispatch run in the same DOM scope.
+	query := if sel.starts_with('//') || sel.starts_with('(//') {
+		'var el=doc.evaluate(${js_str(sel)}, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;'
+	} else {
+		'var el=doc.querySelector(${js_str(sel)});'
+	}
+	js := if sess.current_frame_selector == '' {
+		'(function(){ var frame=null; var doc=document; var win=window; ${query} if(el === null) return false; ${body} })()'
+	} else {
+		frame_sel := js_str(sess.current_frame_selector)
+		'(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${query} if(el === null) return false; ${body} })()'
+	}
 	result := eval_scoped_expression(mut sess, js, false)!
 	ok := result == 'true'
 	if !ok {
@@ -430,6 +441,7 @@ fn cmd_open(mut sess CdpSession, params string) string {
 	if url == '' {
 		return 'ERROR:missing url'
 	}
+	clear_document_context(mut sess)
 	// 订阅 loadEventFired
 	load_ch := sess.subscribe('Page.loadEventFired')
 	defer { sess.unsubscribe('Page.loadEventFired', load_ch) }
@@ -440,7 +452,14 @@ fn cmd_open(mut sess CdpSession, params string) string {
 		_ := <-load_ch {}
 		30 * time.second {}
 	}
+	clear_document_context(mut sess)
 	return json_str('navigated to ${url}')
+}
+
+fn clear_document_context(mut sess CdpSession) {
+	// Navigation must drop any stale frame or AX state so the next page starts from the main document.
+	sess.current_frame_selector = ''
+	axref_clear(mut sess.axref)
 }
 
 // ─── close ──────────────────────────────────────────────────
@@ -945,13 +964,14 @@ fn screenshot_diff_js(baseline_b64 string, baseline_mime string, current_b64 str
 		'  function load(src){ return new Promise(function(resolve,reject){ var img=new Image(); img.onload=function(){ resolve(img); }; img.onerror=function(){ reject(new Error("image decode failed")); }; img.src=src; }); }\n' +
 		'  var images = await Promise.all([load(baselineSrc), load(currentSrc)]);\n' +
 		'  var a = images[0];\n' + '  var b = images[1];\n' +
-		'  if (a.naturalWidth !== b.naturalWidth || a.naturalHeight !== b.naturalHeight) { return { ok:false, error:"dimension mismatch", width:b.naturalWidth, height:b.naturalHeight }; }\n' +
-		'  var w = a.naturalWidth;\n' + '  var h = a.naturalHeight;\n' +
+		'  var w = Math.min(a.naturalWidth, b.naturalWidth);\n' +
+		'  var h = Math.min(a.naturalHeight, b.naturalHeight);\n' +
+		'  if (w <= 0 || h <= 0) { return { ok:false, error:"dimension mismatch", width:b.naturalWidth, height:b.naturalHeight }; }\n' +
 		'  var c1 = document.createElement("canvas"); c1.width = w; c1.height = h;\n' +
 		'  var c2 = document.createElement("canvas"); c2.width = w; c2.height = h;\n' +
 		'  var diffCanvas = document.createElement("canvas"); diffCanvas.width = w; diffCanvas.height = h;\n' +
 		'  var x1 = c1.getContext("2d"); var x2 = c2.getContext("2d"); var xd = diffCanvas.getContext("2d");\n' +
-		'  x1.drawImage(a, 0, 0); x2.drawImage(b, 0, 0);\n' +
+		'  x1.drawImage(a, 0, 0, w, h, 0, 0, w, h); x2.drawImage(b, 0, 0, w, h, 0, 0, w, h);\n' +
 		'  var d1 = x1.getImageData(0, 0, w, h);\n' + '  var d2 = x2.getImageData(0, 0, w, h);\n' +
 		'  var diff = xd.createImageData(w, h);\n' + '  var changed = 0;\n' +
 		'  var limit = Math.round(${threshold} * 255);\n' +
@@ -1391,7 +1411,6 @@ fn cmd_click(mut sess CdpSession, params string) string {
 	}
 	run_element_action(mut sess, sel, build_click_action_body()) or {
 		pointer_action_for_selector(mut sess, sel, 'click') or { return 'ERROR:${err}' }
-		return 'null'
 	}
 	return 'null'
 }
@@ -1475,7 +1494,13 @@ fn cmd_fill(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	run_element_action(mut sess, sel, build_fill_action_body(text)) or { return 'ERROR:${err}' }
+	if sess.current_frame_selector != '' {
+		fill_via_keyboard(mut sess, sel, text) or { return 'ERROR:${err}' }
+	} else {
+		run_element_action(mut sess, sel, build_fill_action_body(text)) or {
+			fill_via_keyboard(mut sess, sel, text) or { return 'ERROR:${err}' }
+		}
+	}
 	verify, verify_timeout := parse_verify_settings(params, 1500 * time.millisecond)
 	if verify {
 		wait_for_element_text_or_value(mut sess, sel, text, verify_timeout) or {
@@ -1483,6 +1508,21 @@ fn cmd_fill(mut sess CdpSession, params string) string {
 		}
 	}
 	return 'null'
+}
+
+fn fill_via_keyboard(mut sess CdpSession, sel string, text string) ! {
+	// Frame inputs are more reliable with native key events than DOM value assignment in this stack.
+	focus_selector(mut sess, sel)!
+	$if macos {
+		dispatch_key(mut sess, 'Meta+a', 'keyDown', '')!
+		dispatch_key(mut sess, 'Meta+a', 'keyUp', '')!
+	} $else {
+		dispatch_key(mut sess, 'Control+a', 'keyDown', '')!
+		dispatch_key(mut sess, 'Control+a', 'keyUp', '')!
+	}
+	dispatch_key(mut sess, 'Backspace', 'keyDown', '')!
+	dispatch_key(mut sess, 'Backspace', 'keyUp', '')!
+	type_text_like_playwright(mut sess, text)!
 }
 
 // ─── type ───────────────────────────────────────────────────

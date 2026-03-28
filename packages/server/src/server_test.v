@@ -1023,6 +1023,13 @@ fn test_build_action_point_query_js_wraps_frame_offsets() {
 	assert js.contains('fr.x + r.x + r.width / 2')
 }
 
+fn test_cmd_open_clears_frame_context_before_navigation() {
+	mut sess := new_cdp_session(noop_send)
+	sess.current_frame_selector = '#child'
+	_ := cmd_open(mut sess, '{"url":"https://example.com"}')
+	assert sess.current_frame_selector == ''
+}
+
 fn test_build_semantic_locator_js_prefers_visible_matches() {
 	mut sess := new_cdp_session(noop_send)
 	js := build_semantic_locator_js(sess, 'text', 'Run workflow', true, '', -1)
@@ -1077,8 +1084,9 @@ fn test_build_cursor_interactive_snapshot_js_covers_custom_click_targets() {
 
 fn test_render_ax_tree_limits_output_nodes() {
 	mut store := AxRefStore{}
+	mut skipped_nodes := map[int]bool{}
 	nodes_json := '[{"role":{"value":"button"},"name":{"value":"Save"},"backendDOMNodeId":1},{"role":{"value":"link"},"name":{"value":"Home"},"backendDOMNodeId":2},{"role":{"value":"textbox"},"name":{"value":"Email"},"backendDOMNodeId":3}]'
-	out, next_counter := render_ax_tree(nodes_json, 1, mut store, false, 2)
+	out, next_counter := render_ax_tree(nodes_json, 1, mut store, false, 2, skipped_nodes)
 	assert out.contains('@e1 [button] Save')
 	assert out.contains('@e2 [link] Home')
 	assert !out.contains('Email')

@@ -116,3 +116,74 @@ Chrome Tab (CDP 1.3)
 | 事件等待       | 订阅 CDP 事件 chan，select + timeout                   |
 | 选择器优先级   | `@eN` > CSS/XPath > 语义定位器                         |
 | 网络资源导出   | 页面侧抓请求，server 侧按 `requestId` 统一落盘         |
+
+---
+
+## Phase 8 · 实战站点验证与迭代
+
+> 目标：用真实网站和高覆盖 fixture 逐项验证 v-browser 的实际适用性，按失败类型补优化，再回到同一批场景复测，直到常见自动化场景都稳定可用。
+
+### 8.1 站点分层
+
+- [ ] **P8-1** 基础交互站点：`the-internet.herokuapp.com`、`uitestingplayground.com`、`testpages.eviltester.com`、`selenium.dev` 表单页
+- [ ] **P8-2** 真实业务站点：GitHub 仓库页、Issues、PR、Actions；X / Twitter 帖子页和个人主页；中文内容站点和文档站点
+- [ ] **P8-3** 高风险场景站点：公开表单、iframe / 编辑器 demo、长列表 / 无限滚动页面、电商 demo、公开视频页
+
+### 8.2 能力逐项验证
+
+- [ ] **P8-4** 导航与连接：`connect`、`open`、`status`、`tab`、`window`、重连和错误诊断
+- [ ] **P8-5** 定位与点击：`snapshot`、`find`、`click`、`hover`、重复按钮消歧、隐藏元素排除
+- [ ] **P8-6** 输入与表单：`fill`、`type`、`keyboard`、`select`、`check`、`uncheck`、受控输入和富文本输入
+- [ ] **P8-7** 结构化交互：`frame`、`dialog`、`upload`、`drag`、`scroll`、`scrollintoview`
+- [ ] **P8-8** 数据与状态：`get`、`wait`、`cookies`、`storage`、`network requests`、`route`、`save`、`state`
+- [ ] **P8-9** 调试闭环：`screenshot`、`console`、`errors`、`trace`、`profiler`、`--json` 输出
+
+### 8.3 逐站执行流程
+
+- [ ] **P8-10** 先跑基础 fixture，确认核心命令无回退，再进入真实站点
+- [ ] **P8-11** 每个站点先做只读验证：标题、正文、链接、快照、截图、网络可见性
+- [ ] **P8-12** 每个站点再做交互验证：点击、输入、提交、上传、对话框、滚动、iframe
+- [ ] **P8-13** 对每个失败点记录症状、复现命令、错误输出、页面状态和修复建议
+- [ ] **P8-14** 每修复一类问题，回到同一站点复测，确认不是局部修补
+
+### 8.4 优化闭环
+
+- [ ] **P8-15** 把高频失败归类到连接、定位、输入、异步等待、iframe、dialog、上传、网络、调试九类
+- [ ] **P8-16** 为每类失败补最小回归案例，优先放进 `packages/test-ui` 和现有 smoke 脚本
+- [ ] **P8-17** 更新错误提示和 JSON 输出，让失败时能直接给出下一步操作建议
+- [ ] **P8-18** 复测通过后再扩展站点范围，优先覆盖桌面 Web 的常见交互模式
+- [ ] **P8-19** 定期回顾 TODO，删除已被更强回归覆盖的临时检查项，保留长期价值的验证项
+
+### 8.5 执行拆解
+
+- [ ] **P8-20** 先跑 fixture 基线：`open`、`snapshot`、`find`、`click`、`fill`、`upload`、`frame`、`dialog`、`network`
+- [ ] **P8-21** 再跑基础站点：表单页、按钮页、列表页、弹窗页、上传页、iframe 页
+- [ ] **P8-22** 然后跑真实站点读操作：标题、正文、链接、图片、按钮、导航、分页
+- [ ] **P8-23** 接着跑真实站点写操作：登录、搜索、评论、提交表单、上传附件、保存草稿
+- [ ] **P8-24** 最后跑高风险站点：动态加载、重复按钮、复杂嵌套、跨区域滚动、长任务等待
+
+### 8.6 单站点验证模板
+
+- [ ] **P8-25** 记录站点名称、URL、登录状态、是否允许公开访问、是否需要已有 cookie
+- [ ] **P8-26** 记录读操作结果：`title`、页面正文、关键元素快照、截图、网络请求摘要
+- [ ] **P8-27** 记录写操作结果：输入内容、点击结果、提交结果、URL 变化、页面状态变化
+- [ ] **P8-28** 记录失败信息：命令、错误码、截图、console、errors、network、复现步骤
+- [ ] **P8-29** 记录修复建议：是定位问题、等待问题、输入问题、frame 问题、dialog 问题，还是站点限制
+- [ ] **P8-30** 记录是否需要新增 fixture、是否需要新增回归、是否需要更新文档示例
+
+### 8.7 首批执行顺序
+
+- [ ] **P8-31** 先验证 `the-internet.herokuapp.com` 的基础交互链路
+- [ ] **P8-32** 再验证 `uitestingplayground.com` 的定位消歧和动态 DOM 场景
+- [ ] **P8-33** 再验证 `testpages.eviltester.com` 的 dialog、frame、upload、storage 场景
+- [ ] **P8-34** 再验证 `selenium.dev` 表单页的标准输入和提交流程
+- [ ] **P8-35** 再验证 GitHub 公共页和 X / Twitter 公共页的真实 SPA 场景
+- [ ] **P8-36** 再验证一个公开表单站点、一个 iframe demo、一个长列表站点、一个电商 demo
+
+### 8.8 实测观察
+
+- [x] **P8-37** X 搜索页上，`find role tab click --name` 可稳定切换 `最新`、`用户` 这类结果分类
+- [x] **P8-38** `the-internet.herokuapp.com/add_remove_elements/` 上，`find text` + `click` 可稳定完成新增与删除闭环
+- [x] **P8-39** `selenium.dev/selenium/web/web-form.html` 上，`fill`、`select`、`upload` 可稳定驱动文本框、文本域、下拉框和文件输入
+- [x] **P8-40** `select` 命令当前按 option `value` 生效，不是按可见文本匹配；例如 `Two` 对应值是 `2`
+- [x] **P8-41** 外站导航时的 frame 上下文残留已通过 `open` 导航后清理 `currentFrameSelector` 解决；后续继续观察是否还存在真实的 `session closed` 超时问题
