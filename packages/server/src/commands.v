@@ -508,6 +508,15 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 	format := cdp_extract_str(params, 'format')
 	fmt := if format != '' { format } else { 'png' }
 	quality := cdp_extract_int(params, '"quality":')
+	annotate := cdp_extract_bool(params, 'annotate')
+	mut max_labels := cdp_extract_int(params, 'maxLabels')
+	if max_labels == 0 {
+		max_labels = 20
+	}
+
+	if annotate {
+		return cmd_screenshot_annotate(mut sess, params, path, fmt, full, max_labels)
+	}
 
 	mut p := '{"format":"${fmt}","captureBeyondViewport":${full}'
 	if quality > 0 {
@@ -521,7 +530,6 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 		return 'ERROR:no screenshot data returned'
 	}
 
-	// 决定保存路径
 	out_path := if path != '' {
 		path
 	} else {
@@ -530,6 +538,37 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 	raw_bytes := base64.decode(data)
 	os.write_file_array(out_path, raw_bytes) or { return 'ERROR:write failed: ${err}' }
 	return json_str(out_path)
+}
+
+fn cmd_screenshot_annotate(mut sess CdpSession, params string, path string, fmt string, full bool, max_labels int) string {
+	js := build_screenshot_annotate_js(full, max_labels)
+	result := eval_scoped_expression(mut sess, js, true) or { return 'ERROR:${err}' }
+	ok := cdp_extract_obj_key(result, '"ok":')
+	if ok != 'true' {
+		err_msg := cdp_extract_str(result, 'error')
+		return 'ERROR:${err_msg}'
+	}
+	annotated_b64 := cdp_extract_str(result, 'data')
+	if annotated_b64 == '' {
+		return 'ERROR:no annotated screenshot data returned'
+	}
+
+	out_path := if path != '' {
+		path
+	} else {
+		os.join_path(os.temp_dir(), 'screenshot_annotated_${time.now().unix_milli()}.${fmt}')
+	}
+	raw_bytes := base64.decode(annotated_b64)
+	os.write_file_array(out_path, raw_bytes) or { return 'ERROR:write failed: ${err}' }
+
+	mut json_out := '{"path":${json_str(out_path)}'
+	labels_count := cdp_extract_int(result, '"labelsCount":')
+	if labels_count > 0 {
+		labels_json := cdp_extract_obj_key(result, '"labels":')
+		json_out += ',"labelsCount":${labels_count},"labels":${labels_json}'
+	}
+	json_out += '}'
+	return json_out
 }
 
 fn capture_screenshot_base64(mut sess CdpSession, format string, full bool, selector string) !string {
@@ -986,6 +1025,63 @@ fn baseline_mime_type(path string) string {
 		return 'image/jpeg'
 	}
 	return 'image/png'
+}
+
+fn build_screenshot_annotate_js(full bool, max_labels int) string {
+	full_js := if full { 'true' } else { 'false' }
+	return '((function(){
+var interactiveRoles = ["button","link","textbox","checkbox","radio","combobox","listbox","menuitem","menuitemcheckbox","menuitemradio","option","searchbox","slider","spinbutton","switch","tab","treeitem","heading","image"];
+var nodes = [];
+try {
+var tree = (function(){ var cb; var promise = new Promise(function(r){cb=r;}); chrome.runtime.sendMessage({type:"getAXTree"},function(resp){cb(resp);}); return promise; })();
+var counter = 1;
+for (var i = 0; i < tree.length && counter <= ${max_labels}; i++) {
+var node = tree[i];
+var role = node.role && node.role.value ? node.role.value : "";
+if (interactiveRoles.indexOf(role) === -1) continue;
+var name = node.name && node.name.value ? node.name.value : "";
+var bnid = node.backendDOMNodeId || 0;
+if (bnid === 0) continue;
+var js = "(function(){var el=null;try{el=window.domAccessHelper.querySelectorByBackendNodeId(" + bnid + ");}catch(e){}if(!el)return null;var r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)return null;var frame=null;try{var iframes=document.querySelectorAll(\"iframe\");for(var fi=0;fi<iframes.length;fi++){var fr=iframes[fi].getBoundingClientRect();if(r.x>=fr.x&&r.x<fr.x+fr.width&&r.y>=fr.y&&r.y<fr.y+fr.height){frame=iframes[fi];break;}}}catch(e){}if(frame){return{x:fr.x+r.x+r.width/2,y:fr.y+r.y+r.height/2,width:r.width,height:r.height};}return{x:r.x+r.width/2,y:r.y+r.height/2,width:r.width,height:r.height};})()";
+var rect = null;
+try{rect=eval(js);}catch(e){}
+if (!rect) continue;
+nodes.push({num:counter,role:role,name:name.substring(0,50),x:rect.x,y:rect.y,width:rect.width,height:rect.height});
+counter++;
+}
+} catch(e) { return JSON.stringify({ok:false,error:"failed to get AX tree: "+e.message}); }
+if (nodes.length === 0) { return JSON.stringify({ok:false,error:"no interactive elements found"}); }
+var resp = (function(){ var cb; var promise = new Promise(function(r){cb=r;}); chrome.runtime.sendMessage({type:"captureScreenshot",params:{format:"png",captureBeyondViewport:${full_js}}},function(r){cb(r);}); return promise; })();
+var img = new Image();
+img.src = "data:image/png;base64," + resp.data;
+var canvas = document.createElement("canvas");
+canvas.width = img.width;
+canvas.height = img.height;
+var ctx = canvas.getContext("2d");
+ctx.drawImage(img,0,0);
+ctx.strokeStyle = "#ff0000";
+ctx.lineWidth = 2;
+for (var i = 0; i < nodes.length; i++) {
+var n = nodes[i];
+var scaleX = img.width / window.innerWidth;
+var scaleY = img.height / window.innerHeight;
+var x = n.x * scaleX;
+var y = n.y * scaleY;
+var w = n.width * scaleX;
+var h = n.height * scaleY;
+ctx.strokeRect(x - w/2, y - h/2, w, h);
+var fontSize = Math.max(14, Math.min(24, Math.floor(Math.min(w, h) * 0.4)));
+ctx.fillStyle = "#ff0000";
+ctx.fillRect(x + w/2 - 4, y - h/2 - fontSize - 4, fontSize + 8, fontSize + 8);
+ctx.fillStyle = "#ffffff";
+ctx.font = "bold " + fontSize + "px monospace";
+ctx.textAlign = "center";
+ctx.textBaseline = "middle";
+ctx.fillText(n.num.toString(), x + w/2, y - h/2 - fontSize/2);
+}
+var outData = canvas.toDataURL("image/png").split(",")[1];
+return JSON.stringify({ok:true,data:outData,labelsCount:nodes.length,labels:nodes});
+})())'
 }
 
 fn screenshot_diff_js(baseline_b64 string, baseline_mime string, current_b64 string, threshold f64, include_diff bool) string {
