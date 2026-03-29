@@ -10,9 +10,10 @@
     "vlang"
   ],
   "license": "MIT",
+  "author": "V-Browser Team",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-repo/v-browser.git"
+    "url": "https://github.com/whiter001/v-browser.git"
   },
   "scripts": {
     "lint": "oxlint .",

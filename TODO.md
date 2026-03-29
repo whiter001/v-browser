@@ -189,6 +189,83 @@ Chrome Tab (CDP 1.3)
 - [x] **P8-41** 外站导航时的 frame 上下文残留已通过 `open` 导航后清理 `currentFrameSelector` 解决；后续继续观察是否还存在真实的 `session closed` 超时问题
 - [x] **P8-42** `uitestingplayground.com/dynamicid`：`find text "Button with Dynamic ID" click` 稳定；`click '.btn-primary'` 稳定（按钮无状态变化故从文本无法观测，但点击无报错）
 - [x] **P8-43** `uitestingplayground.com/alerts`：`find text "Alert" click --index 0` + 后台触发 + `dialog accept` 成功关闭弹窗；Confirm 和 Prompt 流程相同
-- [x] **P8-44** `testpages.eviltester.com`：Alerts JS (`find text "Show alert box" click` + 后台触发 + `dialog accept`)、Frames (`frame 'frame[name="top"]'` ✅、`frame 'frame[name="left"]'` ✅、`frame main` ✅)、File Upload (`upload '#fileinput' <path>` ✅，`phase:selected`)、Storage (`storage set/get` ✅) 均验证通过
+- [x] **P8-44** `testpages.eviltester.com`：Alerts JS (`find text "Show alert box" click` + 后台触发 + `dialog accept`)、 Frames (`frame 'frame[name="top"]'` ✅、`frame 'frame[name="left"]'` ✅、`frame main` ✅)、File Upload (`upload '#fileinput' <path>` ✅，`phase:selected`)、Storage (`storage set/get` ✅) 均验证通过
 - [x] **P8-45** GitHub + X.com SPA：`goto` 直接 URL 跳转到 Issues 列表 ✅、`snapshot`/`eval` 正常读取 ✅；X.com 首页加载正常，显示"为你推荐"、"正在关注"等 SPA 内容 ✅；GitHub Issues 面包屑文本不是链接，需用 `goto` 直接 URL
 - [x] **P8-46** 表单/iframe/列表/电商：w3schools iframe 演示页 ✅、`frame` 命令因 iframe 无 name 属性无法定位（`<iframe>` 在 AX tree 中可见，但 CSS 属性选择器无法匹配）；Hacker News 长列表 ✅（30 条标题 `document.querySelectorAll(".titleline").length`）；Shopify ✅ 和 Amazon ✅ 首页加载正常
+
+---
+
+## Phase 9 · 高优先级功能补全
+
+### P9-1 · CDP 类型定义（Phase 2 未完成项）
+
+- [ ] **P9-1** `cdp/types.v`：关键域 V struct 定义（Page / Runtime / DOM / Input / Accessibility / Target / Fetch / Network / Storage）
+  - 状态：未开始
+  - 优先级：P0
+  - 验收标准：CDP 协议的主要类型都有对应的 V struct 定义
+
+### P9-2 · 高级截图功能（Phase 5 未完成项）
+
+- [ ] **P9-2** `diff screenshot`：逐像素对比 + 生成差异图
+  - 状态：未开始
+  - 依赖：需要 stb_image_write C binding 或纯 V 实现
+  - 验收标准：可以对比两张截图并生成可视化差异图
+
+- [ ] **P9-3** `diff url`：打开两个 tab 各自 snapshot/screenshot → 对比
+  - 状态：未开始
+  - 验收标准：可以对比两个 URL 的快照或截图
+
+- [ ] **P9-4** `screenshot --annotate`：截图 + AX tree boundingBox → 叠加编号标签
+  - 状态：未开始
+  - 依赖：需要 stb_truetype C binding 或纯 V 实现
+  - 验收标准：截图上标注可点击元素的编号
+
+---
+
+## Phase 10 · 优化与完善
+
+### P10-1 · 调试可观测性增强
+
+- [ ] **P10-1** 增强 `--json` 输出，让结果结构化包含 `ok`、`error`、`suggestion`、`state`、`hint`
+- [ ] **P10-2** 在出错时统一建议用户补充 `screenshot`、`console`、`errors` 和 `network requests` 的信息
+- [ ] **P10-3** 为动态页面提供"调试三件套"路径：页面文本、截图、请求日志
+- [ ] **P10-4** 对高频错误统一做分类映射，让错误信息更可读
+
+### P10-2 · 回归测试覆盖
+
+- [ ] **P10-5** 把 `packages/test-ui/lab.html` 作为核心 fixture，补全关键场景
+- [ ] **P10-6** CLI 层增加 smoke 脚本，覆盖高频链路
+- [ ] **P10-7** 对关键命令补最小回归测试
+- [ ] **P10-8** 给 smoke 测试统一"通过标准"
+
+### P10-3 · 文档入口优化
+
+- [ ] **P10-9** 统一 SOP、命令参考、技能说明、改进清单的文档串连
+- [ ] **P10-10** 新用户能按文档快速上手并找到下一步
+
+---
+
+## Phase 11 · 配置与依赖修复
+
+### P11-1 · 项目配置修复
+
+- [ ] **P11-1** `package.json`：修复 repository URL（当前是占位符 `https://github.com/your-repo/v-browser.git`）
+- [ ] **P11-2** `package.json`：补充 license、author 等元数据
+
+### P11-2 · GitHub Actions 升级
+
+- [ ] **P11-3** 升级 Node.js 版本：GitHub Actions 使用的 Node.js 20 将于 2026 年 9 月废弃
+  - 建议：设置 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` 或升级 action 版本
+
+### P11-3 · 测试补全
+
+- [ ] **P11-4** 决定 `server_test.v` 中被注释测试的命运：删除或实现
+- [ ] **P11-5** `packages/extension`：增加单元测试（当前只有构建验证）
+
+---
+
+## 推荐迭代顺序
+
+1. **Phase 9（P9-1 ~ P9-4）**：高优先级功能补全
+2. **Phase 10（P10-1 ~ P10-10）**：优化与完善
+3. **Phase 11（P11-1 ~ P11-5）**：配置与依赖修复
