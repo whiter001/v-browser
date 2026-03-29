@@ -61,6 +61,12 @@ fn test_parse_cli_to_ipc_snapshot_routes_extra_and_max_nodes() {
 	assert params == '{"raw":false,"extra":true,"interactive":false,"maxNodes":25}'
 }
 
+fn test_parse_cli_to_ipc_snapshot_routes_selector_when_present() {
+	method, params := parse_cli_to_ipc('snapshot', ['--selector', '#hero'], false)
+	assert method == 'snapshot'
+	assert params == '{"raw":false,"extra":false,"interactive":false,"maxNodes":0,"selector":"#hero"}'
+}
+
 fn test_build_extension_connect_url_contains_expected_query() {
 	url := build_extension_connect_url('abc123', 'tok-1')
 	assert url.starts_with('chrome-extension://abc123/connect.html?')

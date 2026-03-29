@@ -794,7 +794,10 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			max_nodes := flags['maxNodes'] or { '0' }
 			// selector 限制快照范围到指定元素子树。
 			sel_filter := flags['selector'] or { flags['sel'] or { '' } }
-			return 'snapshot', '{"raw":${raw},"extra":${extra},"interactive":${interactive},"maxNodes":${max_nodes},"selector":${json_str(sel_filter)}}'
+			if sel_filter != '' {
+				return 'snapshot', '{"raw":${raw},"extra":${extra},"interactive":${interactive},"maxNodes":${max_nodes},"selector":${json_str(sel_filter)}}'
+			}
+			return 'snapshot', '{"raw":${raw},"extra":${extra},"interactive":${interactive},"maxNodes":${max_nodes}}'
 		}
 		// ── 元素操作 ──
 		'click' {
