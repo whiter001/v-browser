@@ -1231,43 +1231,6 @@ fn test_ipc_decode_response_handles_null_result() {
 	assert resp.result == 'null'
 }
 
-// 暂时注释这些测试，待后续修复
-// fn test_network_tracking_captures_response_headers() {
-// 	mut sess := new_cdp_session(noop_send)
-// 	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.requestWillBeSent","params":{"requestId":"req-headers-1","type":"XHR","request":{"url":"https://api.example.com/data","method":"GET","headers":{"Authorization":"Bearer token"}}}}')
-// 	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.responseReceived","params":{"requestId":"req-headers-1","type":"XHR","response":{"url":"https://api.example.com/data","status":200,"statusText":"OK","headers":{"content-type":"application/json","x-request-id":"abc123"}}}}')
-// 	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.loadingFinished","params":{"requestId":"req-headers-1"}}}')
-// 	json := sess.network_requests_json('api.example.com')
-// 	assert json.contains('"responseHeaders":')
-// 	assert json.contains('"requestHeaders":')
-// 	assert json.contains('"content-type":"application/json"')
-// 	assert json.contains('"Authorization":"Bearer token"')
-// }
-
-// fn test_glob_match_edge_cases() {
-// 	assert glob_match('*', 'anything')
-// 	assert glob_match('*.js', 'app.js')
-// 	assert glob_match('*.js', 'script.js')
-// 	assert !glob_match('*.js', 'script.ts')
-// 	assert glob_match('**/*.css', 'styles.css')
-// 	assert glob_match('https://*.com/*', 'https://example.com/path')
-// }
-
-// fn test_cmd_network_headers_action() {
-// 	mut sess := new_cdp_session(noop_send)
-// 	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.requestWillBeSent","params":{"requestId":"cmd-test-1","type":"XHR","request":{"url":"https://test.com"}}}}')
-// 	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.responseReceived","params":{"requestId":"cmd-test-1","type":"XHR","response":{"url":"https://test.com","status":200,"headers":{"content-type":"application/json"}}}}')
-// 	result := cmd_network(mut sess, '{"action":"headers","requestId":"cmd-test-1"}')
-// 	assert !result.contains('ERROR:')
-// 	assert result.contains('content-type')
-// }
-
-// fn test_cmd_network_body_action() {
-// 	mut sess := new_cdp_session(noop_send)
-// 	result := cmd_network(mut sess, '{"action":"body","requestId":"nonexistent"}')
-// 	assert result.contains('ERROR:')
-// }
-
 // ─── clipboard tests ─────────────────────────────────────────
 
 fn test_parse_cli_to_ipc_clipboard_read_routes_action() {
