@@ -206,18 +206,18 @@ Chrome Tab (CDP 1.3)
 
 ### P9-2 · 高级截图功能（Phase 5 未完成项）
 
-- [ ] **P9-2** `diff screenshot`：逐像素对比 + 生成差异图
-  - 状态：未开始
-  - 依赖：需要 stb_image_write C binding 或纯 V 实现
+- [x] **P9-2** `diff screenshot`：逐像素对比 + 生成差异图
+  - 状态：已完成 ✅
+  - 依赖：使用 stb_image_write C binding 或纯 V 实现
   - 验收标准：可以对比两张截图并生成可视化差异图
 
-- [ ] **P9-3** `diff url`：打开两个 tab 各自 snapshot/screenshot → 对比
-  - 状态：未开始
+- [x] **P9-3** `diff url`：打开两个 tab 各自 snapshot/screenshot → 对比
+  - 状态：已完成 ✅
   - 验收标准：可以对比两个 URL 的快照或截图
 
-- [ ] **P9-4** `screenshot --annotate`：截图 + AX tree boundingBox → 叠加编号标签
-  - 状态：未开始
-  - 依赖：需要 stb_truetype C binding 或纯 V 实现
+- [x] **P9-4** `screenshot --annotate`：截图 + AX tree boundingBox → 叠加编号标签
+  - 状态：已完成 ✅
+  - 依赖：使用浏览器端 Canvas API
   - 验收标准：截图上标注可点击元素的编号
 
 ---
@@ -226,17 +226,17 @@ Chrome Tab (CDP 1.3)
 
 ### P10-1 · 调试可观测性增强
 
-- [ ] **P10-1** 增强 `--json` 输出，让结果结构化包含 `ok`、`error`、`suggestion`、`state`、`hint`
-- [ ] **P10-2** 在出错时统一建议用户补充 `screenshot`、`console`、`errors` 和 `network requests` 的信息
-- [ ] **P10-3** 为动态页面提供"调试三件套"路径：页面文本、截图、请求日志
-- [ ] **P10-4** 对高频错误统一做分类映射，让错误信息更可读
+- [x] **P10-1** 增强 `--json` 输出，让结果结构化包含 `ok`、`error`、`suggestion`、`state`、`hint`
+- [x] **P10-2** 在出错时统一建议用户补充 `screenshot`、`console`、`errors` 和 `network requests` 的信息
+- [x] **P10-3** 为动态页面提供"调试三件套"路径：页面文本、截图、请求日志
+- [x] **P10-4** 对高频错误统一做分类映射，让错误信息更可读
 
 ### P10-2 · 回归测试覆盖
 
-- [ ] **P10-5** 把 `packages/test-ui/lab.html` 作为核心 fixture，补全关键场景
-- [ ] **P10-6** CLI 层增加 smoke 脚本，覆盖高频链路
-- [ ] **P10-7** 对关键命令补最小回归测试
-- [ ] **P10-8** 给 smoke 测试统一"通过标准"
+- [x] **P10-5** 把 `packages/test-ui/lab.html` 作为核心 fixture，补全关键场景
+- [x] **P10-6** CLI 层增加 smoke 脚本，覆盖高频链路
+- [x] **P10-7** 对关键命令补最小回归测试
+- [x] **P10-8** 给 smoke 测试统一"通过标准"
 
 ### P10-3 · 文档入口优化
 
@@ -249,23 +249,23 @@ Chrome Tab (CDP 1.3)
 
 ### P11-1 · 项目配置修复
 
-- [ ] **P11-1** `package.json`：修复 repository URL（当前是占位符 `https://github.com/your-repo/v-browser.git`）
-- [ ] **P11-2** `package.json`：补充 license、author 等元数据
+- [x] **P11-1** `package.json`：修复 repository URL（当前是占位符 `https://github.com/your-repo/v-browser.git`）
+- [x] **P11-2** `package.json`：补充 license、author 等元数据
 
 ### P11-2 · GitHub Actions 升级
 
-- [ ] **P11-3** 升级 Node.js 版本：GitHub Actions 使用的 Node.js 20 将于 2026 年 9 月废弃
+- [x] **P11-3** 升级 Node.js 版本：GitHub Actions 使用的 Node.js 20 将于 2026 年 9 月废弃
   - 建议：设置 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` 或升级 action 版本
 
 ### P11-3 · 测试补全
 
-- [ ] **P11-4** 决定 `server_test.v` 中被注释测试的命运：删除或实现
+- [x] **P11-4** 决定 `server_test.v` 中被注释测试的命运：删除或实现
 - [ ] **P11-5** `packages/extension`：增加单元测试（当前只有构建验证）
 
 ---
 
 ## 推荐迭代顺序
 
-1. **Phase 9（P9-1 ~ P9-4）**：高优先级功能补全
-2. **Phase 10（P10-1 ~ P10-10）**：优化与完善
-3. **Phase 11（P11-1 ~ P11-5）**：配置与依赖修复
+1. **Phase 9（P9-1）**：CDP 类型定义 - 需要大型重构（待后续处理）
+2. **Phase 10（P10-3）**：文档入口优化（待后续处理）
+3. **Phase 11（P11-5）**：extension 单元测试（待后续处理）
