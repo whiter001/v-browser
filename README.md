@@ -24,9 +24,11 @@ sh ./fmt.sh
 
 ```bash
 cd packages/extension
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
+
+扩展包仅支持 `pnpm`，不要使用 `npm install`。
 
 1. 启动测试前端（可选，用于手工测试）
 

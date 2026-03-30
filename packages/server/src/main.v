@@ -249,6 +249,11 @@ fn is_attach_conflict_error(err_msg string) bool {
 // 确保后台 server 已启动；如果 IPC 不可达则先拉起守护进程。
 fn ensure_server_running() ! {
 	if can_reach_ipc_server() {
+		if server_runtime_version_matches() {
+			return
+		}
+		eprintln('[v-browser] Detected stale server version; restarting...')
+		restart_server_daemon()!
 		return
 	}
 	start_server_daemon()!
@@ -259,12 +264,18 @@ fn ensure_server_running() ! {
 fn wait_for_server_ready() ! {
 	deadline := time.now().add(8 * time.second)
 	for time.now() < deadline {
-		if can_reach_ipc_server() {
+		if can_reach_ipc_server() && server_runtime_version_matches() {
 			return
 		}
 		time.sleep(200 * time.millisecond)
 	}
 	return error('v-browser server did not become ready. Check ${background_server_diagnostics_hint()}')
+}
+
+// 检查当前后台 server 是否写入了与本地 CLI 一致的版本标记。
+fn server_runtime_version_matches() bool {
+	stored := os.read_file(server_version_path()) or { return false }
+	return stored.trim_space() == v_browser_version
 }
 
 // 通过本地 IPC 标记和 TCP 连接判断 server 是否可用。
@@ -302,6 +313,15 @@ fn start_server_daemon() ! {
 	if task_id != '' {
 		os.write_file(server_task_path(), task_id) or {}
 	}
+}
+
+// 停止旧 server 并重新拉起当前版本的 daemon。
+fn restart_server_daemon() ! {
+	_ := handle_server_stop(false, true, false) or {
+		return error('failed to stop stale v-browser server: ${err.msg()}')
+	}
+	start_server_daemon()!
+	wait_for_server_ready()!
 }
 
 // 构造 pueue 任务命令，并保留当前可执行文件所在目录。
@@ -388,7 +408,7 @@ fn report_server_stop(message string, json_output bool) {
 
 // 清理 server 的 pid、socket 和 pueue 任务残留。
 fn cleanup_server_runtime_state() {
-	for path in [ipc_sock_path(), server_pid_path()] {
+	for path in [ipc_sock_path(), server_pid_path(), server_version_path()] {
 		os.rm(path) or {}
 	}
 	task_id := (os.read_file(server_task_path()) or { '' }).trim_space()
@@ -535,7 +555,7 @@ fn save_extension_id(extension_id string) ! {
 // 生成扩展 connect 页面所需的完整 URL。
 fn build_extension_connect_url(extension_id string, token string) string {
 	relay_url := 'ws://127.0.0.1:${configured_relay_port()}'
-	client_info := '{"name":"v-browser","version":"0.1.0"}'
+	client_info := '{"name":"v-browser","version":"${v_browser_version}"}'
 	return 'chrome-extension://${extension_id}/connect.html?mcpRelayUrl=${urllib.query_escape(relay_url)}&client=${urllib.query_escape(client_info)}&protocolVersion=1&token=${urllib.query_escape(token)}'
 }
 
@@ -1454,7 +1474,7 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			return '', ''
 		}
 		'version', '-v', '--version' {
-			println('v-browser 0.1.0')
+			println('v-browser ${v_browser_version}')
 			exit(0)
 			return '', ''
 		}

@@ -1,5 +1,7 @@
 # Playwright MCP Chrome Extension
 
+构建与安装依赖时仅使用 `pnpm`，不要使用 `npm install`。
+
 ## Introduction
 
 The Playwright MCP Chrome Extension allows you to connect to pages in your existing browser and leverage the state of your default user profile. This means the AI assistant can interact with websites where you're already logged in, using your existing cookies, sessions, and browser state, providing a seamless experience without requiring separate authentication or setup.

@@ -871,6 +871,40 @@ fn test_server_restart_integration_replaces_running_server() {
 	assert wait_for_integration_server_stop(new_pid, relay_port, ipc_port, 5 * time.second)
 }
 
+fn test_server_version_mismatch_integration_auto_restarts_server() {
+	$if windows {
+		assert true
+		return
+	}
+	bin_path := build_integration_cli_binary() or { panic(err) }
+	test_home := new_integration_test_home('version-mismatch')
+	relay_port, ipc_port := integration_ports(4)
+	version_path := os.join_path(test_home, '.v-browser', 'server.version')
+	defer {
+		cleanup_integration_server(bin_path, test_home, relay_port, ipc_port)
+		os.rmdir_all(test_home) or {}
+	}
+
+	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or {
+		panic(err)
+	}
+	assert orig_pid > 0
+	assert os.read_file(version_path) or { '' }.trim_space() == v_browser_version
+	os.write_file(version_path, 'stale-version') or { panic(err) }
+
+	status_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} status')
+	assert status_result.exit_code == 0
+	assert status_result.output.contains('"connected":false')
+
+	new_pid := wait_for_server_pid_file(test_home, orig_pid, 8 * time.second)
+	assert new_pid > 0
+	assert new_pid != orig_pid
+	assert wait_for_integration_port_state(relay_port, true, 5 * time.second)
+	assert wait_for_integration_port_state(ipc_port, true, 5 * time.second)
+	assert can_reach_integration_ipc(ipc_port)
+	assert os.read_file(version_path) or { '' }.trim_space() == v_browser_version
+}
+
 fn test_server_stop_integration_returns_error_when_server_missing() {
 	$if windows {
 		assert true
@@ -1005,7 +1039,7 @@ fn cleanup_integration_server(bin_path string, home string, relay_port int, ipc_
 fn test_build_document_scope_js_wraps_frame_context() {
 	mut sess := new_cdp_session(noop_send)
 	sess.current_frame_selector = '#child'
-	js := build_document_scope_js(sess, 'return doc ? true : false;')
+	js := build_document_scope_js(mut sess, 'return doc ? true : false;')
 	assert js.contains('document.querySelector("#child")')
 	assert js.contains('contentDocument')
 	assert js.contains('return doc ? true : false;')
@@ -1013,7 +1047,7 @@ fn test_build_document_scope_js_wraps_frame_context() {
 
 fn test_build_action_point_query_js_checks_actionability() {
 	mut sess := new_cdp_session(noop_send)
-	js := build_action_point_query_js(sess, 'document.querySelector("#submit")')
+	js := build_action_point_query_js(mut sess, 'document.querySelector("#submit")')
 	assert js.contains('scrollIntoView')
 	assert js.contains('pointerEvents === "none"')
 	assert js.contains('r.width <= 0 || r.height <= 0')
@@ -1023,7 +1057,7 @@ fn test_build_action_point_query_js_checks_actionability() {
 fn test_build_action_point_query_js_wraps_frame_offsets() {
 	mut sess := new_cdp_session(noop_send)
 	sess.current_frame_selector = '#child'
-	js := build_action_point_query_js(sess, 'document.querySelector("#submit")')
+	js := build_action_point_query_js(mut sess, 'document.querySelector("#submit")')
 	assert js.contains('document.querySelector("#child")')
 	assert js.contains('var fr = frame.getBoundingClientRect();')
 	assert js.contains('fr.x + r.x + r.width / 2')
@@ -1038,7 +1072,7 @@ fn test_cmd_open_clears_frame_context_before_navigation() {
 
 fn test_build_semantic_locator_js_prefers_visible_matches() {
 	mut sess := new_cdp_session(noop_send)
-	js := build_semantic_locator_js(sess, 'text', 'Run workflow', true, '', -1)
+	js := build_semantic_locator_js(mut sess, 'text', 'Run workflow', true, '', -1)
 	assert js.contains('details:not([open])')
 	assert js.contains('visibleActionableMatches')
 	assert js.contains('getClientRects')
@@ -1048,7 +1082,7 @@ fn test_build_semantic_locator_js_prefers_visible_matches() {
 
 fn test_build_semantic_text_report_js_includes_hint_and_count() {
 	mut sess := new_cdp_session(noop_send)
-	js := build_semantic_text_report_js(sess, 'Run workflow', true, -1, 5, 'debug')
+	js := build_semantic_text_report_js(mut sess, 'Run workflow', true, -1, 5, 'debug')
 	assert js.contains('var total = candidates.length')
 	assert js.contains('var hint = total === 0 ? "未找到候选"')
 	assert js.contains('count: total')
@@ -1080,7 +1114,7 @@ fn test_verification_settle_interval_scales_with_timeout() {
 
 fn test_build_cursor_interactive_snapshot_js_covers_custom_click_targets() {
 	mut sess := new_cdp_session(noop_send)
-	js := build_cursor_interactive_snapshot_js(sess, 7)
+	js := build_cursor_interactive_snapshot_js(mut sess, 7)
 	assert js.contains('cursor === "pointer"')
 	assert js.contains('onclick')
 	assert js.contains('data-testid')
@@ -1302,7 +1336,7 @@ fn test_network_save_path_helpers_infer_extensions() {
 
 fn test_build_page_primary_image_urls_js_mentions_container_scoring() {
 	mut sess := new_cdp_session(noop_send)
-	js := build_page_primary_image_urls_js(sess)
+	js := build_page_primary_image_urls_js(mut sess)
 	assert js.contains('article, figure, main, [role=article], [data-testid=tweet]')
 	assert js.contains('imageArea(img) >= 40000')
 	assert js.contains('best.mediaImages')

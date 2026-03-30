@@ -108,6 +108,15 @@ mut:
 	dialog_events          []string
 }
 
+struct PageStateSnapshot {
+mut:
+	current_frame_selector string
+	page_enabled           bool
+	console_msgs           []string
+	page_errors            []string
+	dialog_events          []string
+}
+
 struct TabSummary {
 	id        int
 	window_id int
@@ -524,6 +533,7 @@ fn (mut s CdpSession) save_current_tab_context() {
 	if s.current_tab_id <= 0 {
 		return
 	}
+	page_state := s.page_state_snapshot()
 	mut axref_refs := map[string]AxRef{}
 	s.axref.mu.@lock()
 	for key, value in s.axref.refs {
@@ -565,7 +575,7 @@ fn (mut s CdpSession) save_current_tab_context() {
 	s.hook_mu.unlock()
 	s.tab_contexts_mu.@lock()
 	s.tab_contexts[s.current_tab_id] = TabContext{
-		current_frame_selector: s.current_frame_selector
+		current_frame_selector: page_state.current_frame_selector
 		axref_refs:             axref_refs
 		network_requests:       network_requests
 		network_request_order:  network_request_order
@@ -573,9 +583,9 @@ fn (mut s CdpSession) save_current_tab_context() {
 		hook_state:             hook_state
 		hook_records:           hook_records
 		hook_record_order:      hook_record_order
-		console_msgs:           s.console_msgs.clone()
-		page_errors:            s.page_errors.clone()
-		dialog_events:          s.dialog_events.clone()
+		console_msgs:           page_state.console_msgs
+		page_errors:            page_state.page_errors
+		dialog_events:          page_state.dialog_events
 	}
 	s.tab_contexts_mu.unlock()
 }
@@ -584,7 +594,7 @@ fn (mut s CdpSession) restore_tab_context(tab_id int) {
 	s.tab_contexts_mu.@lock()
 	ctx := s.tab_contexts[tab_id] or {
 		s.tab_contexts_mu.unlock()
-		s.current_frame_selector = ''
+		s.set_current_frame_selector('')
 		s.axref.mu.@lock()
 		s.axref.refs.clear()
 		s.axref.mu.unlock()
@@ -604,13 +614,16 @@ fn (mut s CdpSession) restore_tab_context(tab_id int) {
 		s.hook_records = map[string]HookRecord{}
 		s.hook_record_order = []string{}
 		s.hook_mu.unlock()
+		s.page_mu.@lock()
+		s.page_enabled = false
 		s.console_msgs = []string{}
 		s.page_errors = []string{}
 		s.dialog_events = []string{}
+		s.page_mu.unlock()
 		return
 	}
 	s.tab_contexts_mu.unlock()
-	s.current_frame_selector = ctx.current_frame_selector
+	s.set_current_frame_selector(ctx.current_frame_selector)
 	s.axref.mu.@lock()
 	s.axref.refs = clone_axref_map(ctx.axref_refs)
 	s.axref.mu.unlock()
@@ -627,9 +640,12 @@ fn (mut s CdpSession) restore_tab_context(tab_id int) {
 	s.hook_records = clone_hook_record_map(ctx.hook_records)
 	s.hook_record_order = ctx.hook_record_order.clone()
 	s.hook_mu.unlock()
+	s.page_mu.@lock()
+	s.page_enabled = false
 	s.console_msgs = ctx.console_msgs.clone()
 	s.page_errors = ctx.page_errors.clone()
 	s.dialog_events = ctx.dialog_events.clone()
+	s.page_mu.unlock()
 }
 
 // on_message 由 WebSocket on_message 回调调用，分发响应/事件
@@ -654,21 +670,12 @@ fn (mut s CdpSession) on_message(raw string) {
 			inner_method := cdp_extract_str(resp.params, 'method')
 			inner_params := cdp_extract_obj(resp.params, 'params')
 			if inner_method == 'Runtime.consoleAPICalled' {
-				s.console_msgs << inner_params
-				if s.console_msgs.len > 200 {
-					s.console_msgs = s.console_msgs[1..]
-				}
+				s.append_console_message(inner_params)
 			} else if inner_method == 'Runtime.exceptionThrown' {
-				s.page_errors << inner_params
-				if s.page_errors.len > 200 {
-					s.page_errors = s.page_errors[1..]
-				}
+				s.append_page_error(inner_params)
 			} else if inner_method == 'Page.javascriptDialogOpening'
 				|| inner_method == 'Page.javascriptDialogClosed' {
-				s.dialog_events << '{"method":${json_str(inner_method)},"params":${inner_params}}'
-				if s.dialog_events.len > 50 {
-					s.dialog_events = s.dialog_events[1..]
-				}
+					s.append_dialog_event('{"method":${json_str(inner_method)},"params":${inner_params}}')
 			} else if inner_method.starts_with('Network.') {
 				track_network_event(mut s, inner_method, inner_params)
 				if inner_method == 'Network.loadingFinished' {
@@ -699,10 +706,7 @@ fn (mut s CdpSession) dispatch_event(method string, evt ProtocolResponse) {
 	}
 	s.event_mu.unlock()
 	for sub in subs {
-		select {
-			sub <- evt {}
-			else {}
-		}
+		sub <- evt
 	}
 }
 
@@ -730,6 +734,93 @@ fn (mut s CdpSession) unsubscribe(method string, ch chan ProtocolResponse) {
 		}
 		s.event_subs[method] = filtered
 	}
+}
+
+fn (mut s CdpSession) page_state_snapshot() PageStateSnapshot {
+	s.page_mu.@lock()
+	defer { s.page_mu.unlock() }
+	return PageStateSnapshot{
+		current_frame_selector: s.current_frame_selector
+		page_enabled:           s.page_enabled
+		console_msgs:           s.console_msgs.clone()
+		page_errors:            s.page_errors.clone()
+		dialog_events:          s.dialog_events.clone()
+	}
+}
+
+fn (mut s CdpSession) current_frame_selector_value() string {
+	s.page_mu.@lock()
+	defer { s.page_mu.unlock() }
+	return s.current_frame_selector
+}
+
+fn (mut s CdpSession) set_current_frame_selector(selector string) {
+	s.page_mu.@lock()
+	s.current_frame_selector = selector
+	s.page_mu.unlock()
+}
+
+fn (mut s CdpSession) append_console_message(message string) {
+	s.page_mu.@lock()
+	s.console_msgs << message
+	if s.console_msgs.len > 200 {
+		s.console_msgs = s.console_msgs[1..]
+	}
+	s.page_mu.unlock()
+}
+
+fn (mut s CdpSession) append_page_error(message string) {
+	s.page_mu.@lock()
+	s.page_errors << message
+	if s.page_errors.len > 200 {
+		s.page_errors = s.page_errors[1..]
+	}
+	s.page_mu.unlock()
+}
+
+fn (mut s CdpSession) append_dialog_event(message string) {
+	s.page_mu.@lock()
+	s.dialog_events << message
+	if s.dialog_events.len > 50 {
+		s.dialog_events = s.dialog_events[1..]
+	}
+	s.page_mu.unlock()
+}
+
+fn (mut s CdpSession) console_messages_snapshot() []string {
+	s.page_mu.@lock()
+	defer { s.page_mu.unlock() }
+	return s.console_msgs.clone()
+}
+
+fn (mut s CdpSession) page_errors_snapshot() []string {
+	s.page_mu.@lock()
+	defer { s.page_mu.unlock() }
+	return s.page_errors.clone()
+}
+
+fn (mut s CdpSession) dialog_events_snapshot() []string {
+	s.page_mu.@lock()
+	defer { s.page_mu.unlock() }
+	return s.dialog_events.clone()
+}
+
+fn (mut s CdpSession) clear_console_messages() {
+	s.page_mu.@lock()
+	s.console_msgs = []string{}
+	s.page_mu.unlock()
+}
+
+fn (mut s CdpSession) clear_page_errors() {
+	s.page_mu.@lock()
+	s.page_errors = []string{}
+	s.page_mu.unlock()
+}
+
+fn (mut s CdpSession) clear_dialog_events() {
+	s.page_mu.@lock()
+	s.dialog_events = []string{}
+	s.page_mu.unlock()
 }
 
 fn (mut s CdpSession) close() {

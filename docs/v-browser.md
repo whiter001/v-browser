@@ -19,9 +19,11 @@ v -o ./v-browser ./src
 
 # 构建扩展
 cd ../extension
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
+
+扩展包仅支持 `pnpm`，不要使用 `npm install`。
 
 自动后台拉起 `v-browser server`（如有需要）。现在优先使用 `pueue add`。如果环境里没有 `pueue`，也可以手动运行 `v-browser server`（通常不需要）。
 

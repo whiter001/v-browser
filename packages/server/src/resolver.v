@@ -49,7 +49,7 @@ fn resolve_axref(mut sess CdpSession, ref string) !ResolvedElement {
 
 // resolve_css 通过 CSS 选择器查元素（支持 XPath: 以 //  开头）
 fn resolve_css(mut sess CdpSession, sel string) !ResolvedElement {
-	js := build_rect_query_js(&sess, sel)
+	js := build_rect_query_js(mut sess, sel)
 
 	eval_resp := sess.send_command('Runtime.evaluate', '{"expression":${js_str(js)},"returnByValue":true}') or {
 		return error('Runtime.evaluate failed: ${err}')
@@ -109,7 +109,7 @@ fn get_box_by_backend_node_id(mut sess CdpSession, bnid int) !ResolvedElement {
 }
 
 fn get_dom_node_ref(mut sess CdpSession, sel string) !DomNodeRef {
-	lookup_js := build_element_scope_js(&sess, sel, 'return el;')
+	lookup_js := build_element_scope_js(mut sess, sel, 'return el;')
 	resolve_resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(lookup_js)}}') or {
 		return error(err.msg())
 	}
@@ -140,32 +140,33 @@ fn get_dom_node_ref(mut sess CdpSession, sel string) !DomNodeRef {
 }
 
 // 在当前 frame 或主文档上下文中包装一段 JS。
-fn build_document_scope_js(sess &CdpSession, body string) string {
-	if sess.current_frame_selector == '' {
+fn build_document_scope_js(mut sess CdpSession, body string) string {
+	frame_selector := sess.current_frame_selector_value()
+	if frame_selector == '' {
 		return '(function(){ var frame=null; var doc=document; var win=window; ${body} })()'
 	}
-	frame_sel := js_str(sess.current_frame_selector)
+	frame_sel := js_str(frame_selector)
 	return '(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${body} })()'
 }
 
 // 生成带单个元素查询的 JS 包装器。
-fn build_element_scope_js(sess &CdpSession, sel string, body string) string {
+fn build_element_scope_js(mut sess CdpSession, sel string, body string) string {
 	query := if sel.starts_with('//') || sel.starts_with('(//') {
 		'var el=doc.evaluate(${js_str(sel)}, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;'
 	} else {
 		'var el=doc.querySelector(${js_str(sel)});'
 	}
-	return build_document_scope_js(sess, '${query} ${body}')
+	return build_document_scope_js(mut sess, '${query} ${body}')
 }
 
 // 生成带多元素查询的 JS 包装器。
-fn build_elements_scope_js(sess &CdpSession, sel string, body string) string {
-	return build_document_scope_js(sess, 'var els=doc.querySelectorAll(${js_str(sel)}); ${body}')
+fn build_elements_scope_js(mut sess CdpSession, sel string, body string) string {
+	return build_document_scope_js(mut sess, 'var els=doc.querySelectorAll(${js_str(sel)}); ${body}')
 }
 
 // 构造获取元素边界框的 JS 查询。
-fn build_rect_query_js(sess &CdpSession, sel string) string {
-	return build_element_scope_js(sess, sel, 'if(!el) return null; var r=el.getBoundingClientRect(); if(frame){ var fr=frame.getBoundingClientRect(); return {x:fr.x+r.x,y:fr.y+r.y,width:r.width,height:r.height}; } return r;')
+fn build_rect_query_js(mut sess CdpSession, sel string) string {
+	return build_element_scope_js(mut sess, sel, 'if(!el) return null; var r=el.getBoundingClientRect(); if(frame){ var fr=frame.getBoundingClientRect(); return {x:fr.x+r.x,y:fr.y+r.y,width:r.width,height:r.height}; } return r;')
 }
 
 // ─── 帮助函数 ────────────────────────────────────────────────

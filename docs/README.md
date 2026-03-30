@@ -19,12 +19,12 @@
 
 ## 🔑 快速链接
 
-| 资源 | 位置 |
-|------|------|
-| 源代码 | [packages/server](../packages/server/) |
-| 浏览器扩展 | [packages/extension](../packages/extension/) |
-| 测试 UI | [packages/test-ui](../packages/test-ui/) |
-| GitHub 仓库 | <https://github.com/whiter001/v-browser> |
+| 资源        | 位置                                         |
+| ----------- | -------------------------------------------- |
+| 源代码      | [packages/server](../packages/server/)       |
+| 浏览器扩展  | [packages/extension](../packages/extension/) |
+| 测试 UI     | [packages/test-ui](../packages/test-ui/)     |
+| GitHub 仓库 | <https://github.com/whiter001/v-browser>     |
 
 ## 🚀 快速开始
 
@@ -35,7 +35,7 @@ v -o ./v-browser ./src
 
 # 2. 构建扩展
 cd ../extension
-npm install && npm run build
+pnpm install && pnpm run build
 
 # 3. 连接浏览器
 ./v-browser connect
@@ -44,6 +44,8 @@ npm install && npm run build
 ./v-browser open https://example.com
 ./v-browser snapshot
 ```
+
+扩展包仅支持 `pnpm`，不要使用 `npm install`。
 
 ## 📖 推荐阅读顺序
 

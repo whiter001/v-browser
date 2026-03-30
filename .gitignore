@@ -50,5 +50,7 @@ test-results/
 # Downloads
 downloads/
 
+# WorkBuddy (personal workspace config)
+.workbuddy/
 
 .playwright-mcp/

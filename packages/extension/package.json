@@ -15,7 +15,7 @@
   "scripts": {
     "dev": "vite build --watch",
     "build": "tsc --project . && tsc --project tsconfig.ui.json && vite build && vite build --config vite.sw.config.mts",
-    "zip": "npm run build && zip -r ../v-browser-extension.zip dist/ manifest.json icons/",
+    "zip": "pnpm run build && zip -r ../v-browser-extension.zip dist/ manifest.json icons/",
     "watch": "tsc --watch --project . & tsc --watch --project tsconfig.ui.json & vite build --watch & vite build --watch --config vite.sw.config.mts",
     "lint": "tsc --project .",
     "clean": "rm -rf dist",

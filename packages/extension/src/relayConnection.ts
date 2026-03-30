@@ -56,6 +56,7 @@ export class RelayConnection {
   private _detachListener: (source: chrome.debugger.Debuggee, reason: string) => void;
   private _tabPromise: Promise<void>;
   private _tabPromiseResolve!: () => void;
+  private _tabActionQueue: Promise<void>;
   private _closed = false;
   private _isAttached = false;
 
@@ -65,6 +66,7 @@ export class RelayConnection {
   constructor(ws: WebSocket) {
     this._debuggee = {};
     this._tabPromise = new Promise((resolve) => (this._tabPromiseResolve = resolve));
+    this._tabActionQueue = Promise.resolve();
     this._ws = ws;
     this.sendExtensionRegistration();
     this._ws.onmessage = this._onMessage.bind(this);
@@ -143,6 +145,20 @@ export class RelayConnection {
     debugLog("Debugger detached, keeping relay open for reattach:", reason, this._debuggee);
   }
 
+  private async _runExclusiveTabAction<T>(action: () => Promise<T>): Promise<T> {
+    const previousAction = this._tabActionQueue;
+    let release!: () => void;
+    this._tabActionQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previousAction;
+    try {
+      return await action();
+    } finally {
+      release();
+    }
+  }
+
   // WebSocket 收到消息时转入异步处理，避免阻塞事件循环。
   private _onMessage(event: MessageEvent): void {
     this._onMessageAsync(event).catch((e) => debugLog("Error handling message:", e));
@@ -181,8 +197,10 @@ export class RelayConnection {
   // 将 relay 命令翻译成 chrome.tabs / chrome.debugger 调用。
   private async _handleCommand(message: ProtocolCommand): Promise<any> {
     if (message.method === "attachToTab") {
-      await this._tabPromise;
-      return await this._attachDebuggerToTab(this._debuggee.tabId!);
+      return await this._runExclusiveTabAction(async () => {
+        await this._tabPromise;
+        return await this._attachDebuggerToTab(this._debuggee.tabId!);
+      });
     }
     if (message.method === "listTabs") {
       const tabs = await chrome.tabs.query({});
@@ -205,55 +223,63 @@ export class RelayConnection {
         }));
     }
     if (message.method === "createTab") {
-      const url = message.params?.url || "about:blank";
-      const tab = await chrome.tabs.create({ url, active: true });
-      if (!tab.id || !tab.windowId) throw new Error("Created tab is missing tab identifiers");
-      const attached = await this._attachDebuggerToTab(tab.id, tab.windowId);
-      return {
-        tab: {
-          id: tab.id,
-          windowId: tab.windowId,
-          title: tab.title || "",
-          url: tab.url || "",
-          active: !!tab.active,
-        },
-        ...attached,
-      };
+      return await this._runExclusiveTabAction(async () => {
+        const url = message.params?.url || "about:blank";
+        const tab = await chrome.tabs.create({ url, active: true });
+        if (!tab.id || !tab.windowId) throw new Error("Created tab is missing tab identifiers");
+        const attached = await this._attachDebuggerToTab(tab.id, tab.windowId);
+        return {
+          tab: {
+            id: tab.id,
+            windowId: tab.windowId,
+            title: tab.title || "",
+            url: tab.url || "",
+            active: !!tab.active,
+          },
+          ...attached,
+        };
+      });
     }
     if (message.method === "createWindow") {
-      const url = message.params?.url || "about:blank";
-      const created = await chrome.windows.create({ url, focused: true });
-      const tab = created.tabs?.[0];
-      if (!created.id || !tab?.id) throw new Error("Created window is missing tab identifiers");
-      const attached = await this._attachDebuggerToTab(tab.id, created.id);
-      return {
-        windowId: created.id,
-        tab: {
-          id: tab.id,
+      return await this._runExclusiveTabAction(async () => {
+        const url = message.params?.url || "about:blank";
+        const created = await chrome.windows.create({ url, focused: true });
+        const tab = created.tabs?.[0];
+        if (!created.id || !tab?.id) throw new Error("Created window is missing tab identifiers");
+        const attached = await this._attachDebuggerToTab(tab.id, created.id);
+        return {
           windowId: created.id,
-          title: tab.title || "",
-          url: tab.url || "",
-          active: !!tab.active,
-        },
-        ...attached,
-      };
+          tab: {
+            id: tab.id,
+            windowId: created.id,
+            title: tab.title || "",
+            url: tab.url || "",
+            active: !!tab.active,
+          },
+          ...attached,
+        };
+      });
     }
     if (message.method === "switchToTab") {
-      const tabId = Number(message.params?.tabId || 0);
-      const windowId = Number(message.params?.windowId || 0) || undefined;
-      if (!tabId) throw new Error("switchToTab requires tabId");
-      return await this._attachDebuggerToTab(tabId, windowId);
+      return await this._runExclusiveTabAction(async () => {
+        const tabId = Number(message.params?.tabId || 0);
+        const windowId = Number(message.params?.windowId || 0) || undefined;
+        if (!tabId) throw new Error("switchToTab requires tabId");
+        return await this._attachDebuggerToTab(tabId, windowId);
+      });
     }
     if (message.method === "closeTab") {
-      const tabId = Number(message.params?.tabId || this._debuggee.tabId || 0);
-      if (!tabId) throw new Error("closeTab requires tabId");
-      if (this._debuggee.tabId === tabId && this._isAttached) {
-        await chrome.debugger.detach(this._debuggee).catch(() => {});
-        this._isAttached = false;
-      }
-      await chrome.tabs.remove(tabId);
-      if (this._debuggee.tabId === tabId) this._debuggee = {};
-      return { closedTabId: tabId };
+      return await this._runExclusiveTabAction(async () => {
+        const tabId = Number(message.params?.tabId || this._debuggee.tabId || 0);
+        if (!tabId) throw new Error("closeTab requires tabId");
+        if (this._debuggee.tabId === tabId && this._isAttached) {
+          await chrome.debugger.detach(this._debuggee).catch(() => {});
+          this._isAttached = false;
+        }
+        await chrome.tabs.remove(tabId);
+        if (this._debuggee.tabId === tabId) this._debuggee = {};
+        return { closedTabId: tabId };
+      });
     }
     if (!this._debuggee.tabId)
       throw new Error(

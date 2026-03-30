@@ -115,11 +115,12 @@ fn cmd_eval(mut sess CdpSession, params string) string {
 	return json_str(val)
 }
 
-fn build_scoped_runtime_js(sess &CdpSession, body string) string {
-	if sess.current_frame_selector == '' {
+fn build_scoped_runtime_js(mut sess CdpSession, body string) string {
+	frame_selector := sess.current_frame_selector_value()
+	if frame_selector == '' {
 		return '(function(document, window){ ${body} })(document, window)'
 	}
-	frame_sel := js_str(sess.current_frame_selector)
+	frame_sel := js_str(frame_selector)
 	return '(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; return (function(document, window){ ${body} })(doc, win); })()'
 }
 
@@ -132,7 +133,7 @@ fn evaluate_bool_js(mut sess CdpSession, js string) !bool {
 
 fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) !string {
 	encoded_expr := base64.encode_str(expr)
-	scoped_expr := build_scoped_runtime_js(&sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
+	scoped_expr := build_scoped_runtime_js(mut sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
 	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":${await_promise}}'
 	resp := sess.send_command('Runtime.evaluate', p)!
 	result := cdp_extract_obj_key(resp.result, '"result":')
@@ -143,7 +144,7 @@ fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) 
 // blocking the whole CLI when the CDP session is frozen by a synchronous alert/prompt.
 fn eval_scoped_expression_short(mut sess CdpSession, expr string) !string {
 	encoded_expr := base64.encode_str(expr)
-	scoped_expr := build_scoped_runtime_js(&sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
+	scoped_expr := build_scoped_runtime_js(mut sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
 	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":false}'
 	resp := sess.send_command_to('Runtime.evaluate', p, '', 3 * time.second)!
 	result := cdp_extract_obj_key(resp.result, '"result":')
@@ -158,10 +159,11 @@ fn run_element_action_short(mut sess CdpSession, sel string, body string) ! {
 	} else {
 		'var el=doc.querySelector(${js_str(sel)});'
 	}
-	js := if sess.current_frame_selector == '' {
+	frame_selector := sess.current_frame_selector_value()
+	js := if frame_selector == '' {
 		'(function(){ var frame=null; var doc=document; var win=window; ${query} if(el === null) return false; ${body} })()'
 	} else {
-		frame_sel := js_str(sess.current_frame_selector)
+		frame_sel := js_str(frame_selector)
 		'(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${query} if(el === null) return false; ${body} })()'
 	}
 	result := eval_scoped_expression_short(mut sess, js)!
@@ -172,7 +174,7 @@ fn run_element_action_short(mut sess CdpSession, sel string, body string) ! {
 }
 
 fn resolve_object_id_by_selector(mut sess CdpSession, sel string) !string {
-	js := build_scoped_runtime_js(&sess, 'return document.querySelector(${js_str(sel)});')
+	js := build_scoped_runtime_js(mut sess, 'return document.querySelector(${js_str(sel)});')
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}')!
 	object_id := cdp_extract_str(resp.result, 'objectId')
 	if object_id == '' {
@@ -188,10 +190,11 @@ fn run_element_action(mut sess CdpSession, sel string, body string) ! {
 	} else {
 		'var el=doc.querySelector(${js_str(sel)});'
 	}
-	js := if sess.current_frame_selector == '' {
+	frame_selector := sess.current_frame_selector_value()
+	js := if frame_selector == '' {
 		'(function(){ var frame=null; var doc=document; var win=window; ${query} if(el === null) return false; ${body} })()'
 	} else {
-		frame_sel := js_str(sess.current_frame_selector)
+		frame_sel := js_str(frame_selector)
 		'(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${query} if(el === null) return false; ${body} })()'
 	}
 	result := eval_scoped_expression(mut sess, js, false)!
@@ -201,8 +204,8 @@ fn run_element_action(mut sess CdpSession, sel string, body string) ! {
 	}
 }
 
-fn build_action_point_query_js(sess &CdpSession, locator_js string) string {
-	return build_document_scope_js(sess, '
+fn build_action_point_query_js(mut sess CdpSession, locator_js string) string {
+	return build_document_scope_js(mut sess, '
 			var el = (${locator_js});
 			if (!el) return null;
 			el.scrollIntoView({ block: "center", inline: "center" });
@@ -220,7 +223,7 @@ fn build_action_point_query_js(sess &CdpSession, locator_js string) string {
 }
 
 fn resolve_action_point_by_js(mut sess CdpSession, locator_js string) !ResolvedElement {
-	js := build_action_point_query_js(&sess, locator_js)
+	js := build_action_point_query_js(mut sess, locator_js)
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
 	result_obj := cdp_extract_obj_key(resp.result, '"result":')
 	value_obj := cdp_extract_obj_key(result_obj, '"value":')
@@ -240,7 +243,7 @@ fn scroll_resolved_element_into_view(mut sess CdpSession, sel string, el Resolve
 		sess.send_command('DOM.scrollIntoViewIfNeeded', '{"backendNodeId":${el.backend_node_id}}')!
 		return
 	}
-	js := build_element_scope_js(&sess, sel, 'if(!el) return false; el.scrollIntoView({block:"center",inline:"center"}); return true;')
+	js := build_element_scope_js(mut sess, sel, 'if(!el) return false; el.scrollIntoView({block:"center",inline:"center"}); return true;')
 	if !evaluate_bool_js(mut sess, js)! {
 		return error('element not found: ${sel}')
 	}
@@ -314,7 +317,7 @@ fn parse_verify_settings(params string, default_timeout time.Duration) (bool, ti
 }
 
 fn read_element_text_or_value(mut sess CdpSession, sel string) !string {
-	js := build_element_scope_js(&sess, sel, 'if(!el) return null; if ("value" in el) return el.value; return el.textContent || "";')
+	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; if ("value" in el) return el.value; return el.textContent || "";')
 	return eval_scoped_expression(mut sess, js, false)
 }
 
@@ -340,12 +343,12 @@ fn wait_for_element_text_or_value(mut sess CdpSession, sel string, expected stri
 }
 
 fn read_file_input_names(mut sess CdpSession, sel string) !string {
-	js := build_element_scope_js(&sess, sel, 'if(!el) return null; if (!el.files) return ""; return Array.from(el.files).map(function(file) { return file.name; }).join("\n");')
+	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; if (!el.files) return ""; return Array.from(el.files).map(function(file) { return file.name; }).join("\n");')
 	return eval_scoped_expression(mut sess, js, false)
 }
 
 fn read_preview_text(mut sess CdpSession, sel string) !string {
-	js := build_element_scope_js(&sess, sel, 'if(!el) return null; return (el.innerText || el.textContent || el.value || "").trim();')
+	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; return (el.innerText || el.textContent || el.value || "").trim();')
 	return eval_scoped_expression(mut sess, js, false)
 }
 
@@ -490,7 +493,7 @@ fn cmd_open(mut sess CdpSession, params string) string {
 
 fn clear_document_context(mut sess CdpSession) {
 	// Navigation must drop any stale frame or AX state so the next page starts from the main document.
-	sess.current_frame_selector = ''
+	sess.set_current_frame_selector('')
 	axref_clear(mut sess.axref)
 }
 
@@ -689,7 +692,7 @@ fn detect_completed_download_in_dir(download_dir string) string {
 }
 
 fn install_dom_download_capture(mut sess CdpSession) ! {
-	js := build_document_scope_js(&sess, '
+	js := build_document_scope_js(mut sess, '
 		if (win.__vBrowserDownloadCaptureInstalled) return true;
 		win.__vBrowserDownloadCaptureInstalled = true;
 		win.__vBrowserDownloadQueue = win.__vBrowserDownloadQueue || [];
@@ -740,7 +743,7 @@ fn install_dom_download_capture(mut sess CdpSession) ! {
 }
 
 fn pull_dom_download_capture(mut sess CdpSession) !string {
-	js := build_document_scope_js(&sess, 'var queue = win.__vBrowserDownloadQueue || []; if (queue.length === 0) return null; return JSON.stringify(queue.shift());')
+	js := build_document_scope_js(mut sess, 'var queue = win.__vBrowserDownloadQueue || []; if (queue.length === 0) return null; return JSON.stringify(queue.shift());')
 	return eval_scoped_expression(mut sess, js, false)!
 }
 
@@ -776,7 +779,7 @@ fn write_dom_download_result(raw string, target_path string) !string {
 }
 
 fn fetch_download_via_dom(mut sess CdpSession, sel string, target_path string) !string {
-	js := build_element_scope_js(&sess, sel, '
+	js := build_element_scope_js(mut sess, sel, '
 		if (!el) return JSON.stringify({ ok: false, error: "element not found" });
 		var href = el.href || el.getAttribute("href");
 		if (!href) return JSON.stringify({ ok: false, error: "element has no href" });
@@ -889,7 +892,7 @@ fn wait_for_download(mut sess CdpSession, download_dir string, target_path strin
 	return error('timeout waiting for download')
 }
 
-fn build_dom_snapshot_js(sess &CdpSession, selector string, compact bool, max_depth int) string {
+fn build_dom_snapshot_js(mut sess CdpSession, selector string, compact bool, max_depth int) string {
 	selector_expr := if selector == '' {
 		'doc.body || doc.documentElement'
 	} else if selector.starts_with('//') || selector.starts_with('(//') {
@@ -899,7 +902,7 @@ fn build_dom_snapshot_js(sess &CdpSession, selector string, compact bool, max_de
 	}
 	compact_js := if compact { 'true' } else { 'false' }
 	depth_limit := if max_depth > 0 { max_depth } else { 8 }
-	return build_document_scope_js(sess, '
+	return build_document_scope_js(mut sess, '
 		var root = ${selector_expr};
 		if (!root) return "";
 		function normalizeText(value) {
@@ -937,7 +940,7 @@ fn build_dom_snapshot_js(sess &CdpSession, selector string, compact bool, max_de
 }
 
 fn capture_dom_snapshot(mut sess CdpSession, selector string, compact bool, max_depth int) !string {
-	js := build_dom_snapshot_js(&sess, selector, compact, max_depth)
+	js := build_dom_snapshot_js(mut sess, selector, compact, max_depth)
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
 	result := cdp_extract_obj_key(resp.result, '"result":')
 	return cdp_extract_value_from_result(result)
@@ -1382,9 +1385,9 @@ fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, in
 	return out.str(), counter
 }
 
-fn build_cursor_interactive_snapshot_js(sess &CdpSession, candidate_limit int) string {
+fn build_cursor_interactive_snapshot_js(mut sess CdpSession, candidate_limit int) string {
 	limit := if candidate_limit > 0 { candidate_limit } else { 1000 }
-	return build_document_scope_js(sess, '
+	return build_document_scope_js(mut sess, '
 		var interactiveRoles = new Set([
 			"button", "link", "textbox", "checkbox", "radio", "combobox", "listbox",
 			"menuitem", "menuitemcheckbox", "menuitemradio", "option", "searchbox",
@@ -1476,7 +1479,7 @@ fn build_cursor_interactive_snapshot_js(sess &CdpSession, candidate_limit int) s
 
 fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mut store AxRefStore,
 	max_nodes int) !string {
-	js := build_cursor_interactive_snapshot_js(&sess, max_nodes)
+	js := build_cursor_interactive_snapshot_js(mut sess, max_nodes)
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
 		return error('cursor scan failed: ${err}')
 	}
@@ -1611,7 +1614,7 @@ fn focus_selector(mut sess CdpSession, sel string) ! {
 	el := resolve_selector(mut sess, sel)!
 	sess.send_command('DOM.focus', '{"backendNodeId":${el.backend_node_id}}') or {
 		// fallback: Runtime.evaluate
-		js := build_element_scope_js(&sess, sel, 'el?.focus(); return true;')
+		js := build_element_scope_js(mut sess, sel, 'el?.focus(); return true;')
 		if !evaluate_bool_js(mut sess, js)! {
 			return error('element not found: ${sel}')
 		}
@@ -1625,7 +1628,7 @@ fn cmd_fill(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	if sess.current_frame_selector != '' {
+	if sess.current_frame_selector_value() != '' {
 		fill_via_keyboard(mut sess, sel, text) or { return 'ERROR:${err}' }
 	} else {
 		run_element_action(mut sess, sel, build_fill_action_body(text)) or {
@@ -1786,7 +1789,7 @@ fn cmd_select(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	js := build_element_scope_js(&sess, sel, 'if(!el) return false; el.value=${js_str(value)}; el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true})); return true;')
+	js := build_element_scope_js(mut sess, sel, 'if(!el) return false; el.value=${js_str(value)}; el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true})); return true;')
 	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 		return 'ERROR:${err}'
 	}
@@ -1835,7 +1838,7 @@ fn cmd_scroll(mut sess CdpSession, params string) string {
 			return 'ERROR:${err}'
 		}
 	} else {
-		js := build_document_scope_js(&sess, 'win.scrollBy(${dx}, ${dy}); return true;')
+		js := build_document_scope_js(mut sess, 'win.scrollBy(${dx}, ${dy}); return true;')
 		sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 			return 'ERROR:${err}'
 		}
@@ -1848,7 +1851,7 @@ fn cmd_scrollintoview(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	js := build_element_scope_js(&sess, sel, "el?.scrollIntoView({block:'center',inline:'center'})")
+	js := build_element_scope_js(mut sess, sel, "el?.scrollIntoView({block:'center',inline:'center'})")
 	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 		return 'ERROR:${err}'
 	}
@@ -1923,13 +1926,13 @@ fn cmd_get(mut sess CdpSession, params string) string {
 
 	js := match prop {
 		'text' {
-			build_element_scope_js(&sess, sel, 'return el?.textContent;')
+			build_element_scope_js(mut sess, sel, 'return el?.textContent;')
 		}
 		'html' {
-			build_element_scope_js(&sess, sel, 'return el?.innerHTML;')
+			build_element_scope_js(mut sess, sel, 'return el?.innerHTML;')
 		}
 		'value' {
-			build_element_scope_js(&sess, sel, 'return el?.value;')
+			build_element_scope_js(mut sess, sel, 'return el?.value;')
 		}
 		'title' {
 			'document.title'
@@ -1938,17 +1941,17 @@ fn cmd_get(mut sess CdpSession, params string) string {
 			'window.location.href'
 		}
 		'count' {
-			build_elements_scope_js(&sess, sel, 'return els.length;')
+			build_elements_scope_js(mut sess, sel, 'return els.length;')
 		}
 		'attr' {
 			attr := cdp_extract_str(params, 'attr')
-			build_element_scope_js(&sess, sel, 'return el?.getAttribute(${js_str(attr)});')
+			build_element_scope_js(mut sess, sel, 'return el?.getAttribute(${js_str(attr)});')
 		}
 		'box' {
-			build_rect_query_js(&sess, sel)
+			build_rect_query_js(mut sess, sel)
 		}
 		'styles' {
-			build_element_scope_js(&sess, sel, 'return el?JSON.stringify(Object.fromEntries(Object.entries(getComputedStyle(el)))):null;')
+			build_element_scope_js(mut sess, sel, 'return el?JSON.stringify(Object.fromEntries(Object.entries(getComputedStyle(el)))):null;')
 		}
 		else {
 			return 'ERROR:unknown property: ${prop}'
@@ -1973,33 +1976,33 @@ fn cmd_is(mut sess CdpSession, params string) string {
 	js := match state {
 		// visible：排除 visibility:hidden、display:none、opacity:0 以及零尺寸元素
 		'visible' {
-			build_element_scope_js(&sess, sel, "if(!el) return false; var r=el.getBoundingClientRect(); if(r.width<=0||r.height<=0) return false; var s=getComputedStyle(el); return s.visibility!=='hidden'&&s.display!=='none'&&s.opacity!=='0';")
+			build_element_scope_js(mut sess, sel, "if(!el) return false; var r=el.getBoundingClientRect(); if(r.width<=0||r.height<=0) return false; var s=getComputedStyle(el); return s.visibility!=='hidden'&&s.display!=='none'&&s.opacity!=='0';")
 		}
 		'enabled' {
-			build_element_scope_js(&sess, sel, 'return !el?.disabled;')
+			build_element_scope_js(mut sess, sel, 'return !el?.disabled;')
 		}
 		'checked' {
-			build_element_scope_js(&sess, sel, 'return !!el?.checked;')
+			build_element_scope_js(mut sess, sel, 'return !!el?.checked;')
 		}
 		// disabled
 		'disabled' {
-			build_element_scope_js(&sess, sel, 'return !!el?.disabled;')
+			build_element_scope_js(mut sess, sel, 'return !!el?.disabled;')
 		}
 		// focused：是否是当前获得焦点的元素
 		'focused' {
-			build_element_scope_js(&sess, sel, 'return el === doc.activeElement;')
+			build_element_scope_js(mut sess, sel, 'return el === doc.activeElement;')
 		}
 		// selected：option 被选中 或 aria-selected=true
 		'selected' {
-			build_element_scope_js(&sess, sel, "return el?.selected === true || el?.getAttribute('aria-selected') === 'true';")
+			build_element_scope_js(mut sess, sel, "return el?.selected === true || el?.getAttribute('aria-selected') === 'true';")
 		}
 		// editable：可编辑（非只读、非禁用)
 		'editable' {
-			build_element_scope_js(&sess, sel, "if(!el) return false; if(el.disabled) return false; if(el.readOnly) return false; return el.isContentEditable || 'value' in el;")
+			build_element_scope_js(mut sess, sel, "if(!el) return false; if(el.disabled) return false; if(el.readOnly) return false; return el.isContentEditable || 'value' in el;")
 		}
 		// expanded：aria-expanded=true
 		'expanded' {
-			build_element_scope_js(&sess, sel, "return el?.getAttribute('aria-expanded') === 'true';")
+			build_element_scope_js(mut sess, sel, "return el?.getAttribute('aria-expanded') === 'true';")
 		}
 		else {
 			return 'ERROR:unknown state: ${state}'
@@ -2140,7 +2143,7 @@ fn wait_url(mut sess CdpSession, pattern string) string {
 fn wait_text(mut sess CdpSession, text string) string {
 	deadline := time.now().add(30 * time.second)
 	for time.now() < deadline {
-		js := build_document_scope_js(&sess, 'return doc.body?.innerText;')
+		js := build_document_scope_js(mut sess, 'return doc.body?.innerText;')
 		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
 			break
 		}
@@ -2173,7 +2176,7 @@ fn wait_fn(mut sess CdpSession, expr string) string {
 fn wait_selector(mut sess CdpSession, sel string) string {
 	deadline := time.now().add(30 * time.second)
 	for time.now() < deadline {
-		js := build_element_scope_js(&sess, sel, 'if(!el) return false; var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;')
+		js := build_element_scope_js(mut sess, sel, 'if(!el) return false; var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;')
 		resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
 			break
 		}
@@ -2191,7 +2194,7 @@ fn wait_stable(mut sess CdpSession, sel string, timeout time.Duration) string {
 	deadline := time.now().add(timeout)
 	poll_interval := 300 * time.millisecond
 	settled_threshold := 2 // 连续相同次数
-	js := build_element_scope_js(&sess, sel, "if(!el) return null; return el.innerText||el.value||'';")
+	js := build_element_scope_js(mut sess, sel, "if(!el) return null; return el.innerText||el.value||'';")
 	mut last_val := ''
 	mut stable_count := 0
 	for time.now() < deadline {
@@ -2255,12 +2258,12 @@ fn cmd_find(mut sess CdpSession, params string) string {
 			return 'ERROR:ambiguous text match: ${query}. Use --index to select a candidate, or run find --list / --debug to review candidates.'
 		}
 	}
-	js := build_semantic_locator_js(&sess, locator, query, exact, name_filter, index)
+	js := build_semantic_locator_js(mut sess, locator, query, exact, name_filter, index)
 	return exec_semantic_action(mut sess, js, locator, action, value)
 }
 
 fn semantic_text_candidates_report(mut sess CdpSession, query string, exact bool, selected_index int, limit int, mode string) string {
-	js := build_semantic_text_report_js(&sess, query, exact, selected_index, limit, mode)
+	js := build_semantic_text_report_js(mut sess, query, exact, selected_index, limit, mode)
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
 		return 'ERROR:${err}'
 	}
@@ -2272,13 +2275,13 @@ fn semantic_text_candidates_report(mut sess CdpSession, query string, exact bool
 	return value
 }
 
-fn build_semantic_text_report_js(sess &CdpSession, query string, exact bool, selected_index int, limit int, mode string) string {
+fn build_semantic_text_report_js(mut sess CdpSession, query string, exact bool, selected_index int, limit int, mode string) string {
 	query_js := js_str(query)
 	selected_index_js := '${selected_index}'
 	limit_js := '${limit}'
 	mode_js := js_str(mode)
 	exact_js := if exact { 'true' } else { 'false' }
-	return build_document_scope_js(sess, '
+	return build_document_scope_js(mut sess, '
 		function normalizeText(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
 		function isVisible(el) {
 			if (!el) return false;
@@ -2408,7 +2411,7 @@ fn build_semantic_text_report_js(sess &CdpSession, query string, exact bool, sel
 	')
 }
 
-fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exact bool, name_filter string, index int) string {
+fn build_semantic_locator_js(mut sess CdpSession, locator string, query string, exact bool, name_filter string, index int) string {
 	query_js := js_str(query)
 	name_js := js_str(name_filter)
 	index_js := '${index}'
@@ -2461,7 +2464,7 @@ fn build_semantic_locator_js(sess &CdpSession, locator string, query string, exa
 			}
 		}
 	}
-	return build_document_scope_js(sess, '
+	return build_document_scope_js(mut sess, '
 		function normalizeText(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
 		function isVisible(el) {
 			if (!el) return false;
@@ -2576,27 +2579,27 @@ fn exec_semantic_action(mut sess CdpSession, locator_js string, locator string, 
 			return semantic_mouse_action(mut sess, locator_js, 'hover', locator)
 		}
 		'fill' {
-			js := build_semantic_action_js(&sess, locator_js, 'if (!el) return null; el.focus?.(); if ("value" in el) el.value = ${js_str(value)}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true;')
+			js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return null; el.focus?.(); if ("value" in el) el.value = ${js_str(value)}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true;')
 			return evaluate_semantic_result(mut sess, js, locator, false)
 		}
 		'type' {
-			js := build_semantic_action_js(&sess, locator_js, 'if (!el) return null; el.focus?.(); if ("value" in el) el.value = String(el.value || "") + ${js_str(value)}; el.dispatchEvent(new Event("input", { bubbles: true })); return true;')
+			js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return null; el.focus?.(); if ("value" in el) el.value = String(el.value || "") + ${js_str(value)}; el.dispatchEvent(new Event("input", { bubbles: true })); return true;')
 			return evaluate_semantic_result(mut sess, js, locator, false)
 		}
 		'text' {
-			js := build_semantic_action_js(&sess, locator_js, 'if (!el) return null; return el.innerText || el.textContent || "";')
+			js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return null; return el.innerText || el.textContent || "";')
 			return evaluate_semantic_result(mut sess, js, locator, true)
 		}
 		'focus' {
-			js := build_semantic_action_js(&sess, locator_js, 'if (!el) return null; el.focus?.(); return true;')
+			js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return null; el.focus?.(); return true;')
 			return evaluate_semantic_result(mut sess, js, locator, false)
 		}
 		'check' {
-			js := build_semantic_action_js(&sess, locator_js, 'if (!el) return null; if ("checked" in el) el.checked = true; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true;')
+			js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return null; if ("checked" in el) el.checked = true; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true;')
 			return evaluate_semantic_result(mut sess, js, locator, false)
 		}
 		'uncheck' {
-			js := build_semantic_action_js(&sess, locator_js, 'if (!el) return null; if ("checked" in el) el.checked = false; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true;')
+			js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return null; if ("checked" in el) el.checked = false; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true;')
 			return evaluate_semantic_result(mut sess, js, locator, false)
 		}
 		else {
@@ -2611,7 +2614,7 @@ fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, 
 		'hover' { build_hover_action_body() }
 		else { return 'ERROR:unknown action: ${action}' }
 	}
-	js := build_semantic_action_js(&sess, locator_js, 'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
+			js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
 	ok := eval_scoped_expression(mut sess, js, false) or {
 		pointer_action_for_locator_js(mut sess, locator_js, action) or { return 'ERROR:${err}' }
 		return 'null'
@@ -2625,8 +2628,8 @@ fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, 
 	return 'null'
 }
 
-fn build_semantic_action_js(sess &CdpSession, locator_js string, body string) string {
-	return build_document_scope_js(sess, 'var el = (${locator_js}); ${body}')
+fn build_semantic_action_js(mut sess CdpSession, locator_js string, body string) string {
+	return build_document_scope_js(mut sess, 'var el = (${locator_js}); ${body}')
 }
 
 fn evaluate_semantic_result(mut sess CdpSession, js string, locator string, return_value bool) string {
@@ -2671,7 +2674,7 @@ fn apply_action(mut sess CdpSession, el ResolvedElement, sel string, action stri
 			return 'null'
 		}
 		'text' {
-			js := build_element_scope_js(&sess, sel, 'return el?.textContent;')
+			js := build_element_scope_js(mut sess, sel, 'return el?.textContent;')
 			resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
 				return 'ERROR:${err}'
 			}
@@ -4330,7 +4333,7 @@ fn save_network_response_with_retry(mut sess CdpSession, request_id string, targ
 }
 
 fn collect_page_primary_image_urls(mut sess CdpSession) ![]string {
-	js := build_page_primary_image_urls_js(&sess)
+	js := build_page_primary_image_urls_js(mut sess)
 	raw := eval_scoped_expression(mut sess, js, true)!
 	if raw == '' || raw == 'null' || raw == '[]' {
 		return []string{}
@@ -4348,8 +4351,8 @@ fn collect_page_primary_image_urls(mut sess CdpSession) ![]string {
 	return urls
 }
 
-fn build_page_primary_image_urls_js(sess &CdpSession) string {
-	return build_document_scope_js(sess, '
+fn build_page_primary_image_urls_js(mut sess CdpSession) string {
+	return build_document_scope_js(mut sess, '
 		function normalizeUrl(src) {
 			try { return new URL(src, doc.baseURI).href; } catch (e) { return ""; }
 		}
@@ -4548,14 +4551,14 @@ fn network_response_mime_type(entry TrackedNetworkRequest) string {
 fn cmd_frame(mut sess CdpSession, params string) string {
 	selector := cdp_extract_str(params, 'selector')
 	if selector == '' || selector == 'main' {
-		sess.current_frame_selector = ''
+		sess.set_current_frame_selector('')
 		axref_clear(mut sess.axref)
 		return json_str('main')
 	}
 	if axref_is_ref(selector) {
 		return 'ERROR:frame switching currently requires a CSS or XPath selector'
 	}
-	js := build_document_scope_js(&sess, 'var frameEl=document.querySelector(${js_str(selector)}); if(!frameEl) return "missing"; try { return frameEl.contentDocument ? "ok" : "unavailable"; } catch (e) { return "cross-origin"; }')
+	js := build_document_scope_js(mut sess, 'var frameEl=document.querySelector(${js_str(selector)}); if(!frameEl) return "missing"; try { return frameEl.contentDocument ? "ok" : "unavailable"; } catch (e) { return "cross-origin"; }')
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
 		return 'ERROR:${err}'
 	}
@@ -4564,7 +4567,7 @@ fn cmd_frame(mut sess CdpSession, params string) string {
 	if status != 'ok' {
 		return 'ERROR:cannot switch frame ${selector}: ${status}'
 	}
-	sess.current_frame_selector = selector
+	sess.set_current_frame_selector(selector)
 	axref_clear(mut sess.axref)
 	return json_str(selector)
 }
@@ -4576,13 +4579,14 @@ fn cmd_dialog(mut sess CdpSession, params string) string {
 	match action {
 		'events' {
 			sess.enable_page_events() or { return 'ERROR:${err}' }
-			if sess.dialog_events.len == 0 {
+			dialog_events := sess.dialog_events_snapshot()
+			if dialog_events.len == 0 {
 				return '[]'
 			}
-			return '[' + sess.dialog_events.map(it).join(',') + ']'
+			return '[' + dialog_events.map(it).join(',') + ']'
 		}
 		'clear' {
-			sess.dialog_events.clear()
+			sess.clear_dialog_events()
 			return 'null'
 		}
 		'accept' {
@@ -4602,7 +4606,8 @@ fn cmd_dialog(mut sess CdpSession, params string) string {
 			sess.enable_page_events() or { return 'ERROR:${err}' }
 			deadline := time.now().add(timeout)
 			for time.now() < deadline {
-				for ev in sess.dialog_events {
+				dialog_events := sess.dialog_events_snapshot()
+				for ev in dialog_events {
 					if ev.contains('javascriptDialogOpening') {
 						return 'true'
 					}
@@ -4628,8 +4633,9 @@ fn handle_dialog_with_retry(mut sess CdpSession, params string) ! {
 	// Page.handleJavaScriptDialog, otherwise it fails with "No dialog is showing".
 	mut event_deadline := time.now().add(3 * time.second)
 	for time.now() < event_deadline {
-		if sess.dialog_events.len > 0 {
-			for ev in sess.dialog_events {
+			dialog_events := sess.dialog_events_snapshot()
+			if dialog_events.len > 0 {
+				for ev in dialog_events {
 				if ev.contains('javascriptDialogOpening') {
 					event_deadline = time.now() // dialog is open, stop waiting
 					break
@@ -4658,7 +4664,7 @@ fn cmd_highlight(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	js := build_element_scope_js(&sess, sel, "if(!el) return; var old=el.style.outline; el.style.outline='3px solid #FF0080'; setTimeout(()=>el.style.outline=old,2000);")
+	js := build_element_scope_js(mut sess, sel, "if(!el) return; var old=el.style.outline; el.style.outline='3px solid #FF0080'; setTimeout(()=>el.style.outline=old,2000);")
 	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 		return 'ERROR:${err}'
 	}
@@ -4669,26 +4675,28 @@ fn cmd_highlight(mut sess CdpSession, params string) string {
 fn cmd_console(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	if action == 'clear' {
-		sess.console_msgs.clear()
+		sess.clear_console_messages()
 		return 'null'
 	}
-	if sess.console_msgs.len == 0 {
+	console_msgs := sess.console_messages_snapshot()
+	if console_msgs.len == 0 {
 		return '[]'
 	}
-	out := '[' + sess.console_msgs.map(it).join(',') + ']'
+	out := '[' + console_msgs.map(it).join(',') + ']'
 	return out
 }
 
 fn cmd_errors(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	if action == 'clear' {
-		sess.page_errors.clear()
+		sess.clear_page_errors()
 		return 'null'
 	}
-	if sess.page_errors.len == 0 {
+	page_errors := sess.page_errors_snapshot()
+	if page_errors.len == 0 {
 		return '[]'
 	}
-	return '[' + sess.page_errors.map(it).join(',') + ']'
+	return '[' + page_errors.map(it).join(',') + ']'
 }
 
 // ─── trace ──────────────────────────────────────────────────

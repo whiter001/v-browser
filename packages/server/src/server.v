@@ -9,6 +9,7 @@ import sync
 
 pub const relay_port = 47978
 pub const ipc_port = 47979
+const v_browser_version = '0.1.0'
 
 // 读取 relay 端口；环境变量优先，其次是配置文件，最后回退默认值。
 fn configured_relay_port() int {
@@ -109,6 +110,11 @@ fn server_pid_path() string {
 	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.pid')
 }
 
+// 返回 server 版本标记文件路径。
+fn server_version_path() string {
+	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.version')
+}
+
 // ExtensionConn 代表一个已连接的扩展 + 对应 CDP session
 @[heap]
 struct ExtensionConn {
@@ -153,6 +159,7 @@ fn (mut s VBrowserServer) start() ! {
 	dir := os.dir(ipc_sock_path())
 	os.mkdir_all(dir) or {}
 	os.write_file(server_pid_path(), '${os.getpid()}') or {}
+	os.write_file(server_version_path(), v_browser_version) or {}
 
 	// IPC server 在后台 goroutine 运行
 	spawn s.run_ipc_server()
@@ -161,6 +168,7 @@ fn (mut s VBrowserServer) start() ! {
 	s.run_ws_server()!
 	os.rm(ipc_sock_path()) or {}
 	os.rm(server_pid_path()) or {}
+	os.rm(server_version_path()) or {}
 }
 
 // 启动 WebSocket relay，用于接收扩展连接和转发 CDP 消息。
@@ -302,14 +310,17 @@ fn (mut s VBrowserServer) dispatch(req IpcRequest) IpcResponse {
 		s.ext_mu.@lock()
 		mut connected := false
 		mut attached := false
-		mut page_enabled := false
 		mut network_enabled := false
+		mut page_enabled := false
 		mut current_frame_selector := ''
 		if mut conn := s.ext_conn {
 			connected = true
-			page_enabled = conn.session.page_enabled
+			page_state := conn.session.page_state_snapshot()
+			page_enabled = page_state.page_enabled
+			conn.session.network_mu.@lock()
 			network_enabled = conn.session.network_enabled
-			current_frame_selector = conn.session.current_frame_selector
+			conn.session.network_mu.unlock()
+			current_frame_selector = page_state.current_frame_selector
 			attached = page_enabled || network_enabled || current_frame_selector != ''
 		}
 		s.ext_mu.unlock()
