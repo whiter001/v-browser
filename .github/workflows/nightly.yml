@@ -52,9 +52,9 @@ jobs:
           version: 10
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
           cache: "pnpm"
           cache-dependency-path: "packages/extension/pnpm-lock.yaml"
 
@@ -72,7 +72,7 @@ jobs:
           zip -r "../v-browser-extension-${short_sha}-${run_id}.zip" dist/ manifest.json icons/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: v-browser-extension
           path: packages/v-browser-extension-*-*.zip
@@ -129,7 +129,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
           path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}-*-*.zip
