@@ -61,7 +61,7 @@ class TabShareExtension {
   private _connectedTabId: number | null = null;
   private _pendingTabSelection = new Map<
     number,
-    { connection: RelayConnection; timerId?: number }
+    { connection: RelayConnection; timerId?: ReturnType<typeof setTimeout> }
   >();
 
   constructor() {
