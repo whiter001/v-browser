@@ -1032,37 +1032,37 @@ fn baseline_mime_type(path string) string {
 
 fn build_screenshot_annotate_js(full bool, max_labels int) string {
 	full_js := if full { 'true' } else { 'false' }
-	return '((function(){
-var interactiveRoles = ["button","link","textbox","checkbox","radio","combobox","listbox","menuitem","menuitemcheckbox","menuitemradio","option","searchbox","slider","spinbutton","switch","tab","treeitem","heading","image"];
+	return "((function(){
+var interactiveRoles = [\"button\",\"link\",\"textbox\",\"checkbox\",\"radio\",\"combobox\",\"listbox\",\"menuitem\",\"menuitemcheckbox\",\"menuitemradio\",\"option\",\"searchbox\",\"slider\",\"spinbutton\",\"switch\",\"tab\",\"treeitem\",\"heading\",\"image\"];
 var nodes = [];
 try {
-var tree = (function(){ var cb; var promise = new Promise(function(r){cb=r;}); chrome.runtime.sendMessage({type:"getAXTree"},function(resp){cb(resp);}); return promise; })();
+var tree = (function(){ var cb; var promise = new Promise(function(r){cb=r;}); chrome.runtime.sendMessage({type:\"getAXTree\"},function(resp){cb(resp);}); return promise; })();
 var counter = 1;
 for (var i = 0; i < tree.length && counter <= ${max_labels}; i++) {
 var node = tree[i];
-var role = node.role && node.role.value ? node.role.value : "";
+var role = node.role && node.role.value ? node.role.value : \"\";
 if (interactiveRoles.indexOf(role) === -1) continue;
-var name = node.name && node.name.value ? node.name.value : "";
+var name = node.name && node.name.value ? node.name.value : \"\";
 var bnid = node.backendDOMNodeId || 0;
 if (bnid === 0) continue;
-var js = "(function(){var el=null;try{el=window.domAccessHelper.querySelectorByBackendNodeId(" + bnid + ");}catch(e){}if(!el)return null;var r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)return null;var frame=null;try{var iframes=document.querySelectorAll(\"iframe\");for(var fi=0;fi<iframes.length;fi++){var fr=iframes[fi].getBoundingClientRect();if(r.x>=fr.x&&r.x<fr.x+fr.width&&r.y>=fr.y&&r.y<fr.y+fr.height){frame=iframes[fi];break;}}}catch(e){}if(frame){return{x:fr.x+r.x+r.width/2,y:fr.y+r.y+r.height/2,width:r.width,height:r.height};}return{x:r.x+r.width/2,y:r.y+r.height/2,width:r.width,height:r.height};})()";
+var js = \"(function(){var el=null;try{el=window.domAccessHelper.querySelectorByBackendNodeId(\" + bnid + \");}catch(e){}if(!el)return null;var r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)return null;var frame=null;try{var iframes=document.querySelectorAll(\"iframe\");for(var fi=0;fi<iframes.length;fi++){var fr=iframes[fi].getBoundingClientRect();if(r.x>=fr.x&&r.x<fr.x+fr.width&&r.y>=fr.y&&r.y<fr.y+fr.height){frame=iframes[fi];break;}}}catch(e){}if(frame){return{x:fr.x+r.x+r.width/2,y:fr.y+r.y+r.height/2,width:r.width,height:r.height};}return{x:r.x+r.width/2,y:r.y+r.height/2,width:r.width,height:r.height};})()\";
 var rect = null;
 try{rect=eval(js);}catch(e){}
 if (!rect) continue;
 nodes.push({num:counter,role:role,name:name.substring(0,50),x:rect.x,y:rect.y,width:rect.width,height:rect.height});
 counter++;
 }
-} catch(e) { return JSON.stringify({ok:false,error:"failed to get AX tree: "+e.message}); }
-if (nodes.length === 0) { return JSON.stringify({ok:false,error:"no interactive elements found"}); }
-var resp = (function(){ var cb; var promise = new Promise(function(r){cb=r;}); chrome.runtime.sendMessage({type:"captureScreenshot",params:{format:"png",captureBeyondViewport:${full_js}}},function(r){cb(r);}); return promise; })();
+} catch(e) { return JSON.stringify({ok:false,error:\"failed to get AX tree: \"+e.message}); }
+if (nodes.length === 0) { return JSON.stringify({ok:false,error:\"no interactive elements found\"}); }
+var resp = (function(){ var cb; var promise = new Promise(function(r){cb=r;}); chrome.runtime.sendMessage({type:\"captureScreenshot\",params:{format:\"png\",captureBeyondViewport:${full_js}}},function(r){cb(r);}); return promise; })();
 var img = new Image();
-img.src = "data:image/png;base64," + resp.data;
-var canvas = document.createElement("canvas");
+img.src = \"data:image/png;base64,\" + resp.data;
+var canvas = document.createElement(\"canvas\");
 canvas.width = img.width;
 canvas.height = img.height;
-var ctx = canvas.getContext("2d");
+var ctx = canvas.getContext(\"2d\");
 ctx.drawImage(img,0,0);
-ctx.strokeStyle = "#ff0000";
+ctx.strokeStyle = \"#ff0000\";
 ctx.lineWidth = 2;
 for (var i = 0; i < nodes.length; i++) {
 var n = nodes[i];
@@ -1074,17 +1074,17 @@ var w = n.width * scaleX;
 var h = n.height * scaleY;
 ctx.strokeRect(x - w/2, y - h/2, w, h);
 var fontSize = Math.max(14, Math.min(24, Math.floor(Math.min(w, h) * 0.4)));
-ctx.fillStyle = "#ff0000";
+ctx.fillStyle = \"#ff0000\";
 ctx.fillRect(x + w/2 - 4, y - h/2 - fontSize - 4, fontSize + 8, fontSize + 8);
-ctx.fillStyle = "#ffffff";
-ctx.font = "bold " + fontSize + "px monospace";
-ctx.textAlign = "center";
-ctx.textBaseline = "middle";
+ctx.fillStyle = \"#ffffff\";
+ctx.font = \"bold \" + fontSize + \"px monospace\";
+ctx.textAlign = \"center\";
+ctx.textBaseline = \"middle\";
 ctx.fillText(n.num.toString(), x + w/2, y - h/2 - fontSize/2);
 }
-var outData = canvas.toDataURL("image/png").split(",")[1];
+var outData = canvas.toDataURL(\"image/png\").split(\",\")[1];
 return JSON.stringify({ok:true,data:outData,labelsCount:nodes.length,labels:nodes});
-})())'
+})())"
 }
 
 fn screenshot_diff_js(baseline_b64 string, baseline_mime string, current_b64 string, threshold f64, include_diff bool) string {
@@ -2263,7 +2263,8 @@ fn cmd_find(mut sess CdpSession, params string) string {
 }
 
 fn semantic_text_candidates_report(mut sess CdpSession, query string, exact bool, selected_index int, limit int, mode string) string {
-	js := build_semantic_text_report_js(mut sess, query, exact, selected_index, limit, mode)
+	js := build_semantic_text_report_js(mut sess, query, exact, selected_index, limit,
+		mode)
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
 		return 'ERROR:${err}'
 	}
@@ -2614,7 +2615,7 @@ fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, 
 		'hover' { build_hover_action_body() }
 		else { return 'ERROR:unknown action: ${action}' }
 	}
-			js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
+	js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
 	ok := eval_scoped_expression(mut sess, js, false) or {
 		pointer_action_for_locator_js(mut sess, locator_js, action) or { return 'ERROR:${err}' }
 		return 'null'
@@ -2968,9 +2969,22 @@ fn cmd_network(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	match action {
 		'requests' {
-			filter := cdp_extract_str(params, 'filter')
+			f := NetworkFilter{
+				url:    cdp_extract_str(params, 'filter')
+				mime:   cdp_extract_str(params, 'mime')
+				status: cdp_extract_str(params, 'status')
+				domain: cdp_extract_str(params, 'domain')
+				rtype:  cdp_extract_str(params, 'type')
+			}
+			cache_body := cdp_extract_str(params, 'captureBody') == 'true'
+			limit := cdp_extract_str(params, 'limit').int()
 			sess.enable_network_tracking() or { return 'ERROR:${err}' }
-			return sess.network_requests_json(filter)
+			if cache_body {
+				sess.network_mu.@lock()
+				sess.auto_body_cache = true
+				sess.network_mu.unlock()
+			}
+			return sess.network_requests_json(f, limit)
 		}
 		'body' {
 			request_id := cdp_extract_str(params, 'requestId')
@@ -3123,9 +3137,119 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			sess.send_command('Fetch.disable', '{}') or { return 'ERROR:${err}' }
 			return 'null'
 		}
+		'inspect' {
+			f := NetworkFilter{
+				url:    cdp_extract_str(params, 'filter')
+				mime:   cdp_extract_str(params, 'mime')
+				status: cdp_extract_str(params, 'status')
+				domain: cdp_extract_str(params, 'domain')
+				rtype:  cdp_extract_str(params, 'type')
+			}
+			limit := cdp_extract_str(params, 'limit').int()
+			sess.enable_network_tracking() or { return 'ERROR:${err}' }
+			sync_network_hook_records(mut sess) or {}
+			return network_inspect_records_json(mut sess, f, limit)
+		}
 		else {
 			return 'ERROR:unknown network action: ${action}'
 		}
+	}
+}
+
+// network_inspect_records_json 合并 CDP tracked requests 与 hook records，
+// 按请求签名计数去重，输出统一视图。CDP 记录优先填充 requestId/status，
+// hook 记录补充 requestBody/responseBody。
+fn network_inspect_records_json(mut sess CdpSession, f NetworkFilter, limit int) string {
+	needle := f.url.to_lower()
+	mut items := []string{}
+
+	// 收集 hook records（源丰富，含 body）
+	sess.hook_mu.@lock()
+	mut seen_sig_counts := map[string]int{}
+	for record_id in sess.hook_record_order {
+		record := sess.hook_records[record_id] or { continue }
+		view := hook_record_view_from_raw(record)
+		if needle != '' && !hook_record_matches_filter(view, needle) {
+			continue
+		}
+		if f.mime != '' && !view.response_headers.to_lower().contains(f.mime.to_lower()) {
+			continue
+		}
+		if f.status != '' && !matches_status_filter(view.response_status, f.status) {
+			continue
+		}
+		if f.domain != '' && !url_hostname(view.url).to_lower().contains(f.domain.to_lower()) {
+			continue
+		}
+		// rtype 对 hook records 匹配 source 字段（fetch/xhr）
+		if f.rtype != '' && !view.source.to_lower().contains(f.rtype.to_lower()) {
+			continue
+		}
+		sig := hook_record_dedupe_key(view)
+		seen_sig_counts[sig] = seen_sig_counts[sig] + 1
+		items << '{"source":"hook","recordId":${json_str(view.record_id)},"method":${json_str(view.method)},"url":${json_str(view.url)},"status":${view.response_status},"statusText":${json_str(view.status_text)},"requestBody":${json_str(view.request_body)},"responseBody":${json_str(view.response_body)},"requestHeaders":${view.request_headers},"responseHeaders":${view.response_headers},"timestamp":${view.timestamp}}'
+		if limit > 0 && items.len >= limit {
+			break
+		}
+	}
+	sess.hook_mu.unlock()
+
+	// 补充 CDP tracked requests（hook 未覆盖的）
+	if limit <= 0 || items.len < limit {
+		sess.network_mu.@lock()
+		for request_id in sess.network_request_order {
+			entry := sess.network_requests[request_id] or { continue }
+			sig := tracked_request_dedupe_key(entry)
+			if seen_sig_counts[sig] > 0 {
+				seen_sig_counts[sig]--
+				continue
+			}
+			if !matches_network_filter(entry, f) {
+				continue
+			}
+			items << '{"source":"cdp","requestId":${json_str(entry.request_id)},"method":${json_str(entry.method)},"url":${json_str(entry.url)},"status":${entry.status},"statusText":${json_str(entry.status_text)},"resourceType":${json_str(entry.resource_type)},"requestBody":${json_str(entry.request_body)},"responseBody":${json_str(entry.response_body)},"requestHeaders":${json_str(entry.request_headers)},"responseHeaders":${json_str(entry.response_headers)},"finished":${entry.finished}}'
+			if limit > 0 && items.len >= limit {
+				break
+			}
+		}
+		sess.network_mu.unlock()
+	}
+
+	return '[' + items.join(',') + ']'
+}
+
+fn hook_record_dedupe_key(view RequestRecord) string {
+	return '${view.method}|${view.url}|${view.request_body}|${view.response_status}'
+}
+
+fn tracked_request_dedupe_key(entry TrackedNetworkRequest) string {
+	return '${entry.method}|${entry.url}|${entry.request_body}|${entry.status}'
+}
+
+fn network_hook_script_id(script_id string) string {
+	return if script_id != '' { script_id } else { 'hook-v1' }
+}
+
+fn network_hook_config_js(filter string, capture_body bool, capture_response bool, clear bool, max_body_len int, script_id string) string {
+	return 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} window.__vBrowserHookConfig.active = true; window.__vBrowserHookConfig.filter = ${json_str(filter)}; window.__vBrowserHookConfig.captureBody = ${capture_body}; window.__vBrowserHookConfig.captureResponse = ${capture_response}; window.__vBrowserHookConfig.maxBodyLen = ${max_body_len}; window.__vBrowserHookConfig.scriptId = ${json_str(script_id)}; window.__vBrowserHookState = window.__vBrowserHookState || { events: [], nextId: 0 }; if (${clear}) { window.__vBrowserHookState.events = []; window.__vBrowserHookState.nextId = 0; } window.__vBrowserHookInstalled = true; "ok"'
+}
+
+fn network_hook_activate_js(filter string, capture_body bool, capture_response bool, clear bool, max_body_len int, script_id string) string {
+	return '${network_hook_bootstrap_js()}; ${network_hook_config_js(filter, capture_body,
+		capture_response, clear, max_body_len, script_id)}'
+}
+
+fn network_hook_stop_js() string {
+	return 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} window.__vBrowserHookConfig.active = false; window.__vBrowserHookInstalled = true; "ok"'
+}
+
+fn apply_hook_js_to_default_contexts(mut sess CdpSession, js string) {
+	if js == '' {
+		return
+	}
+	context_ids := sess.default_execution_context_ids()
+	for context_id in context_ids {
+		sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"contextId":${context_id},"silent":true}') or {}
 	}
 }
 
@@ -3135,39 +3259,58 @@ fn start_network_hook(mut sess CdpSession, params string) !string {
 	capture_response := cdp_extract_str(params, 'captureResponse') == 'true'
 	persistent := cdp_extract_str(params, 'persistent') != 'false'
 	clear := cdp_extract_str(params, 'clear') != 'false'
-	mut script_id := cdp_extract_str(params, 'scriptId')
-	if script_id == '' {
-		script_id = 'hook-v1'
-	}
-	install_network_hook(mut sess, script_id, persistent)!
+	max_body_len := cdp_extract_str(params, 'maxBodyLen').int()
+	all_frames := cdp_extract_str(params, 'allFrames') == 'true'
+	script_id := network_hook_script_id(cdp_extract_str(params, 'scriptId'))
+	install_network_hook(mut sess, script_id, persistent, false)!
 	if clear {
 		clear_network_hook_records(mut sess)
 	}
-	activate_js := 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} window.__vBrowserHookConfig.active = true; window.__vBrowserHookConfig.filter = ${json_str(filter)}; window.__vBrowserHookConfig.captureBody = ${capture_body}; window.__vBrowserHookConfig.captureResponse = ${capture_response}; window.__vBrowserHookConfig.scriptId = ${json_str(script_id)}; window.__vBrowserHookState = window.__vBrowserHookState || { events: [], nextId: 0 }; if (${clear}) { window.__vBrowserHookState.events = []; window.__vBrowserHookState.nextId = 0; } window.__vBrowserHookInstalled = true; "ok"'
-	eval_scoped_expression(mut sess, activate_js, false)!
+	activate_js := network_hook_activate_js(filter, capture_body, capture_response, false,
+		max_body_len, script_id)
+	current_activate_js := if clear {
+		network_hook_activate_js(filter, capture_body, capture_response, true, max_body_len,
+			script_id)
+	} else {
+		activate_js
+	}
+	eval_scoped_expression(mut sess, current_activate_js, false)!
 	sess.hook_mu.@lock()
 	sess.hook_state.active = true
 	sess.hook_state.injected = true
 	sess.hook_state.script_id = script_id
-	sess.hook_state.script_version = 2
+	sess.hook_state.script_version = 3
 	sess.hook_state.filter = filter
 	sess.hook_state.capture_body = capture_body
 	sess.hook_state.capture_response = capture_response
+	sess.hook_state.max_body_len = max_body_len
+	sess.hook_state.all_frames = all_frames
+	sess.hook_state.activate_js = activate_js
 	sess.hook_state.last_injected_at = time.now().unix_milli().str()
 	if clear {
 		sess.hook_state.last_synced_index = 0
+		sess.hook_state.last_pushed_count = 0
 		sess.hook_state.record_count = 0
 	}
 	sess.hook_mu.unlock()
+	if all_frames {
+		apply_hook_js_to_default_contexts(mut sess, current_activate_js)
+	}
 	return network_hook_status_json(mut sess)
 }
 
 fn stop_network_hook(mut sess CdpSession) string {
-	stop_js := 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} window.__vBrowserHookConfig.active = false; window.__vBrowserHookInstalled = true; "ok"'
+	stop_js := network_hook_stop_js()
 	eval_scoped_expression(mut sess, stop_js, false) or {}
 	sess.hook_mu.@lock()
+	was_all_frames := sess.hook_state.all_frames
 	sess.hook_state.active = false
+	sess.hook_state.all_frames = false
+	sess.hook_state.activate_js = ''
 	sess.hook_mu.unlock()
+	if was_all_frames {
+		apply_hook_js_to_default_contexts(mut sess, stop_js)
+	}
 	return network_hook_status_json(mut sess)
 }
 
@@ -3179,7 +3322,7 @@ fn network_hook_status_json(mut sess CdpSession) string {
 }
 
 fn network_hook_status_json_from_state(state HookState) string {
-	return '{"active":${state.active},"injected":${state.injected},"scriptId":${json_str(state.script_id)},"scriptVersion":${state.script_version},"filter":${json_str(state.filter)},"captureBody":${state.capture_body},"captureResponse":${state.capture_response},"lastInjectedAt":${json_str(state.last_injected_at)},"lastSyncedIndex":${state.last_synced_index},"recordCount":${state.record_count}}'
+	return '{"active":${state.active},"injected":${state.injected},"scriptId":${json_str(state.script_id)},"scriptVersion":${state.script_version},"filter":${json_str(state.filter)},"captureBody":${state.capture_body},"captureResponse":${state.capture_response},"maxBodyLen":${state.max_body_len},"allFrames":${state.all_frames},"lastInjectedAt":${json_str(state.last_injected_at)},"lastSyncedIndex":${state.last_synced_index},"recordCount":${state.record_count}}'
 }
 
 fn network_hook_records_json(mut sess CdpSession, params string) !string {
@@ -3187,6 +3330,12 @@ fn network_hook_records_json(mut sess CdpSession, params string) !string {
 	filter := cdp_extract_str(params, 'filter').to_lower()
 	limit := cdp_extract_str(params, 'limit').int()
 	format := cdp_extract_str(params, 'format').to_lower()
+	f := NetworkFilter{
+		mime:   cdp_extract_str(params, 'mime')
+		status: cdp_extract_str(params, 'status')
+		domain: cdp_extract_str(params, 'domain')
+		rtype:  cdp_extract_str(params, 'type')
+	}
 	sess.hook_mu.@lock()
 	defer { sess.hook_mu.unlock() }
 	mut items := []string{}
@@ -3194,6 +3343,18 @@ fn network_hook_records_json(mut sess CdpSession, params string) !string {
 		record := sess.hook_records[record_id] or { continue }
 		view := hook_record_view_from_raw(record)
 		if filter != '' && !hook_record_matches_filter(view, filter) {
+			continue
+		}
+		if f.mime != '' && !view.response_headers.to_lower().contains(f.mime.to_lower()) {
+			continue
+		}
+		if f.status != '' && !matches_status_filter(view.response_status, f.status) {
+			continue
+		}
+		if f.domain != '' && !url_hostname(view.url).to_lower().contains(f.domain.to_lower()) {
+			continue
+		}
+		if f.rtype != '' && !view.source.to_lower().contains(f.rtype.to_lower()) {
 			continue
 		}
 		if format == 'raw' {
@@ -3318,17 +3479,17 @@ fn hook_record_view_from_raw(record HookRecord) RequestRecord {
 		cursor_hint:      hook_record_cursor_hint(raw)
 		request_headers:  if request_headers == '' { '{}' } else { request_headers }
 		request_body:     request_body
-		response_status:  cdp_extract_int(raw, 'status')
+		response_status:  cdp_extract_int(raw, '"status":')
 		status_text:      cdp_extract_str(raw, 'statusText')
 		response_url:     cdp_extract_str(raw, 'responseUrl')
 		response_ok:      cdp_extract_bool(raw, 'responseOk')
 		response_type:    cdp_extract_str(raw, 'responseType')
-		ready_state:      cdp_extract_int(raw, 'readyState')
+		ready_state:      cdp_extract_int(raw, '"readyState":')
 		with_credentials: cdp_extract_bool(raw, 'withCredentials')
 		response_headers: if response_headers == '' { '{}' } else { response_headers }
 		response_body:    response_body
 		error_text:       cdp_extract_str(raw, 'errorText')
-		timestamp:        cdp_extract_int(raw, 'timestamp')
+		timestamp:        cdp_extract_int(raw, '"timestamp":')
 		fallback_text:    fallback_text
 	}
 }
@@ -3704,19 +3865,22 @@ fn hook_safe_id_component(value string) string {
 	return out.trim('-')
 }
 
-fn install_network_hook(mut sess CdpSession, script_id string, persistent bool) !string {
+fn install_network_hook(mut sess CdpSession, script_id string, persistent bool, force_install bool) !string {
 	bootstrap_js := network_hook_bootstrap_js()
+	sess.send_command('Runtime.enable', '{}')!
+	// 注册 binding（幂等），使 JS 可直接推送记录，不再依赖轮询
+	sess.send_command('Runtime.addBinding', '{"name":"__vBrowserHookPush"}') or {}
 	if persistent {
 		sess.hook_mu.@lock()
-		should_install := !sess.hook_state.injected || sess.hook_state.script_id != script_id
-			|| sess.hook_state.script_version != 2
+		should_install := force_install || !sess.hook_state.injected
+			|| sess.hook_state.script_id != script_id || sess.hook_state.script_version != 3
 		sess.hook_mu.unlock()
 		if should_install {
 			sess.send_command('Page.addScriptToEvaluateOnNewDocument', '{"source":${json_str(bootstrap_js)}}')!
 			sess.hook_mu.@lock()
 			sess.hook_state.injected = true
 			sess.hook_state.script_id = script_id
-			sess.hook_state.script_version = 2
+			sess.hook_state.script_version = 3
 			sess.hook_mu.unlock()
 		}
 	}
@@ -3729,21 +3893,12 @@ fn clear_network_hook_records(mut sess CdpSession) {
 	sess.hook_records = map[string]HookRecord{}
 	sess.hook_record_order = []string{}
 	sess.hook_state.last_synced_index = 0
+	sess.hook_state.last_pushed_count = 0
 	sess.hook_state.record_count = 0
 	sess.hook_mu.unlock()
 }
 
-fn sync_network_hook_records(mut sess CdpSession) !int {
-	sess.hook_mu.@lock()
-	last_synced_index := sess.hook_state.last_synced_index
-	sess.hook_mu.unlock()
-	read_js := 'JSON.stringify(window.__vBrowserHookState && window.__vBrowserHookState.events ? window.__vBrowserHookState.events.slice(${last_synced_index}) : [])'
-	raw := eval_scoped_expression(mut sess, read_js, false) or { return error(err.msg()) }
-	trimmed := raw.trim_space()
-	if trimmed == '' || trimmed == 'null' || trimmed == 'undefined' || trimmed == '[]' {
-		return 0
-	}
-	items := split_json_array_objects(trimmed)
+fn append_polled_hook_records(mut sess CdpSession, items []string, last_synced_index int) int {
 	if items.len == 0 {
 		return 0
 	}
@@ -3765,15 +3920,32 @@ fn sync_network_hook_records(mut sess CdpSession) !int {
 		sess.hook_record_order << record_id
 		added++
 	}
-	sess.hook_state.last_synced_index += items.len
+	sess.hook_state.last_synced_index = last_synced_index + items.len
 	sess.hook_state.record_count = sess.hook_record_order.len
 	return added
+}
+
+fn sync_network_hook_records(mut sess CdpSession) !int {
+	sess.hook_mu.@lock()
+	last_synced_index := sess.hook_state.last_synced_index
+	sess.hook_mu.unlock()
+	read_js := 'JSON.stringify(window.__vBrowserHookState && window.__vBrowserHookState.events ? window.__vBrowserHookState.events.slice(${last_synced_index}) : [])'
+	raw := eval_scoped_expression(mut sess, read_js, false) or { return error(err.msg()) }
+	trimmed := raw.trim_space()
+	if trimmed == '' || trimmed == 'null' || trimmed == 'undefined' || trimmed == '[]' {
+		return 0
+	}
+	items := split_json_array_objects(trimmed)
+	if items.len == 0 {
+		return 0
+	}
+	return append_polled_hook_records(mut sess, items, last_synced_index)
 }
 
 fn network_hook_bootstrap_js() string {
 	return [
 		'(function() {',
-		'  var SCRIPT_VERSION = 2;',
+		'  var SCRIPT_VERSION = 3;',
 		'  var cfg = window.__vBrowserHookConfig = window.__vBrowserHookConfig || {};',
 		'  function readPersistedActive() {',
 		'    try {',
@@ -3848,6 +4020,7 @@ fn network_hook_bootstrap_js() string {
 		'    record.timestamp = Date.now();',
 		'    state.events.push(record);',
 		'    if (state.events.length > 1000) { state.events.splice(0, state.events.length - 1000); }',
+		'    try { if (typeof window.__vBrowserHookPush === "function") { window.__vBrowserHookPush(JSON.stringify(record)); } } catch (e) {}',
 		'  }',
 		'  var nativeToStringMap = window.__vBrowserHookNativeToStringMap = window.__vBrowserHookNativeToStringMap || (typeof WeakMap !== "undefined" ? new WeakMap() : null);',
 		'  function nativeCodeString(name) {',
@@ -3937,6 +4110,7 @@ fn network_hook_bootstrap_js() string {
 		'    return { method: String(method || "GET"), url: String(url || ""), headers: headers, body: body, mode: String(mode || ""), credentials: String(credentials || ""), cache: String(cache || ""), redirect: String(redirect || ""), referrer: String(referrer || ""), referrerPolicy: String(referrerPolicy || ""), integrity: String(integrity || ""), keepalive: String(keepalive || ""), priority: String(priority || "") };',
 		'  }',
 		'  function captureFetchResult(meta, response, error, responseBody) {',
+		'    var responseBodyLimit = cfg.maxBodyLen === 0 ? 0 : (cfg.maxBodyLen || 4000);',
 		'    pushRecord({',
 		'      source: "fetch",',
 		'      phase: error ? "error" : "complete",',
@@ -3958,13 +4132,14 @@ fn network_hook_bootstrap_js() string {
 		'      requestKeepalive: meta.keepalive,',
 		'      requestPriority: meta.priority,',
 		'      signature: [String(meta.method || "GET"), String(meta.url || ""), String(meta.body || "").slice(0, 120)].join(" "),',
-		'      responseBody: responseBody ? truncateText(responseBody, 4000) : "",',
+		'      responseBody: responseBody ? truncateText(responseBody, responseBodyLimit) : "",',
 		'      responseHeaders: typeof response.headers === "object" && response.headers ? toPlainHeaders(response.headers) : {},',
 		'      errorText: error ? truncateText(error, 2000) : ""',
 		'    });',
 		'  }',
 		'  function captureXhrResult(meta, xhr, errorText) {',
 		'    var responseBody = "";',
+		'    var responseBodyLimit = cfg.maxBodyLen === 0 ? 0 : (cfg.maxBodyLen || 4000);',
 		'    if (cfg.captureResponse) {',
 		'      try { responseBody = String(xhr.responseText == null ? "" : xhr.responseText); } catch (err) {}',
 		'    }',
@@ -3997,7 +4172,7 @@ fn network_hook_bootstrap_js() string {
 		'      withCredentials: Boolean(xhr.withCredentials),',
 		'      requestHeaders: meta.headers,',
 		'      requestBody: meta.body,',
-		'      responseBody: responseBody ? truncateText(responseBody, 4000) : "",',
+		'      responseBody: responseBody ? truncateText(responseBody, responseBodyLimit) : "",',
 		'      responseHeaders: parseXhrHeaders(xhr.getAllResponseHeaders ? xhr.getAllResponseHeaders() : ""),',
 		'      errorText: errorText ? truncateText(errorText, 2000) : ""',
 		'    });',
@@ -4602,7 +4777,11 @@ fn cmd_dialog(mut sess CdpSession, params string) string {
 		'wait' {
 			// Wait for a dialog to appear (up to timeout ms, default 5000).
 			timeout_ms := cdp_extract_int(params, '"timeout":')
-			mut timeout := if timeout_ms > 0 { time.millisecond * time.Duration(timeout_ms) } else { 5 * time.second }
+			mut timeout := if timeout_ms > 0 {
+				time.millisecond * time.Duration(timeout_ms)
+			} else {
+				5 * time.second
+			}
 			sess.enable_page_events() or { return 'ERROR:${err}' }
 			deadline := time.now().add(timeout)
 			for time.now() < deadline {
@@ -4633,9 +4812,9 @@ fn handle_dialog_with_retry(mut sess CdpSession, params string) ! {
 	// Page.handleJavaScriptDialog, otherwise it fails with "No dialog is showing".
 	mut event_deadline := time.now().add(3 * time.second)
 	for time.now() < event_deadline {
-			dialog_events := sess.dialog_events_snapshot()
-			if dialog_events.len > 0 {
-				for ev in dialog_events {
+		dialog_events := sess.dialog_events_snapshot()
+		if dialog_events.len > 0 {
+			for ev in dialog_events {
 				if ev.contains('javascriptDialogOpening') {
 					event_deadline = time.now() // dialog is open, stop waiting
 					break

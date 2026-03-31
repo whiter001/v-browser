@@ -42,9 +42,23 @@ mut:
 	filter            string
 	capture_body      bool
 	capture_response  bool
+	max_body_len      int
+	all_frames        bool
+	activate_js       string
 	last_injected_at  string
 	last_synced_index int
+	last_pushed_count int
 	record_count      int
+}
+
+// NetworkFilter 用于细粒度过滤网络请求记录
+struct NetworkFilter {
+mut:
+	url    string // 子串匹配 method+url
+	mime   string // 子串匹配 Content-Type（response headers）
+	status string // 精确或通配 "2xx" "4xx" "5xx"
+	domain string // 子串匹配 URL 主机名
+	rtype  string // 子串匹配 resource_type
 }
 
 struct HookRecord {
@@ -80,6 +94,13 @@ mut:
 	fallback_text    string
 }
 
+struct RuntimeExecutionContext {
+mut:
+	id         int
+	frame_id   string
+	is_default bool
+}
+
 struct ReplayTemplate {
 mut:
 	template_id             string
@@ -97,6 +118,7 @@ struct TabContext {
 mut:
 	current_frame_selector string
 	axref_refs             map[string]AxRef
+	runtime_contexts       map[int]RuntimeExecutionContext
 	network_requests       map[string]TrackedNetworkRequest
 	network_request_order  []string
 	network_watch          NetworkWatchState
@@ -106,6 +128,7 @@ mut:
 	console_msgs           []string
 	page_errors            []string
 	dialog_events          []string
+	auto_body_cache        bool
 }
 
 struct PageStateSnapshot {
@@ -137,6 +160,8 @@ mut:
 	finished         bool
 	request_headers  string
 	response_headers string
+	request_body     string
+	response_body    string
 }
 
 // CdpSession 管理一个 WebSocket 连接上的 CDP 会话
@@ -155,6 +180,7 @@ mut:
 	network_requests       map[string]TrackedNetworkRequest
 	network_request_order  []string
 	network_enabled        bool
+	auto_body_cache        bool
 	network_mu             sync.Mutex
 	network_watch          NetworkWatchState
 	network_watch_mu       sync.Mutex
@@ -162,6 +188,8 @@ mut:
 	hook_records           map[string]HookRecord
 	hook_record_order      []string
 	hook_mu                sync.Mutex
+	runtime_contexts       map[int]RuntimeExecutionContext
+	runtime_mu             sync.Mutex
 	current_tab_id         int
 	tab_contexts           map[int]TabContext
 	tab_contexts_mu        sync.Mutex
@@ -183,6 +211,7 @@ fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 		pending:           map[int]chan ProtocolResponse{}
 		event_subs:        map[string][]chan ProtocolResponse{}
 		network_requests:  map[string]TrackedNetworkRequest{}
+		runtime_contexts:  map[int]RuntimeExecutionContext{}
 		hook_records:      map[string]HookRecord{}
 		hook_record_order: []string{}
 		tab_contexts:      map[int]TabContext{}
@@ -524,9 +553,34 @@ fn (mut s CdpSession) activate_tab_context_from_result(result string) ! {
 	s.network_mu.unlock()
 	s.enable_page_events()!
 	s.enable_network_tracking()!
+	s.restore_runtime_hook_state()!
 	if s.network_watch.active {
 		sync_network_watch_existing_requests(mut s)
 	}
+}
+
+fn (mut s CdpSession) restore_runtime_hook_state() ! {
+	s.hook_mu.@lock()
+	state := clone_hook_state(s.hook_state)
+	s.hook_mu.unlock()
+	if !state.injected && !state.active {
+		return
+	}
+	s.runtime_mu.@lock()
+	s.runtime_contexts.clear()
+	s.runtime_mu.unlock()
+	script_id := network_hook_script_id(state.script_id)
+	install_network_hook(mut s, script_id, true, true)!
+	if !state.active {
+		return
+	}
+	activate_js := if state.activate_js != '' {
+		state.activate_js
+	} else {
+		network_hook_activate_js(state.filter, state.capture_body, state.capture_response,
+			false, state.max_body_len, script_id)
+	}
+	eval_scoped_expression(mut s, activate_js, false)!
 }
 
 fn (mut s CdpSession) save_current_tab_context() {
@@ -540,12 +594,19 @@ fn (mut s CdpSession) save_current_tab_context() {
 		axref_refs[key] = value
 	}
 	s.axref.mu.unlock()
+	mut runtime_contexts := map[int]RuntimeExecutionContext{}
+	s.runtime_mu.@lock()
+	for key, value in s.runtime_contexts {
+		runtime_contexts[key] = value
+	}
+	s.runtime_mu.unlock()
 	mut network_requests := map[string]TrackedNetworkRequest{}
 	s.network_mu.@lock()
 	for key, value in s.network_requests {
 		network_requests[key] = value
 	}
 	network_request_order := s.network_request_order.clone()
+	auto_body_cache := s.auto_body_cache
 	s.network_mu.unlock()
 	mut network_watch := NetworkWatchState{
 		active:            s.network_watch.active
@@ -564,7 +625,12 @@ fn (mut s CdpSession) save_current_tab_context() {
 		capture_response:  s.hook_state.capture_response
 		last_injected_at:  s.hook_state.last_injected_at
 		last_synced_index: s.hook_state.last_synced_index
+		last_pushed_count: s.hook_state.last_pushed_count
 		record_count:      s.hook_state.record_count
+		script_version:    s.hook_state.script_version
+		max_body_len:      s.hook_state.max_body_len
+		all_frames:        s.hook_state.all_frames
+		activate_js:       s.hook_state.activate_js
 	}
 	mut hook_records := map[string]HookRecord{}
 	s.hook_mu.@lock()
@@ -577,6 +643,7 @@ fn (mut s CdpSession) save_current_tab_context() {
 	s.tab_contexts[s.current_tab_id] = TabContext{
 		current_frame_selector: page_state.current_frame_selector
 		axref_refs:             axref_refs
+		runtime_contexts:       runtime_contexts
 		network_requests:       network_requests
 		network_request_order:  network_request_order
 		network_watch:          network_watch
@@ -586,6 +653,7 @@ fn (mut s CdpSession) save_current_tab_context() {
 		console_msgs:           page_state.console_msgs
 		page_errors:            page_state.page_errors
 		dialog_events:          page_state.dialog_events
+		auto_body_cache:        auto_body_cache
 	}
 	s.tab_contexts_mu.unlock()
 }
@@ -598,10 +666,14 @@ fn (mut s CdpSession) restore_tab_context(tab_id int) {
 		s.axref.mu.@lock()
 		s.axref.refs.clear()
 		s.axref.mu.unlock()
+		s.runtime_mu.@lock()
+		s.runtime_contexts.clear()
+		s.runtime_mu.unlock()
 		s.network_mu.@lock()
 		s.network_requests.clear()
 		s.network_request_order = []string{}
 		s.network_enabled = false
+		s.auto_body_cache = false
 		s.network_mu.unlock()
 		s.network_watch_mu.@lock()
 		s.network_watch = NetworkWatchState{
@@ -627,10 +699,14 @@ fn (mut s CdpSession) restore_tab_context(tab_id int) {
 	s.axref.mu.@lock()
 	s.axref.refs = clone_axref_map(ctx.axref_refs)
 	s.axref.mu.unlock()
+	s.runtime_mu.@lock()
+	s.runtime_contexts = clone_runtime_context_map(ctx.runtime_contexts)
+	s.runtime_mu.unlock()
 	s.network_mu.@lock()
 	s.network_requests = clone_tracked_request_map(ctx.network_requests)
 	s.network_request_order = ctx.network_request_order.clone()
 	s.network_enabled = false
+	s.auto_body_cache = ctx.auto_body_cache
 	s.network_mu.unlock()
 	s.network_watch_mu.@lock()
 	s.network_watch = clone_network_watch_state(ctx.network_watch)
@@ -675,7 +751,7 @@ fn (mut s CdpSession) on_message(raw string) {
 				s.append_page_error(inner_params)
 			} else if inner_method == 'Page.javascriptDialogOpening'
 				|| inner_method == 'Page.javascriptDialogClosed' {
-					s.append_dialog_event('{"method":${json_str(inner_method)},"params":${inner_params}}')
+				s.append_dialog_event('{"method":${json_str(inner_method)},"params":${inner_params}}')
 			} else if inner_method.starts_with('Network.') {
 				track_network_event(mut s, inner_method, inner_params)
 				if inner_method == 'Network.loadingFinished' {
@@ -684,8 +760,62 @@ fn (mut s CdpSession) on_message(raw string) {
 						spawn fn [mut s, request_id] () {
 							handle_network_watch_loading_finished(mut s, request_id)
 						}()
+						s.network_mu.@lock()
+						do_cache := s.auto_body_cache
+						s.network_mu.unlock()
+						if do_cache {
+							spawn fn [mut s, request_id] () {
+								s.cache_response_body(request_id)
+							}()
+						}
 					}
 				}
+			} else if inner_method == 'Runtime.bindingCalled' {
+				name := cdp_extract_str(inner_params, 'name')
+				if name == '__vBrowserHookPush' {
+					payload := cdp_extract_str(inner_params, 'payload')
+					s.handle_hook_binding_push(payload)
+				}
+			} else if inner_method == 'Runtime.executionContextCreated' {
+				ctx_obj := cdp_extract_obj(inner_params, 'context')
+				ctx_id := cdp_extract_int(ctx_obj, '"id":')
+				aux_data := cdp_extract_obj(ctx_obj, 'auxData')
+				is_default := cdp_extract_bool(aux_data, 'isDefault')
+					|| cdp_extract_str(aux_data, 'isDefault') == 'true'
+				frame_id := cdp_extract_str(aux_data, 'frameId')
+				if ctx_id > 0 {
+					s.runtime_mu.@lock()
+					s.runtime_contexts[ctx_id] = RuntimeExecutionContext{
+						id:         ctx_id
+						frame_id:   frame_id
+						is_default: is_default
+					}
+					s.runtime_mu.unlock()
+				}
+				// all_frames hook：新执行上下文创建时，对所有 default context 注入激活脚本
+				s.hook_mu.@lock()
+				should_inject := s.hook_state.all_frames && s.hook_state.active
+					&& s.hook_state.activate_js != ''
+				activate_js := s.hook_state.activate_js
+				s.hook_mu.unlock()
+				if should_inject {
+					if is_default && ctx_id > 0 {
+						spawn fn [mut s, activate_js, ctx_id] () {
+							s.send_command('Runtime.evaluate', '{"expression":${json_str(activate_js)},"contextId":${ctx_id},"silent":true}') or {}
+						}()
+					}
+				}
+			} else if inner_method == 'Runtime.executionContextDestroyed' {
+				ctx_id := cdp_extract_int(inner_params, '"executionContextId":')
+				if ctx_id > 0 {
+					s.runtime_mu.@lock()
+					s.runtime_contexts.delete(ctx_id)
+					s.runtime_mu.unlock()
+				}
+			} else if inner_method == 'Runtime.executionContextsCleared' {
+				s.runtime_mu.@lock()
+				s.runtime_contexts.clear()
+				s.runtime_mu.unlock()
 			}
 			// 向订阅者分发内层 method
 			s.dispatch_event(inner_method, ProtocolResponse{
@@ -862,22 +992,77 @@ fn (mut s CdpSession) enable_page_events() ! {
 	s.page_mu.unlock()
 }
 
-fn (mut s CdpSession) network_requests_json(filter string) string {
+fn (mut s CdpSession) network_requests_json(f NetworkFilter, limit int) string {
 	s.network_mu.@lock()
 	defer { s.network_mu.unlock() }
-	needle := filter.to_lower()
 	mut items := []string{}
 	for request_id in s.network_request_order {
 		entry := s.network_requests[request_id] or { continue }
-		if needle != '' {
-			haystack := '${entry.method} ${entry.url} ${entry.resource_type} ${entry.status_text} ${entry.error_text}'.to_lower()
-			if !haystack.contains(needle) {
-				continue
-			}
+		if !matches_network_filter(entry, f) {
+			continue
 		}
 		items << tracked_network_request_json(entry)
+		if limit > 0 && items.len >= limit {
+			break
+		}
 	}
 	return '[' + items.join(',') + ']'
+}
+
+// matches_network_filter 检查 TrackedNetworkRequest 是否满足所有过滤条件
+fn matches_network_filter(entry TrackedNetworkRequest, f NetworkFilter) bool {
+	if f.url != '' {
+		haystack := '${entry.method} ${entry.url} ${entry.resource_type} ${entry.status_text} ${entry.error_text}'.to_lower()
+		if !haystack.contains(f.url.to_lower()) {
+			return false
+		}
+	}
+	if f.mime != '' {
+		if !entry.response_headers.to_lower().contains(f.mime.to_lower()) {
+			return false
+		}
+	}
+	if f.status != '' && !matches_status_filter(entry.status, f.status) {
+		return false
+	}
+	if f.domain != '' {
+		domain := url_hostname(entry.url)
+		if !domain.to_lower().contains(f.domain.to_lower()) {
+			return false
+		}
+	}
+	if f.rtype != '' {
+		if !entry.resource_type.to_lower().contains(f.rtype.to_lower()) {
+			return false
+		}
+	}
+	return true
+}
+
+// matches_status_filter 支持精确匹配 "200" 或通配 "2xx" "4xx" "5xx"
+fn matches_status_filter(status int, pattern string) bool {
+	if pattern == '' {
+		return true
+	}
+	pat := pattern.to_lower()
+	if pat.ends_with('xx') {
+		prefix := pat[..pat.len - 2]
+		return status.str().starts_with(prefix)
+	}
+	return status.str() == pattern
+}
+
+// url_hostname 从 URL 中提取主机名（不含端口）
+fn url_hostname(raw_url string) string {
+	after_scheme := if raw_url.contains('://') { raw_url.after('://') } else { raw_url }
+	mut host := after_scheme.split('/')[0]
+	if host.contains('@') {
+		host = host.after('@')
+	}
+	if host.contains(':') {
+		host = host.split(':')[0]
+	}
+	return host
 }
 
 fn clone_axref_map(src map[string]AxRef) map[string]AxRef {
@@ -886,6 +1071,27 @@ fn clone_axref_map(src map[string]AxRef) map[string]AxRef {
 		dst[key] = value
 	}
 	return dst
+}
+
+fn clone_runtime_context_map(src map[int]RuntimeExecutionContext) map[int]RuntimeExecutionContext {
+	mut dst := map[int]RuntimeExecutionContext{}
+	for key, value in src {
+		dst[key] = value
+	}
+	return dst
+}
+
+fn (mut s CdpSession) default_execution_context_ids() []int {
+	s.runtime_mu.@lock()
+	defer { s.runtime_mu.unlock() }
+	mut ids := []int{}
+	for ctx_id, ctx in s.runtime_contexts {
+		if ctx.is_default {
+			ids << ctx_id
+		}
+	}
+	ids.sort()
+	return ids
 }
 
 fn clone_tracked_request_map(src map[string]TrackedNetworkRequest) map[string]TrackedNetworkRequest {
@@ -913,9 +1119,13 @@ fn clone_hook_state(src HookState) HookState {
 		filter:            src.filter
 		capture_body:      src.capture_body
 		capture_response:  src.capture_response
+		max_body_len:      src.max_body_len
 		last_injected_at:  src.last_injected_at
 		last_synced_index: src.last_synced_index
+		last_pushed_count: src.last_pushed_count
 		record_count:      src.record_count
+		all_frames:        src.all_frames
+		activate_js:       src.activate_js
 	}
 }
 
@@ -962,6 +1172,11 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 			if headers_obj != '' {
 				entry.request_headers = headers_obj
 			}
+			// 提取请求体（POST 数据）
+			post_data := cdp_extract_str(request_obj, 'postData')
+			if post_data != '' {
+				entry.request_body = post_data
+			}
 		}
 		'Network.responseReceived' {
 			response_obj := cdp_extract_obj(params, 'response')
@@ -996,7 +1211,7 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 		else {}
 	}
 	s.network_requests[request_id] = entry
-	if s.network_request_order.len > 200 {
+	if s.network_request_order.len > 1000 {
 		oldest := s.network_request_order[0]
 		s.network_request_order = s.network_request_order[1..]
 		s.network_requests.delete(oldest)
@@ -1005,7 +1220,7 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 }
 
 fn tracked_network_request_json(entry TrackedNetworkRequest) string {
-	return '{"requestId":${json_str(entry.request_id)},"method":${json_str(entry.method)},"url":${json_str(entry.url)},"resourceType":${json_str(entry.resource_type)},"status":${entry.status},"statusText":${json_str(entry.status_text)},"errorText":${json_str(entry.error_text)},"finished":${entry.finished},"requestHeaders":${json_str(entry.request_headers)},"responseHeaders":${json_str(entry.response_headers)}}'
+	return '{"requestId":${json_str(entry.request_id)},"method":${json_str(entry.method)},"url":${json_str(entry.url)},"resourceType":${json_str(entry.resource_type)},"status":${entry.status},"statusText":${json_str(entry.status_text)},"errorText":${json_str(entry.error_text)},"finished":${entry.finished},"requestHeaders":${json_str(entry.request_headers)},"responseHeaders":${json_str(entry.response_headers)},"requestBody":${json_str(entry.request_body)},"responseBody":${json_str(entry.response_body)}}'
 }
 
 // get_response_body 获取网络请求的响应体
@@ -1041,6 +1256,39 @@ fn (mut s CdpSession) get_response_headers(request_id string) !string {
 		return error('response headers not available for: ${request_id}')
 	}
 	return entry.response_headers
+}
+
+// cache_response_body 在 loadingFinished 后异步缓存响应体，供 auto_body_cache 使用
+fn (mut s CdpSession) cache_response_body(request_id string) {
+	body := s.get_response_body(request_id) or { return }
+	s.network_mu.@lock()
+	mut entry := s.network_requests[request_id] or {
+		s.network_mu.unlock()
+		return
+	}
+	entry.response_body = body
+	s.network_requests[request_id] = entry
+	s.network_mu.unlock()
+}
+
+// handle_hook_binding_push 处理 Runtime.bindingCalled 推送的 hook 记录，无需轮询
+fn (mut s CdpSession) handle_hook_binding_push(payload string) {
+	record_id := cdp_extract_str(payload, 'recordId')
+	if record_id == '' {
+		return
+	}
+	s.hook_mu.@lock()
+	defer { s.hook_mu.unlock() }
+	if record_id in s.hook_records {
+		return
+	}
+	s.hook_records[record_id] = HookRecord{
+		record_id: record_id
+		raw_json:  payload
+	}
+	s.hook_record_order << record_id
+	s.hook_state.last_pushed_count++
+	s.hook_state.record_count = s.hook_record_order.len
 }
 
 // ─── 超时常量 ───────────────────────────────────────────────

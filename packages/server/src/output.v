@@ -144,7 +144,8 @@ fn error_code(message string) string {
 fn error_suggestion(message string) string {
 	msg := message.to_lower()
 	// 命令名或子命令拼错时，先把用户导回帮助入口，再给出更精确的子命令帮助。
-	if msg.contains('unknown command') || msg.contains('unknown action') || msg.contains('unsupported subcommand') {
+	if msg.contains('unknown command') || msg.contains('unknown action')
+		|| msg.contains('unsupported subcommand') {
 		return 'Run v-browser --help to see the full command list, then use v-browser <command> --help for syntax details.'
 	}
 	if msg.contains('debugger conflict') || msg.contains('another debugger is already attached') {

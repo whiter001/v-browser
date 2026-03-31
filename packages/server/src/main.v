@@ -1230,6 +1230,7 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			abort := flags['abort'] or { 'false' }
 			body := flags['body'] or { '' }
 			filter := flags['filter'] or { '' }
+			mut limit := flags['limit'] or { '' }
 			mut subaction := flags['subaction'] or { '' }
 			mut path := flags['path'] or {
 				if positionals.len > 2 { positionals[2] } else { '' }
@@ -1248,6 +1249,12 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			persistent := flags['persistent'] or { 'true' }
 			clear := flags['clear'] or { 'true' }
 			script_id := flags['script-id'] or { flags['scriptId'] or { '' } }
+			mut max_body_len := flags['max-body-len'] or { flags['maxBodyLen'] or { '' } }
+			mime := flags['mime'] or { '' }
+			status_filter := flags['status'] or { '' }
+			domain := flags['domain'] or { '' }
+			rtype := flags['type'] or { '' }
+			all_frames := flags['all-frames'] or { flags['allFrames'] or { 'false' } }
 			// 支持 network body/headers <requestId> 语法
 			if action == 'body' && request_id == '' && positionals.len > 1 {
 				request_id = positionals[1]
@@ -1289,7 +1296,13 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 					record_id = request_id
 				}
 			}
-			return 'network', '{"action":${json_str(action)},"subaction":${json_str(subaction)},"url":${json_str(url)},"abort":${json_str(abort)},"body":${json_str(body)},"filter":${json_str(filter)},"requestId":${json_str(request_id)},"recordId":${json_str(record_id)},"method":${json_str(method_override)},"overrideUrl":${json_str(url_override)},"overrideBody":${json_str(body_override)},"overrideHeaders":${json_str(headers_override)},"dryRun":${json_str(dry_run)},"captureBody":${json_str(capture_body)},"captureResponse":${json_str(capture_response)},"persistent":${json_str(persistent)},"clear":${json_str(clear)},"scriptId":${json_str(script_id)},"path":${json_str(path)}}'
+			if max_body_len == '' {
+				max_body_len = if action == 'hook' && subaction == 'start' { '4000' } else { '0' }
+			}
+			if action == 'inspect' && limit == '' && positionals.len > 1 {
+				limit = positionals[1]
+			}
+			return 'network', '{"action":${json_str(action)},"subaction":${json_str(subaction)},"url":${json_str(url)},"abort":${json_str(abort)},"body":${json_str(body)},"filter":${json_str(filter)},"limit":${json_str(limit)},"requestId":${json_str(request_id)},"recordId":${json_str(record_id)},"method":${json_str(method_override)},"overrideUrl":${json_str(url_override)},"overrideBody":${json_str(body_override)},"overrideHeaders":${json_str(headers_override)},"dryRun":${json_str(dry_run)},"captureBody":${json_str(capture_body)},"captureResponse":${json_str(capture_response)},"persistent":${json_str(persistent)},"clear":${json_str(clear)},"scriptId":${json_str(script_id)},"maxBodyLen":${json_str(max_body_len)},"mime":${json_str(mime)},"status":${json_str(status_filter)},"domain":${json_str(domain)},"type":${json_str(rtype)},"allFrames":${json_str(all_frames)},"path":${json_str(path)}}'
 		}
 		// ── frame ──
 		'frame' {

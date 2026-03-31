@@ -6,6 +6,28 @@ import time
 
 fn noop_send(_ string) ! {}
 
+fn runtime_eval_ok_result(id int, value string) string {
+	return '{"id":${id},"result":{"result":{"type":"string","value":${json_str(value)}}}}'
+}
+
+fn empty_cdp_result(id int) string {
+	return '{"id":${id},"result":{}}'
+}
+
+fn attach_runtime_mock_send(mut sess CdpSession, mut sent []string, runtime_eval_value string) {
+	sess.send_fn = fn [mut sess, mut sent, runtime_eval_value] (data string) ! {
+		sent << data
+		id := cdp_extract_int(data, '"id":')
+		method := cdp_extract_str(data, 'method')
+		response := if method == 'Runtime.evaluate' {
+			runtime_eval_ok_result(id, runtime_eval_value)
+		} else {
+			empty_cdp_result(id)
+		}
+		sess.on_message(response)
+	}
+}
+
 fn fake_eval_stdin_reader() !string {
 	return 'const answer = 42;\nconsole.log(answer);\n'
 }
@@ -710,7 +732,7 @@ fn test_cdp_on_message_tracks_network_requests() {
 	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.requestWillBeSent","params":{"requestId":"req-1","type":"Document","request":{"url":"https://example.com/","method":"GET"}}}}')
 	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.responseReceived","params":{"requestId":"req-1","type":"Document","response":{"url":"https://example.com/","status":200,"statusText":"OK"}}}}')
 	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.loadingFinished","params":{"requestId":"req-1"}}}')
-	json := sess.network_requests_json('example.com')
+	json := sess.network_requests_json(NetworkFilter{ url: 'example.com' }, 0)
 	assert json.contains('"requestId":"req-1"')
 	assert json.contains('"url":"https://example.com/"')
 	assert json.contains('"status":200')
@@ -1344,6 +1366,247 @@ fn test_build_page_primary_image_urls_js_mentions_container_scoring() {
 	assert js.contains('new URL(src, doc.baseURI).href')
 }
 
+fn test_parse_cli_to_ipc_network_requests_capture_body() {
+	method, params := parse_cli_to_ipc('network', ['requests', '--capture-body'], false)
+	assert method == 'network'
+	assert params.contains('"action":"requests"')
+	assert params.contains('"captureBody":"true"')
+}
+
+fn test_parse_cli_to_ipc_network_hook_max_body_len() {
+	method, params := parse_cli_to_ipc('network', ['hook', 'start', '--max-body-len', '8000'],
+		false)
+	assert method == 'network'
+	assert params.contains('"action":"hook"')
+	assert params.contains('"subaction":"start"')
+	assert params.contains('"maxBodyLen":"8000"')
+}
+
+fn test_parse_cli_to_ipc_network_hook_default_max_body_len() {
+	method, params := parse_cli_to_ipc('network', ['hook', 'start'], false)
+	assert method == 'network'
+	assert params.contains('"action":"hook"')
+	assert params.contains('"subaction":"start"')
+	assert params.contains('"maxBodyLen":"4000"')
+}
+
+fn test_parse_cli_to_ipc_network_hook_zero_max_body_len() {
+	method, params := parse_cli_to_ipc('network', ['hook', 'start', '--max-body-len', '0'],
+		false)
+	assert method == 'network'
+	assert params.contains('"maxBodyLen":"0"')
+}
+
+fn test_parse_cli_to_ipc_network_inspect() {
+	method, params := parse_cli_to_ipc('network', ['inspect', '--filter', 'api', '--limit', '10'],
+		false)
+	assert method == 'network'
+	assert params.contains('"action":"inspect"')
+	assert params.contains('"filter":"api"')
+	assert params.contains('"limit":"10"')
+}
+
+fn test_network_hook_bootstrap_js_includes_binding_push() {
+	js := network_hook_bootstrap_js()
+	assert js.contains('__vBrowserHookPush')
+}
+
+fn test_network_hook_activate_js_includes_bootstrap_and_config() {
+	js := network_hook_activate_js('api', true, true, true, 0, 'hook-v1')
+	assert js.contains('SCRIPT_VERSION = 3')
+	assert js.contains('__vBrowserHookConfig.active = true')
+	assert js.contains('__vBrowserHookConfig.maxBodyLen = 0')
+	assert js.contains('__vBrowserHookActive')
+}
+
+fn test_network_hook_bootstrap_js_preserves_zero_max_body_len() {
+	js := network_hook_bootstrap_js()
+	assert js.contains('cfg.maxBodyLen === 0 ? 0 : (cfg.maxBodyLen || 4000)')
+}
+
+fn test_network_hook_stop_js_marks_hook_inactive() {
+	js := network_hook_stop_js()
+	assert js.contains('__vBrowserHookActive", "false"')
+	assert js.contains('window.__vBrowserHookConfig.active = false')
+}
+
+fn test_network_hook_status_json_includes_max_body_len() {
+	state := HookState{
+		active:       true
+		max_body_len: 8000
+		record_count: 3
+	}
+	json := network_hook_status_json_from_state(state)
+	assert json.contains('"maxBodyLen":8000')
+}
+
+fn test_network_hook_status_json_includes_all_frames() {
+	state := HookState{
+		active:     true
+		all_frames: true
+	}
+	json := network_hook_status_json_from_state(state)
+	assert json.contains('"allFrames":true')
+}
+
+fn test_handle_hook_binding_push_does_not_advance_poll_index() {
+	mut sess := new_cdp_session(noop_send)
+	sess.hook_state.last_synced_index = 4
+	sess.handle_hook_binding_push('{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"}')
+	assert sess.hook_state.last_synced_index == 4
+	assert sess.hook_state.last_pushed_count == 1
+	assert sess.hook_state.record_count == 1
+	assert sess.hook_record_order == ['push-1']
+}
+
+fn test_sync_network_hook_records_dedupes_pushed_records() {
+	mut sess := new_cdp_session(noop_send)
+	sess.handle_hook_binding_push('{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"}')
+	items := split_json_array_objects('[{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"},{"recordId":"poll-2","method":"POST","url":"https://api.example.com/poll"}]')
+	added := append_polled_hook_records(mut sess, items, 0)
+	assert added == 1
+	assert sess.hook_record_order == ['push-1', 'poll-2']
+	assert sess.hook_state.last_synced_index == 2
+	assert sess.hook_state.last_pushed_count == 1
+	assert sess.hook_state.record_count == 2
+}
+
+fn test_activate_tab_context_restores_runtime_hook_chain() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_runtime_mock_send(mut sess, mut sent, 'ok')
+	sess.tab_contexts[7] = TabContext{
+		hook_state: HookState{
+			active:           true
+			injected:         true
+			script_id:        'hook-v1'
+			script_version:   3
+			filter:           'api'
+			capture_body:     true
+			capture_response: true
+			max_body_len:     4000
+			all_frames:       true
+			activate_js:      network_hook_activate_js('api', true, true, false, 4000,
+				'hook-v1')
+		}
+	}
+	sess.activate_tab_context_from_result('{"tabId":7}') or { panic(err) }
+	joined := sent.join('\n')
+	assert joined.contains('"method":"Page.enable"')
+	assert joined.contains('"method":"Network.enable"')
+	assert joined.contains('"method":"Runtime.enable"')
+	assert joined.contains('"method":"Runtime.addBinding"')
+	assert joined.contains('"method":"Page.addScriptToEvaluateOnNewDocument"')
+	eval_count := joined.split('"method":"Runtime.evaluate"').len - 1
+	assert eval_count >= 2
+}
+
+fn test_execution_context_payload_parses_numeric_id_and_default_flag() {
+	ctx_obj := cdp_extract_obj('{"context":{"id":7,"auxData":{"isDefault":true,"frameId":"frame-a"}}}',
+		'context')
+	aux_data := cdp_extract_obj(ctx_obj, 'auxData')
+	assert cdp_extract_int(ctx_obj, '"id":') == 7
+	assert cdp_extract_bool(aux_data, 'isDefault')
+	assert cdp_extract_str(aux_data, 'frameId') == 'frame-a'
+}
+
+fn test_runtime_execution_context_ids_track_create_destroy_and_clear() {
+	mut sess := new_cdp_session(noop_send)
+	sess.runtime_contexts = {
+		7:  RuntimeExecutionContext{
+			id:         7
+			frame_id:   'frame-a'
+			is_default: true
+		}
+		9:  RuntimeExecutionContext{
+			id:         9
+			frame_id:   'worker-a'
+			is_default: false
+		}
+		11: RuntimeExecutionContext{
+			id:         11
+			frame_id:   'frame-b'
+			is_default: true
+		}
+	}
+	assert sess.default_execution_context_ids() == [7, 11]
+	sess.runtime_contexts.delete(7)
+	assert sess.default_execution_context_ids() == [11]
+	sess.runtime_contexts.clear()
+	assert sess.default_execution_context_ids().len == 0
+}
+
+fn test_matches_status_filter_exact() {
+	assert matches_status_filter(200, '200')
+	assert !matches_status_filter(404, '200')
+	assert matches_status_filter(0, '')
+}
+
+fn test_matches_status_filter_wildcard() {
+	assert matches_status_filter(200, '2xx')
+	assert matches_status_filter(201, '2xx')
+	assert !matches_status_filter(404, '2xx')
+	assert matches_status_filter(404, '4xx')
+	assert matches_status_filter(500, '5xx')
+}
+
+fn test_url_hostname_extracts_host() {
+	assert url_hostname('https://api.example.com/path?q=1') == 'api.example.com'
+	assert url_hostname('http://user:pass@host.com/') == 'host.com'
+	assert url_hostname('https://example.com:8080/') == 'example.com'
+	assert url_hostname('example.com/path') == 'example.com'
+}
+
+fn test_matches_network_filter_by_domain() {
+	entry := TrackedNetworkRequest{
+		url:    'https://api.example.com/data'
+		method: 'GET'
+	}
+	assert matches_network_filter(entry, NetworkFilter{ domain: 'api.example' })
+	assert !matches_network_filter(entry, NetworkFilter{ domain: 'other.com' })
+}
+
+fn test_matches_network_filter_by_status() {
+	entry := TrackedNetworkRequest{
+		url:    'https://example.com/'
+		method: 'GET'
+		status: 404
+	}
+	assert matches_network_filter(entry, NetworkFilter{ status: '4xx' })
+	assert !matches_network_filter(entry, NetworkFilter{ status: '2xx' })
+	assert matches_network_filter(entry, NetworkFilter{ status: '404' })
+}
+
+fn test_matches_network_filter_by_type() {
+	entry := TrackedNetworkRequest{
+		url:           'https://example.com/api'
+		method:        'POST'
+		resource_type: 'XHR'
+	}
+	assert matches_network_filter(entry, NetworkFilter{ rtype: 'xhr' })
+	assert !matches_network_filter(entry, NetworkFilter{ rtype: 'fetch' })
+}
+
+fn test_parse_cli_to_ipc_network_requests_all_filters() {
+	cmd, params := parse_cli_to_ipc('network', ['requests', '--filter', 'api', '--mime',
+		'application/json', '--status', '2xx', '--domain', 'example.com', '--type', 'XHR'],
+		false)
+	assert cmd == 'network'
+	assert params.contains('"action":"requests"')
+	assert params.contains('"filter":"api"')
+	assert params.contains('"mime":"application/json"')
+	assert params.contains('"status":"2xx"')
+	assert params.contains('"domain":"example.com"')
+	assert params.contains('"type":"XHR"')
+}
+
+fn test_parse_cli_to_ipc_network_hook_all_frames() {
+	cmd, params := parse_cli_to_ipc('network', ['hook', 'start', '--all-frames'], false)
+	assert cmd == 'network'
+	assert params.contains('"subaction":"start"')
+	assert params.contains('"allFrames":"true"')
+}
+
 fn test_save_network_images_uses_candidate_set_for_matching() {
 	mut candidate_urls := map[string]bool{}
 	candidate_urls['https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium'] = true
@@ -1354,4 +1617,93 @@ fn test_save_network_images_uses_candidate_set_for_matching() {
 	}
 	assert entry.url in candidate_urls
 	assert network_image_output_name(1, entry) == '01-HDxhU9RWQAAw-2P.jpg'
+}
+
+fn test_network_requests_json_respects_limit() {
+	mut sess := new_cdp_session(noop_send)
+	for i in 0 .. 5 {
+		sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.requestWillBeSent","params":{"requestId":"req-${i}","type":"XHR","request":{"url":"https://api.example.com/v${i}","method":"GET"}}}}')
+	}
+	all := sess.network_requests_json(NetworkFilter{}, 0)
+	limited := sess.network_requests_json(NetworkFilter{}, 2)
+	assert all.contains('"req-4"')
+	// limited 应只有 2 条记录
+	count := limited.split('"requestId"').len - 1
+	assert count == 2
+}
+
+fn test_network_hook_records_json_filters_by_status() {
+	// 直接测过滤逻辑（避免触发 sync_network_hook_records 的 CDP 轮询）
+	record_ok := HookRecord{
+		record_id: '1'
+		raw_json:  '{"recordId":"1","method":"GET","url":"https://api.example.com/ok","status":200,"responseHeaders":{"content-type":"application/json"},"requestHeaders":{}}'
+	}
+	record_fail := HookRecord{
+		record_id: '2'
+		raw_json:  '{"recordId":"2","method":"POST","url":"https://api.example.com/fail","status":404,"responseHeaders":{},"requestHeaders":{}}'
+	}
+	view_ok := hook_record_view_from_raw(record_ok)
+	view_fail := hook_record_view_from_raw(record_fail)
+	assert view_ok.response_status == 200
+	assert view_fail.response_status == 404
+	// 4xx 过滤：只有 404 匹配
+	assert !matches_status_filter(view_ok.response_status, '4xx')
+	assert matches_status_filter(view_fail.response_status, '4xx')
+	// 2xx 过滤：只有 200 匹配
+	assert matches_status_filter(view_ok.response_status, '2xx')
+	assert !matches_status_filter(view_fail.response_status, '2xx')
+	// domain 过滤
+	assert url_hostname(view_ok.url) == 'api.example.com'
+	// mime 过滤（response_headers 是 JSON 对象字符串）
+	assert view_ok.response_headers.to_lower().contains('application/json')
+	// source rtype 过滤（hook records 默认 source 为空或 unknown，不含 "xhr"）
+	assert !view_ok.source.to_lower().contains('xhr')
+}
+
+fn test_network_inspect_merges_hook_and_cdp() {
+	mut sess := new_cdp_session(noop_send)
+	// CDP 记录
+	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.requestWillBeSent","params":{"requestId":"cdp-1","type":"XHR","request":{"url":"https://api.example.com/data","method":"GET"}}}}')
+	// Hook 记录（不同 URL）
+	sess.hook_records['h1'] = HookRecord{
+		record_id: '1'
+		raw_json:  '{"recordId":"1","source":"fetch","method":"POST","url":"https://api.example.com/submit","status":201,"responseHeaders":{},"requestHeaders":{}}'
+	}
+	sess.hook_record_order = ['h1']
+	f := NetworkFilter{}
+	res := network_inspect_records_json(mut sess, f, 0)
+	assert res.contains('"source":"hook"')
+	assert res.contains('"source":"cdp"')
+	assert res.contains('/submit')
+	assert res.contains('/data')
+}
+
+fn test_network_inspect_keeps_extra_cdp_entries_for_repeated_signature() {
+	mut sess := new_cdp_session(noop_send)
+	sess.hook_records['hook-1'] = HookRecord{
+		record_id: 'hook-1'
+		raw_json:  '{"recordId":"hook-1","source":"fetch","method":"GET","url":"https://api.example.com/poll","status":200,"requestBody":"","responseHeaders":{},"requestHeaders":{}}'
+	}
+	sess.hook_record_order = ['hook-1']
+	sess.network_requests = {
+		'req-1': TrackedNetworkRequest{
+			request_id:   'req-1'
+			method:       'GET'
+			url:          'https://api.example.com/poll'
+			status:       200
+			request_body: ''
+		}
+		'req-2': TrackedNetworkRequest{
+			request_id:   'req-2'
+			method:       'GET'
+			url:          'https://api.example.com/poll'
+			status:       200
+			request_body: ''
+		}
+	}
+	sess.network_request_order = ['req-1', 'req-2']
+	res := network_inspect_records_json(mut sess, NetworkFilter{}, 0)
+	assert res.contains('"recordId":"hook-1"')
+	assert !res.contains('"requestId":"req-1"')
+	assert res.contains('"requestId":"req-2"')
 }
