@@ -1598,8 +1598,12 @@ fn test_matches_network_filter_by_domain() {
 		url:    'https://api.example.com/data'
 		method: 'GET'
 	}
-	assert matches_network_filter(entry, NetworkFilter{ domain: 'api.example' })
-	assert !matches_network_filter(entry, NetworkFilter{ domain: 'other.com' })
+	assert matches_network_filter(entry, normalize_network_filter(NetworkFilter{
+		domain: 'api.example'
+	}))
+	assert !matches_network_filter(entry, normalize_network_filter(NetworkFilter{
+		domain: 'other.com'
+	}))
 }
 
 fn test_matches_network_filter_by_status() {
@@ -1608,9 +1612,9 @@ fn test_matches_network_filter_by_status() {
 		method: 'GET'
 		status: 404
 	}
-	assert matches_network_filter(entry, NetworkFilter{ status: '4xx' })
-	assert !matches_network_filter(entry, NetworkFilter{ status: '2xx' })
-	assert matches_network_filter(entry, NetworkFilter{ status: '404' })
+	assert matches_network_filter(entry, normalize_network_filter(NetworkFilter{ status: '4xx' }))
+	assert !matches_network_filter(entry, normalize_network_filter(NetworkFilter{ status: '2xx' }))
+	assert matches_network_filter(entry, normalize_network_filter(NetworkFilter{ status: '404' }))
 }
 
 fn test_matches_network_filter_by_type() {
@@ -1619,8 +1623,8 @@ fn test_matches_network_filter_by_type() {
 		method:        'POST'
 		resource_type: 'XHR'
 	}
-	assert matches_network_filter(entry, NetworkFilter{ rtype: 'xhr' })
-	assert !matches_network_filter(entry, NetworkFilter{ rtype: 'fetch' })
+	assert matches_network_filter(entry, normalize_network_filter(NetworkFilter{ rtype: 'xhr' }))
+	assert !matches_network_filter(entry, normalize_network_filter(NetworkFilter{ rtype: 'fetch' }))
 }
 
 fn test_parse_cli_to_ipc_network_requests_all_filters() {

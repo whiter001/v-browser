@@ -5,6 +5,7 @@
 module main
 
 import x.json2 as json
+import strings
 import sync
 import time
 import encoding.base64
@@ -59,6 +60,22 @@ mut:
 	status string // 精确或通配 "2xx" "4xx" "5xx"
 	domain string // 子串匹配 URL 主机名
 	rtype  string // 子串匹配 resource_type
+	// 预计算的 lowercase 版本，避免每次匹配重复 to_lower()
+	url_lower    string
+	mime_lower   string
+	domain_lower string
+	rtype_lower  string
+}
+
+// normalize_network_filter 预计算 lowercase 字段，供 matches_network_filter 使用
+fn normalize_network_filter(f NetworkFilter) NetworkFilter {
+	return NetworkFilter{
+		...f
+		url_lower:    f.url.to_lower()
+		mime_lower:   f.mime.to_lower()
+		domain_lower: f.domain.to_lower()
+		rtype_lower:  f.rtype.to_lower()
+	}
 }
 
 struct HookRecord {
@@ -998,32 +1015,40 @@ fn (mut s CdpSession) enable_page_events() ! {
 }
 
 fn (mut s CdpSession) network_requests_json(f NetworkFilter, limit int) string {
+	nf := normalize_network_filter(f)
 	s.network_mu.@lock()
 	defer { s.network_mu.unlock() }
-	mut items := []string{}
+	mut out := strings.new_builder(256)
+	out.write_string('[')
+	mut count := 0
 	for request_id in s.network_request_order {
 		entry := s.network_requests[request_id] or { continue }
-		if !matches_network_filter(entry, f) {
+		if !matches_network_filter(entry, nf) {
 			continue
 		}
-		items << tracked_network_request_json(entry)
-		if limit > 0 && items.len >= limit {
+		if count > 0 {
+			out.write_u8(`,`)
+		}
+		out.write_string(tracked_network_request_json(entry))
+		count++
+		if limit > 0 && count >= limit {
 			break
 		}
 	}
-	return '[' + items.join(',') + ']'
+	out.write_u8(`]`)
+	return out.str()
 }
 
 // matches_network_filter 检查 TrackedNetworkRequest 是否满足所有过滤条件
 fn matches_network_filter(entry TrackedNetworkRequest, f NetworkFilter) bool {
 	if f.url != '' {
 		haystack := '${entry.method} ${entry.url} ${entry.resource_type} ${entry.status_text} ${entry.error_text}'.to_lower()
-		if !haystack.contains(f.url.to_lower()) {
+		if !haystack.contains(f.url_lower) {
 			return false
 		}
 	}
 	if f.mime != '' {
-		if !entry.response_headers.to_lower().contains(f.mime.to_lower()) {
+		if !entry.response_headers.to_lower().contains(f.mime_lower) {
 			return false
 		}
 	}
@@ -1032,12 +1057,12 @@ fn matches_network_filter(entry TrackedNetworkRequest, f NetworkFilter) bool {
 	}
 	if f.domain != '' {
 		domain := url_hostname(entry.url)
-		if !domain.to_lower().contains(f.domain.to_lower()) {
+		if !domain.to_lower().contains(f.domain_lower) {
 			return false
 		}
 	}
 	if f.rtype != '' {
-		if !entry.resource_type.to_lower().contains(f.rtype.to_lower()) {
+		if !entry.resource_type.to_lower().contains(f.rtype_lower) {
 			return false
 		}
 	}
@@ -1301,7 +1326,9 @@ fn (mut s CdpSession) ensure_response_body_cached(request_id string) !TrackedNet
 	s.enable_network_tracking()!
 	resp := s.send_command('Network.getResponseBody', '{"requestId":${json_str(request_id)}}')!
 	// double-check：CDP fetch 期间另一个 goroutine 可能已完成缓存
-	recheck := s.network_request_snapshot(request_id) or { return error('request not found: ${request_id}') }
+	recheck := s.network_request_snapshot(request_id) or {
+		return error('request not found: ${request_id}')
+	}
 	if recheck.response_body_cached {
 		return recheck
 	}

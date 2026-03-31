@@ -3160,7 +3160,7 @@ fn cmd_network(mut sess CdpSession, params string) string {
 // 按请求签名计数去重，输出统一视图。CDP 记录优先填充 requestId/status，
 // hook 记录补充 requestBody/responseBody。
 fn network_inspect_records_json(mut sess CdpSession, f NetworkFilter, limit int) string {
-	needle := f.url.to_lower()
+	nf := normalize_network_filter(f)
 	mut items := []string{}
 
 	// 收集 hook records（源丰富，含 body）
@@ -3169,20 +3169,20 @@ fn network_inspect_records_json(mut sess CdpSession, f NetworkFilter, limit int)
 	for record_id in sess.hook_record_order {
 		record := sess.hook_records[record_id] or { continue }
 		view := hook_record_view_from_raw(record)
-		if needle != '' && !hook_record_matches_filter(view, needle) {
+		if nf.url_lower != '' && !hook_record_matches_filter(view, nf.url_lower) {
 			continue
 		}
-		if f.mime != '' && !view.response_headers.to_lower().contains(f.mime.to_lower()) {
+		if nf.mime != '' && !view.response_headers.to_lower().contains(nf.mime_lower) {
 			continue
 		}
-		if f.status != '' && !matches_status_filter(view.response_status, f.status) {
+		if nf.status != '' && !matches_status_filter(view.response_status, nf.status) {
 			continue
 		}
-		if f.domain != '' && !url_hostname(view.url).to_lower().contains(f.domain.to_lower()) {
+		if nf.domain != '' && !url_hostname(view.url).to_lower().contains(nf.domain_lower) {
 			continue
 		}
 		// rtype 对 hook records 匹配 source 字段（fetch/xhr）
-		if f.rtype != '' && !view.source.to_lower().contains(f.rtype.to_lower()) {
+		if nf.rtype != '' && !view.source.to_lower().contains(nf.rtype_lower) {
 			continue
 		}
 		sig := hook_record_dedupe_key(view)
@@ -3204,7 +3204,7 @@ fn network_inspect_records_json(mut sess CdpSession, f NetworkFilter, limit int)
 				seen_sig_counts[sig]--
 				continue
 			}
-			if !matches_network_filter(entry, f) {
+			if !matches_network_filter(entry, nf) {
 				continue
 			}
 			items << '{"source":"cdp","requestId":${json_str(entry.request_id)},"method":${json_str(entry.method)},"url":${json_str(entry.url)},"status":${entry.status},"statusText":${json_str(entry.status_text)},"resourceType":${json_str(entry.resource_type)},"requestBody":${json_str(entry.request_body)},"responseBody":${json_str(entry.response_body)},"requestHeaders":${json_str(entry.request_headers)},"responseHeaders":${json_str(entry.response_headers)},"finished":${entry.finished}}'
