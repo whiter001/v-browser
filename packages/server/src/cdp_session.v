@@ -1201,6 +1201,69 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 	if request_id == '' {
 		return
 	}
+	// 锁外解析 — 所有 cdp_extract_* 调用在此完成
+	mut parsed_url := ''
+	mut parsed_method := ''
+	mut parsed_resource_type := ''
+	mut parsed_request_headers := ''
+	mut parsed_request_body := ''
+	mut parsed_status := 0
+	mut parsed_status_text := ''
+	mut parsed_response_headers := ''
+	mut parsed_response_url := ''
+	mut parsed_response_resource_type := ''
+	mut parsed_error_text := ''
+	mut has_status := false
+	mut has_extra_status := false
+	mut has_extra_headers := false
+	match method {
+		'Network.requestWillBeSent' {
+			request_obj := cdp_extract_obj(params, 'request')
+			parsed_url = cdp_extract_str(request_obj, 'url')
+			parsed_method = cdp_extract_str(request_obj, 'method')
+			parsed_resource_type = cdp_extract_str(params, 'type')
+			headers_obj := cdp_extract_obj(request_obj, 'headers')
+			if headers_obj != '' {
+				parsed_request_headers = headers_obj
+			}
+			post_data := cdp_extract_str(request_obj, 'postData')
+			if post_data != '' {
+				parsed_request_body = post_data
+			}
+		}
+		'Network.responseReceived' {
+			response_obj := cdp_extract_obj(params, 'response')
+			status_val := cdp_extract_obj_key(response_obj, '"status":')
+			if status_val != '' {
+				parsed_status = status_val.int()
+				has_status = true
+			}
+			parsed_status_text = cdp_extract_str(response_obj, 'statusText')
+			headers_obj := cdp_extract_obj(response_obj, 'headers')
+			if headers_obj != '' {
+				parsed_response_headers = headers_obj
+			}
+			parsed_response_url = cdp_extract_str(response_obj, 'url')
+			parsed_response_resource_type = cdp_extract_str(params, 'type')
+		}
+		'Network.responseReceivedExtraInfo' {
+			status_val := cdp_extract_obj_key(params, '"statusCode":')
+			if status_val != '' {
+				parsed_status = status_val.int()
+				has_extra_status = true
+			}
+			headers_obj := cdp_extract_obj(params, 'headers')
+			if headers_obj != '' {
+				parsed_response_headers = headers_obj
+				has_extra_headers = true
+			}
+		}
+		'Network.loadingFailed' {
+			parsed_error_text = cdp_extract_str(params, 'errorText')
+		}
+		else {}
+	}
+	// 锁内仅做 map 读写 + 字段赋值
 	s.network_mu.@lock()
 	mut entry := s.network_requests[request_id] or {
 		tracked := TrackedNetworkRequest{
@@ -1211,49 +1274,38 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 	}
 	match method {
 		'Network.requestWillBeSent' {
-			request_obj := cdp_extract_obj(params, 'request')
-			entry.url = cdp_extract_str(request_obj, 'url')
-			entry.method = cdp_extract_str(request_obj, 'method')
-			entry.resource_type = cdp_extract_str(params, 'type')
-			// 提取请求头
-			headers_obj := cdp_extract_obj(request_obj, 'headers')
-			if headers_obj != '' {
-				entry.request_headers = headers_obj
+			entry.url = parsed_url
+			entry.method = parsed_method
+			entry.resource_type = parsed_resource_type
+			if parsed_request_headers != '' {
+				entry.request_headers = parsed_request_headers
 			}
-			// 提取请求体（POST 数据）
-			post_data := cdp_extract_str(request_obj, 'postData')
-			if post_data != '' {
-				entry.request_body = post_data
+			if parsed_request_body != '' {
+				entry.request_body = parsed_request_body
 			}
 		}
 		'Network.responseReceived' {
-			response_obj := cdp_extract_obj(params, 'response')
-			status_val := cdp_extract_obj_key(response_obj, '"status":')
-			if !entry.status_from_extra && status_val != '' {
-				entry.status = status_val.int()
+			if has_status && !entry.status_from_extra {
+				entry.status = parsed_status
 			}
-			entry.status_text = cdp_extract_str(response_obj, 'statusText')
-			// 提取响应头
-			headers_obj := cdp_extract_obj(response_obj, 'headers')
-			if headers_obj != '' && !entry.response_headers_complete {
-				entry.response_headers = headers_obj
+			entry.status_text = parsed_status_text
+			if parsed_response_headers != '' && !entry.response_headers_complete {
+				entry.response_headers = parsed_response_headers
 			}
 			if entry.url == '' {
-				entry.url = cdp_extract_str(response_obj, 'url')
+				entry.url = parsed_response_url
 			}
 			if entry.resource_type == '' {
-				entry.resource_type = cdp_extract_str(params, 'type')
+				entry.resource_type = parsed_response_resource_type
 			}
 		}
 		'Network.responseReceivedExtraInfo' {
-			status_val := cdp_extract_obj_key(params, '"statusCode":')
-			if status_val != '' {
-				entry.status = status_val.int()
+			if has_extra_status {
+				entry.status = parsed_status
 				entry.status_from_extra = true
 			}
-			headers_obj := cdp_extract_obj(params, 'headers')
-			if headers_obj != '' {
-				entry.response_headers = headers_obj
+			if has_extra_headers {
+				entry.response_headers = parsed_response_headers
 				entry.response_headers_complete = true
 			}
 		}
@@ -1262,7 +1314,7 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 		}
 		'Network.loadingFailed' {
 			entry.finished = true
-			entry.error_text = cdp_extract_str(params, 'errorText')
+			entry.error_text = parsed_error_text
 		}
 		else {}
 	}
