@@ -1300,6 +1300,11 @@ fn (mut s CdpSession) ensure_response_body_cached(request_id string) !TrackedNet
 	}
 	s.enable_network_tracking()!
 	resp := s.send_command('Network.getResponseBody', '{"requestId":${json_str(request_id)}}')!
+	// double-check：CDP fetch 期间另一个 goroutine 可能已完成缓存
+	recheck := s.network_request_snapshot(request_id) or { return error('request not found: ${request_id}') }
+	if recheck.response_body_cached {
+		return recheck
+	}
 	body := cdp_extract_str(resp.result, 'body')
 	base64_encoded := cdp_extract_obj_key(resp.result, '"base64Encoded":') == 'true'
 	return s.cache_response_body_payload(request_id, body, base64_encoded)
