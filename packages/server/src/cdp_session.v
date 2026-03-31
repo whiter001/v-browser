@@ -150,18 +150,23 @@ struct TabSummary {
 
 struct TrackedNetworkRequest {
 mut:
-	request_id       string
-	url              string
-	method           string
-	resource_type    string
-	status           int
-	status_text      string
-	error_text       string
-	finished         bool
-	request_headers  string
-	response_headers string
-	request_body     string
-	response_body    string
+	request_id                string
+	url                       string
+	method                    string
+	resource_type             string
+	status                    int
+	status_from_extra         bool
+	status_text               string
+	error_text                string
+	finished                  bool
+	request_headers           string
+	response_headers          string
+	response_headers_complete bool
+	request_body              string
+	response_body             string
+	response_body_raw         string
+	response_body_base64      bool
+	response_body_cached      bool
 }
 
 // CdpSession 管理一个 WebSocket 连接上的 CDP 会话
@@ -1148,6 +1153,24 @@ fn clone_network_watch_state(src NetworkWatchState) NetworkWatchState {
 	}
 }
 
+fn (mut s CdpSession) network_request_snapshot(request_id string) !TrackedNetworkRequest {
+	s.network_mu.@lock()
+	defer { s.network_mu.unlock() }
+	entry := s.network_requests[request_id] or { return error('request not found: ${request_id}') }
+	return entry
+}
+
+fn (mut s CdpSession) network_request_entries_snapshot() []TrackedNetworkRequest {
+	s.network_mu.@lock()
+	defer { s.network_mu.unlock() }
+	mut entries := []TrackedNetworkRequest{cap: s.network_request_order.len}
+	for request_id in s.network_request_order {
+		entry := s.network_requests[request_id] or { continue }
+		entries << entry
+	}
+	return entries
+}
+
 fn track_network_event(mut s CdpSession, method string, params string) {
 	request_id := cdp_extract_str(params, 'requestId')
 	if request_id == '' {
@@ -1181,11 +1204,13 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 		'Network.responseReceived' {
 			response_obj := cdp_extract_obj(params, 'response')
 			status_val := cdp_extract_obj_key(response_obj, '"status":')
-			entry.status = status_val.int()
+			if !entry.status_from_extra && status_val != '' {
+				entry.status = status_val.int()
+			}
 			entry.status_text = cdp_extract_str(response_obj, 'statusText')
 			// 提取响应头
 			headers_obj := cdp_extract_obj(response_obj, 'headers')
-			if headers_obj != '' {
+			if headers_obj != '' && !entry.response_headers_complete {
 				entry.response_headers = headers_obj
 			}
 			if entry.url == '' {
@@ -1199,6 +1224,12 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 			status_val := cdp_extract_obj_key(params, '"statusCode":')
 			if status_val != '' {
 				entry.status = status_val.int()
+				entry.status_from_extra = true
+			}
+			headers_obj := cdp_extract_obj(params, 'headers')
+			if headers_obj != '' {
+				entry.response_headers = headers_obj
+				entry.response_headers_complete = true
 			}
 		}
 		'Network.loadingFinished' {
@@ -1223,35 +1254,71 @@ fn tracked_network_request_json(entry TrackedNetworkRequest) string {
 	return '{"requestId":${json_str(entry.request_id)},"method":${json_str(entry.method)},"url":${json_str(entry.url)},"resourceType":${json_str(entry.resource_type)},"status":${entry.status},"statusText":${json_str(entry.status_text)},"errorText":${json_str(entry.error_text)},"finished":${entry.finished},"requestHeaders":${json_str(entry.request_headers)},"responseHeaders":${json_str(entry.response_headers)},"requestBody":${json_str(entry.request_body)},"responseBody":${json_str(entry.response_body)}}'
 }
 
-// get_response_body 获取网络请求的响应体
-fn (mut s CdpSession) get_response_body(request_id string) !string {
+fn response_body_cache_preview(raw_body string, base64_encoded bool) string {
+	if base64_encoded {
+		return '[base64-encoded body cached]'
+	}
+	return raw_body
+}
+
+fn (mut s CdpSession) cache_response_body_payload(request_id string, raw_body string, base64_encoded bool) !TrackedNetworkRequest {
+	s.network_mu.@lock()
+	mut entry := s.network_requests[request_id] or {
+		s.network_mu.unlock()
+		return error('request not found: ${request_id}')
+	}
+	entry.response_body_raw = raw_body
+	entry.response_body_base64 = base64_encoded
+	entry.response_body_cached = true
+	entry.response_body = response_body_cache_preview(raw_body, base64_encoded)
+	s.network_requests[request_id] = entry
+	s.network_mu.unlock()
+	return entry
+}
+
+fn cached_response_body_as_string(entry TrackedNetworkRequest) string {
+	if entry.response_body_base64 {
+		return base64.decode_str(entry.response_body_raw)
+	}
+	return entry.response_body_raw
+}
+
+fn cached_response_body_as_bytes(entry TrackedNetworkRequest) []u8 {
+	if entry.response_body_base64 {
+		return base64.decode(entry.response_body_raw)
+	}
+	return entry.response_body_raw.bytes()
+}
+
+fn (mut s CdpSession) ensure_response_body_cached(request_id string) !TrackedNetworkRequest {
+	entry := s.network_request_snapshot(request_id)!
+	if entry.response_body_cached {
+		return entry
+	}
+	if !entry.finished {
+		return error('response body not available until request finishes: ${request_id}')
+	}
 	s.enable_network_tracking()!
 	resp := s.send_command('Network.getResponseBody', '{"requestId":${json_str(request_id)}}')!
 	body := cdp_extract_str(resp.result, 'body')
-	base64_flag := cdp_extract_obj_key(resp.result, '"base64Encoded":')
-	if base64_flag == 'true' {
-		// 解码 base64
-		return base64.decode_str(body)
-	}
-	return body
+	base64_encoded := cdp_extract_obj_key(resp.result, '"base64Encoded":') == 'true'
+	return s.cache_response_body_payload(request_id, body, base64_encoded)
+}
+
+// get_response_body 获取网络请求的响应体
+fn (mut s CdpSession) get_response_body(request_id string) !string {
+	entry := s.ensure_response_body_cached(request_id)!
+	return cached_response_body_as_string(entry)
 }
 
 fn (mut s CdpSession) get_response_body_bytes(request_id string) ![]u8 {
-	s.enable_network_tracking()!
-	resp := s.send_command('Network.getResponseBody', '{"requestId":${json_str(request_id)}}')!
-	body := cdp_extract_str(resp.result, 'body')
-	base64_flag := cdp_extract_obj_key(resp.result, '"base64Encoded":')
-	if base64_flag == 'true' {
-		return base64.decode(body)
-	}
-	return body.bytes()
+	entry := s.ensure_response_body_cached(request_id)!
+	return cached_response_body_as_bytes(entry)
 }
 
 // get_response_headers 获取网络请求的响应头（从本地追踪记录中获取）
 fn (mut s CdpSession) get_response_headers(request_id string) !string {
-	s.enable_network_tracking()!
-	// 从本地追踪的请求中获取响应头
-	entry := s.network_requests[request_id] or { return error('request not found: ${request_id}') }
+	entry := s.network_request_snapshot(request_id)!
 	if entry.response_headers == '' {
 		return error('response headers not available for: ${request_id}')
 	}
@@ -1260,15 +1327,7 @@ fn (mut s CdpSession) get_response_headers(request_id string) !string {
 
 // cache_response_body 在 loadingFinished 后异步缓存响应体，供 auto_body_cache 使用
 fn (mut s CdpSession) cache_response_body(request_id string) {
-	body := s.get_response_body(request_id) or { return }
-	s.network_mu.@lock()
-	mut entry := s.network_requests[request_id] or {
-		s.network_mu.unlock()
-		return
-	}
-	entry.response_body = body
-	s.network_requests[request_id] = entry
-	s.network_mu.unlock()
+	_ := s.ensure_response_body_cached(request_id) or { return }
 }
 
 // handle_hook_binding_push 处理 Runtime.bindingCalled 推送的 hook 记录，无需轮询

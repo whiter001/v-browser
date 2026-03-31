@@ -3,6 +3,7 @@ module main
 import os
 import net
 import time
+import encoding.base64
 
 fn noop_send(_ string) ! {}
 
@@ -25,6 +26,29 @@ fn attach_runtime_mock_send(mut sess CdpSession, mut sent []string, runtime_eval
 			empty_cdp_result(id)
 		}
 		sess.on_message(response)
+	}
+}
+
+fn network_body_result_json(body string, base64_encoded bool) string {
+	return '{"body":${json_str(body)},"base64Encoded":${base64_encoded}}'
+}
+
+fn attach_network_body_mock_send(mut sess CdpSession, mut sent []string, expected_request_id string, response_result string) {
+	sess.send_fn = fn [mut sess, mut sent, expected_request_id, response_result] (data string) ! {
+		sent << data
+		id := cdp_extract_int(data, '"id":')
+		method := cdp_extract_str(data, 'method')
+		if method == 'Network.getResponseBody' {
+			request_id := cdp_extract_str(data, 'requestId')
+			result := if expected_request_id != '' && request_id == expected_request_id {
+				response_result
+			} else {
+				network_body_result_json('', false)
+			}
+			sess.on_message('{"id":${id},"result":${result}}')
+			return
+		}
+		sess.on_message(empty_cdp_result(id))
 	}
 }
 
@@ -737,6 +761,18 @@ fn test_cdp_on_message_tracks_network_requests() {
 	assert json.contains('"url":"https://example.com/"')
 	assert json.contains('"status":200')
 	assert json.contains('"finished":true')
+}
+
+fn test_cdp_on_message_prefers_extra_info_headers_and_status() {
+	mut sess := new_cdp_session(noop_send)
+	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.responseReceivedExtraInfo","params":{"requestId":"req-1","statusCode":304,"headers":{"content-type":"application/json","set-cookie":"sid=1"}}}}')
+	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.responseReceived","params":{"requestId":"req-1","type":"XHR","response":{"url":"https://example.com/api","status":200,"statusText":"OK","headers":{"content-type":"application/json"}}}}}')
+	headers := sess.get_response_headers('req-1') or { panic(err) }
+	entry := sess.network_requests['req-1'] or { panic('missing request') }
+	assert entry.status == 304
+	assert headers.contains('"set-cookie":"sid=1"')
+	assert entry.response_headers_complete
+	assert entry.status_from_extra
 }
 
 fn test_cdp_on_message_tracks_dialog_events() {
@@ -1630,6 +1666,95 @@ fn test_network_requests_json_respects_limit() {
 	// limited 应只有 2 条记录
 	count := limited.split('"requestId"').len - 1
 	assert count == 2
+}
+
+fn test_get_response_body_uses_cached_text_without_cdp_fetch() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_network_body_mock_send(mut sess, mut sent, '', network_body_result_json('',
+		false))
+	sess.network_requests['req-1'] = TrackedNetworkRequest{
+		request_id:           'req-1'
+		finished:             true
+		response_body:        '{"ok":true}'
+		response_body_raw:    '{"ok":true}'
+		response_body_cached: true
+	}
+	body := sess.get_response_body('req-1') or { panic(err) }
+	assert body == '{"ok":true}'
+	assert sent.len == 0
+}
+
+fn test_get_response_body_bytes_decodes_cached_base64_body() {
+	mut sess := new_cdp_session(noop_send)
+	sess.network_requests['req-1'] = TrackedNetworkRequest{
+		request_id:           'req-1'
+		finished:             true
+		response_body:        '[base64-encoded body cached]'
+		response_body_raw:    base64.encode('PNG'.bytes())
+		response_body_base64: true
+		response_body_cached: true
+	}
+	body := sess.get_response_body_bytes('req-1') or { panic(err) }
+	assert body.bytestr() == 'PNG'
+}
+
+fn test_get_response_body_returns_clear_error_before_request_finishes() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_network_body_mock_send(mut sess, mut sent, 'req-1', network_body_result_json('{"late":true}',
+		false))
+	sess.network_requests['req-1'] = TrackedNetworkRequest{
+		request_id: 'req-1'
+		finished:   false
+	}
+	_ := sess.get_response_body('req-1') or {
+		assert err.msg().contains('until request finishes')
+		assert sent.len == 0
+		return
+	}
+	assert false
+}
+
+fn test_cache_response_body_payload_populates_cache_fields() {
+	mut sess := new_cdp_session(noop_send)
+	sess.network_requests['req-1'] = TrackedNetworkRequest{
+		request_id: 'req-1'
+		finished:   true
+	}
+	entry := sess.cache_response_body_payload('req-1', 'hello world', false) or { panic(err) }
+	assert entry.response_body_cached
+	assert entry.response_body_raw == 'hello world'
+	assert entry.response_body == 'hello world'
+	snapshot := sess.network_requests['req-1'] or { panic('missing request') }
+	assert snapshot.response_body_cached
+	assert snapshot.response_body_raw == 'hello world'
+}
+
+fn test_save_network_response_uses_cached_body_without_extra_cdp_fetch() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_network_body_mock_send(mut sess, mut sent, '', network_body_result_json('',
+		false))
+	sess.network_requests['req-1'] = TrackedNetworkRequest{
+		request_id:           'req-1'
+		url:                  'https://example.com/image.png'
+		finished:             true
+		response_headers:     '{"content-type":"image/png"}'
+		response_body:        '[base64-encoded body cached]'
+		response_body_raw:    base64.encode_str('image-data')
+		response_body_base64: true
+		response_body_cached: true
+	}
+	tmp_dir := os.join_path(os.temp_dir(), 'v-browser-network-save-${os.getpid()}-${time.now().unix_milli()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer { os.rmdir_all(tmp_dir) or {} }
+	out_path := os.join_path(tmp_dir, 'image.bin')
+	saved_path, mime_type := save_network_response(mut sess, 'req-1', out_path) or { panic(err) }
+	assert saved_path == out_path
+	assert mime_type == 'image/png'
+	assert (os.read_file(saved_path) or { panic(err) }) == 'image-data'
+	assert sent.len == 0
 }
 
 fn test_network_hook_records_json_filters_by_status() {

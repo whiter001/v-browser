@@ -4318,11 +4318,8 @@ fn build_network_replay_js(method string, url string, body string, headers strin
 }
 
 fn save_network_response(mut sess CdpSession, request_id string, target_path string) !(string, string) {
-	sess.enable_network_tracking()!
-	entry := sess.network_requests[request_id] or {
-		return error('request not found: ${request_id}')
-	}
 	body := sess.get_response_body_bytes(request_id)!
+	entry := sess.network_request_snapshot(request_id)!
 	mime_type := network_response_mime_type(entry)
 	out_path := resolve_network_save_path(target_path, request_id, entry.url, mime_type)
 	parent_dir := os.dir(out_path)
@@ -4346,8 +4343,8 @@ fn save_network_images(mut sess CdpSession, target_dir string, filter string) !(
 	if primary_url_set.len == 0 {
 		return saved_paths, 0
 	}
-	for request_id in sess.network_request_order {
-		entry := sess.network_requests[request_id] or { continue }
+	for entry in sess.network_request_entries_snapshot() {
+		request_id := entry.request_id
 		if needle != '' {
 			haystack := '${entry.method} ${entry.url} ${entry.resource_type} ${entry.status_text} ${entry.error_text}'.to_lower()
 			if !haystack.contains(needle) {
@@ -4423,6 +4420,7 @@ fn network_watch_status_json(mut sess CdpSession) string {
 }
 
 fn sync_network_watch_existing_requests(mut sess CdpSession) {
+	entries := sess.network_request_entries_snapshot()
 	sess.network_watch_mu.@lock()
 	if !sess.network_watch.active {
 		sess.network_watch_mu.unlock()
@@ -4430,8 +4428,8 @@ fn sync_network_watch_existing_requests(mut sess CdpSession) {
 	}
 	mut request_ids := []string{}
 	mut paths := []string{}
-	for request_id in sess.network_request_order {
-		entry := sess.network_requests[request_id] or { continue }
+	for entry in entries {
+		request_id := entry.request_id
 		if !entry.finished {
 			continue
 		}
@@ -4462,12 +4460,9 @@ fn sync_network_watch_existing_requests(mut sess CdpSession) {
 }
 
 fn handle_network_watch_loading_finished(mut sess CdpSession, request_id string) {
+	entry := sess.network_request_snapshot(request_id) or { return }
 	sess.network_watch_mu.@lock()
 	if !sess.network_watch.active {
-		sess.network_watch_mu.unlock()
-		return
-	}
-	entry := sess.network_requests[request_id] or {
 		sess.network_watch_mu.unlock()
 		return
 	}
