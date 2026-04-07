@@ -311,38 +311,24 @@ v-browser set media [dark|light]         # 颜色方案
 
 ---
 
-## 网络控制
-
-```bash
-v-browser network route <url>            # 拦截请求
-v-browser network route <url> --abort    # 阻止请求
-v-browser network unroute [url]          # 移除路由
-v-browser network requests               # 查看请求
-```
-
-### 高级网络功能
-
-```bash
-# 查看特定域名的请求
-v-browser network requests --filter "api.example.com"
-
-# 查看 JSON 响应
-v-browser network requests --mime "application/json"
-
-# 保存请求到文件
-v-browser network requests --save ./requests.json
-```
-
----
-
 ## Server 管理
 
 ```bash
-v-browser server start               # 启动本地 daemon
+v-browser server start               # 启动本地 daemon（会阻塞终端）
 v-browser server stop                 # 停止本地 daemon
 v-browser server restart              # 重启本地 daemon
 v-browser server status               # 查看 daemon 状态
 ```
+
+### 终端阻塞行为
+
+- **`server start`**：会阻塞当前终端，直到手动 Ctrl+C 停止。适合需要长时间运行 daemon 的场景。
+- **`connect`**：不阻塞终端，执行完成后立即返回（实际测试验证）。推荐优先使用 `connect`。
+- **建议**：
+  - 开发调试时：终端 1 运行 `server start`（阻塞），终端 2 执行命令
+  - 自动化脚本：用 `connect`（自动管理 daemon 生命周期，不阻塞）
+
+> **验证结果**：`server start` 阻塞终端直到 Ctrl+C；`connect` 执行后立即返回，不阻塞。
 
 > **提示**：改动涉及运行时行为时，需先 `server restart` 再验证。
 
@@ -466,20 +452,47 @@ v-browser network inspect --status 2xx # 按状态码过滤
 
 ### 典型工作流
 
-#### 工作流 1: 抓取 API 响应
+#### 工作流 1: 抓取 API 响应（推荐）
 
 ```bash
 # 1. 打开页面触发 API 请求
 v-browser connect https://example.com
 
-# 2. 查看 XHR/Fetch 请求
-v-browser network requests --type XHR --mime application/json --limit 20
+# 2. 滚动页面触发更多请求
+v-browser scroll down 2000
+v-browser wait --timeout 3000
 
-# 3. 获取具体响应体
+# 3. 查看网络请求列表，找到 API 请求
+v-browser network requests --limit 10 --filter "graphql"
+# 或按类型过滤
+v-browser network requests --limit 10 --type XHR
+
+# 4. 获取请求的 requestId，从输出中找到 "requestId":"xxx"
+# 5. 用 requestId 获取响应体
 v-browser network body <requestId>
 ```
 
-#### 工作流 2: 调试 API 请求
+#### 工作流 2: 抓取完整 JSON API 数据（如 x.com Timeline）
+
+```bash
+# 1. 连接页面
+v-browser connect https://x.com/home
+
+# 2. 滚动触发 Timeline API 请求
+v-browser scroll down 3000
+sleep 3
+v-browser scroll down 3000
+
+# 3. 找到 Timeline 相关请求
+v-browser network requests --limit 5 --filter "Timeline"
+# 输出中的 requestId 形如 "9596.120"
+
+# 4. 获取完整的 JSON 响应体
+v-browser network body "9596.120"
+# 这是完整的 x.com Timeline 数据，包含所有推文的 full_text、作者信息等
+```
+
+#### 工作流 3: 调试 API 请求
 
 ```bash
 # 1. 启动 Hook 并捕获请求体
@@ -495,7 +508,7 @@ v-browser network hook records --type XHR
 v-browser network hook replay <record-id> --override-body '{"email":"test2@example.com"}'
 ```
 
-#### 工作流 3: 持续监控请求
+#### 工作流 4: 持续监控请求
 
 ```bash
 # 1. 开始监听并保存到目录
@@ -509,6 +522,22 @@ v-browser wait --timeout 3000 ".new-item"
 v-browser network watch stop
 # 查看 ./debug-requests 目录中的保存文件
 ```
+
+### 实用技巧
+
+1. **获取 requestId 的方法**：
+   - `network requests` 输出中包含 `"requestId":"xxx"`
+   - 使用 `grep -o '"requestId":"[^"]*"'` 快速提取
+
+2. **过滤关键词常用值**：
+   - `graphql` - GraphQL API 请求
+   - `Timeline` - 时间线数据
+   - `api/graphql` - X/Twitter 的 GraphQL 端点
+
+3. **常见问题**：
+   - `responseBody` 为空：需要用 `network body <id>` 获取
+   - Hook 没捕获到请求：检查是否加了 `--capture-response` 参数
+   - `network watch` 保存失败：`candidateCount: 0` 表示没有匹配到请求
 
 ---
 
