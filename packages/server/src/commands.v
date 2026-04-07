@@ -592,7 +592,7 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 
 // cmd_screenshot_annotate 截取带标注的页面截图
 // 自动识别页面中的输入框并添加边框标注
-fn cmd_screenshot_annotate(mut sess CdpSession, params string, path string, fmt string, full bool, max_labels int) string {
+fn cmd_screenshot_annotate(mut sess CdpSession, _params string, path string, fmt string, full bool, max_labels int) string {
 	js := build_screenshot_annotate_js(full, max_labels)
 	result := eval_scoped_expression(mut sess, js, true) or { return 'ERROR:${err}' }
 	ok := cdp_extract_obj_key(result, '"ok":')
@@ -3885,7 +3885,7 @@ fn hook_expected_shape_json(view RequestRecord) string {
 	return '{"status":${view.response_status},"responseOk":${view.response_ok},"responseType":${json_str(view.response_type)},"statusText":${json_str(view.status_text)}}'
 }
 
-fn hook_template_from_signature(signature string, method string, url_pattern string, required_headers string, body_template string, transform_rules string, expected_response_shape string, record_ids []string, sample string) ReplayTemplate {
+fn hook_template_from_signature(signature string, method string, url_pattern string, required_headers string, body_template string, transform_rules string, expected_response_shape string, record_ids []string, _sample string) ReplayTemplate {
 	first_record_id := if record_ids.len > 0 { record_ids[0] } else { '' }
 	return ReplayTemplate{
 		template_id:             'tpl-${hook_safe_id_component(signature)}'
