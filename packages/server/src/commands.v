@@ -93,7 +93,12 @@ fn cmd_not_impl(name string) string {
 	return 'ERROR:command ${name} not yet implemented'
 }
 
-// ─── eval ───────────────────────────────────────────────────
+// cmd_eval 在页面上下文中执行 JavaScript 表达式
+// 支持参数：
+//   - expression: 要执行的表达式
+//   - awaitPromise: 是否等待 Promise
+//   - base64: 是否使用 base64 编码表达式
+//   - readError: 返回错误信息（用于测试）
 fn cmd_eval(mut sess CdpSession, params string) string {
 	read_error := cdp_extract_str(params, 'readError')
 	if read_error != '' {
@@ -115,6 +120,8 @@ fn cmd_eval(mut sess CdpSession, params string) string {
 	return json_str(val)
 }
 
+// build_scoped_runtime_js 在当前 frame 上下文中包装 JavaScript 代码
+// 如果当前有 iframe 选择器，则在 iframe 的 document/window 中执行
 fn build_scoped_runtime_js(mut sess CdpSession, body string) string {
 	frame_selector := sess.current_frame_selector_value()
 	if frame_selector == '' {
@@ -124,6 +131,8 @@ fn build_scoped_runtime_js(mut sess CdpSession, body string) string {
 	return '(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; return (function(document, window){ ${body} })(doc, win); })()'
 }
 
+// evaluate_bool_js 在页面上下文中执行 JavaScript 并返回布尔值结果
+// 用于检查元素可见性、可操作性等条件
 fn evaluate_bool_js(mut sess CdpSession, js string) !bool {
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
 	result := cdp_extract_obj_key(resp.result, '"result":')
@@ -142,6 +151,8 @@ fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) 
 
 // Short-timeout (3 s) variant for use during dialog-triggering actions to avoid
 // blocking the whole CLI when the CDP session is frozen by a synchronous alert/prompt.
+// eval_scoped_expression_short 短超时版本（3秒），用于可能触发对话框的操作
+// 避免对话框阻塞整个 CDP 会话
 fn eval_scoped_expression_short(mut sess CdpSession, expr string) !string {
 	encoded_expr := base64.encode_str(expr)
 	scoped_expr := build_scoped_runtime_js(mut sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
@@ -173,6 +184,8 @@ fn run_element_action_short(mut sess CdpSession, sel string, body string) ! {
 	}
 }
 
+// resolve_object_id_by_selector 通过选择器获取元素的 Runtime RemoteObjectId
+// 用于需要对象引用的 CDP 操作（如 callFunctionOn）
 fn resolve_object_id_by_selector(mut sess CdpSession, sel string) !string {
 	js := build_scoped_runtime_js(mut sess, 'return document.querySelector(${js_str(sel)});')
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}')!
@@ -204,6 +217,8 @@ fn run_element_action(mut sess CdpSession, sel string, body string) ! {
 	}
 }
 
+// build_action_point_query_js 生成查询元素中心点坐标的 JavaScript
+// 包括可见性检查、元素滚动到视口中央、边框计算等
 fn build_action_point_query_js(mut sess CdpSession, locator_js string) string {
 	return build_document_scope_js(mut sess, '
 			var el = (${locator_js});
@@ -222,6 +237,7 @@ fn build_action_point_query_js(mut sess CdpSession, locator_js string) string {
 		')
 }
 
+// resolve_action_point_by_js 通过 JavaScript 定位器获取元素的坐标和尺寸
 fn resolve_action_point_by_js(mut sess CdpSession, locator_js string) !ResolvedElement {
 	js := build_action_point_query_js(mut sess, locator_js)
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
@@ -238,6 +254,8 @@ fn resolve_action_point_by_js(mut sess CdpSession, locator_js string) !ResolvedE
 	}
 }
 
+// scroll_resolved_element_into_view 将已解析的元素滚动到视口中
+// 优先使用 backend_node_id 调用 DOM.scrollIntoViewIfNeeded
 fn scroll_resolved_element_into_view(mut sess CdpSession, sel string, el ResolvedElement) ! {
 	if el.backend_node_id > 0 {
 		sess.send_command('DOM.scrollIntoViewIfNeeded', '{"backendNodeId":${el.backend_node_id}}')!
@@ -257,6 +275,8 @@ fn pointer_hover(mut sess CdpSession, x f64, y f64) ! {
 	pointer_move(mut sess, x, y)!
 }
 
+// pointer_click 在指定坐标执行鼠标点击操作
+// click_count 指定点击次数（1=单击，2=双击）
 fn pointer_click(mut sess CdpSession, x f64, y f64, click_count int) ! {
 	pointer_move(mut sess, x, y)!
 	for index := 1; index <= click_count; index++ {
@@ -269,6 +289,8 @@ fn pointer_click(mut sess CdpSession, x f64, y f64, click_count int) ! {
 	}
 }
 
+// pointer_action_for_selector 对选择器指定的元素执行指针操作（click/dblclick/hover）
+// 自动解析元素坐标并执行相应操作
 fn pointer_action_for_selector(mut sess CdpSession, sel string, action string) ! {
 	mut el := resolve_selector(mut sess, sel)!
 	scroll_resolved_element_into_view(mut sess, sel, el)!
@@ -294,19 +316,27 @@ fn build_click_action_body() string {
 	return 'if(typeof el.click === "function") { el.click(); return true; } el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: win })); return true;'
 }
 
+// build_dblclick_action_body 生成双击元素的 JavaScript 代码
 fn build_dblclick_action_body() string {
 	return 'if(typeof el.click === "function") { el.click(); el.click(); } el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: win, detail: 2 })); return true;'
 }
 
+// build_hover_action_body 生成悬停元素的 JavaScript 代码
+// 派发 pointerover, mouseover, pointerenter, mouseenter, mousemove 事件序列
 fn build_hover_action_body() string {
 	return 'var events=["pointerover","mouseover","pointerenter","mouseenter","mousemove"]; for (var i=0;i<events.length;i++) { var name=events[i]; el.dispatchEvent(new MouseEvent(name, { bubbles: name !== "mouseenter" && name !== "pointerenter", cancelable: true, view: window })); } return true;'
 }
 
+// build_fill_action_body 生成清空并填入文本的 JavaScript 代码
+// 支持 input/textarea 的 value 属性和 contenteditable 元素
+// 触发 input 和 change 事件
 fn build_fill_action_body(text string) string {
 	value_js := js_str(text)
 	return 'el.focus(); function setValue(target, value) { var proto = Object.getPrototypeOf(target); var desc = Object.getOwnPropertyDescriptor(proto, "value") || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value") || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value"); if (desc && desc.set) { desc.set.call(target, value); } else { target.value = value; } } if ("value" in el) { setValue(el, ""); el.dispatchEvent(new Event("input", { bubbles: true })); setValue(el, ${value_js}); el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; } if (el.isContentEditable) { el.textContent = ${value_js}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; } return false;'
 }
 
+// parse_verify_settings 从参数中解析验证设置
+// 返回是否启用验证以及验证超时时间
 fn parse_verify_settings(params string, default_timeout time.Duration) (bool, time.Duration) {
 	verify := cdp_extract_str(params, 'verify') == 'true'
 	verify_timeout_ms := cdp_extract_int(params, '"verifyTimeout":')
@@ -342,16 +372,22 @@ fn wait_for_element_text_or_value(mut sess CdpSession, sel string, expected stri
 	return error('verification failed: expected ${expected}, got ${last_current}')
 }
 
+// read_file_input_names 读取文件选择框已选中的文件名列表
+// 以换行符分隔返回所有文件名
 fn read_file_input_names(mut sess CdpSession, sel string) !string {
 	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; if (!el.files) return ""; return Array.from(el.files).map(function(file) { return file.name; }).join("\n");')
 	return eval_scoped_expression(mut sess, js, false)
 }
 
+// read_preview_text 读取预览区域元素的内容
+// 支持 innerText、textContent、value 属性
 fn read_preview_text(mut sess CdpSession, sel string) !string {
 	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; return (el.innerText || el.textContent || el.value || "").trim();')
 	return eval_scoped_expression(mut sess, js, false)
 }
 
+// wait_for_file_input_names 等待文件选择框包含期望的文件
+// 轮询检查，文件名列表稳定后才返回
 fn wait_for_file_input_names(mut sess CdpSession, sel string, expected_names []string, timeout time.Duration) ! {
 	expected := expected_names.map(os.file_name(it)).join('\n')
 	deadline := time.now().add(timeout)
@@ -399,6 +435,8 @@ fn wait_for_upload_preview(mut sess CdpSession, preview_selector string, expecte
 	return error('verification failed: preview selector ${preview_selector} did not show ${expected}; got ${last_current}')
 }
 
+// verification_poll_interval 根据超时时间计算轮询间隔
+// 超时越短，轮询越频繁
 fn verification_poll_interval(timeout time.Duration) time.Duration {
 	if timeout <= 500 * time.millisecond {
 		return 50 * time.millisecond
@@ -422,6 +460,8 @@ fn verification_settle_interval(timeout time.Duration) time.Duration {
 	return 150 * time.millisecond
 }
 
+// upload_result_json 生成上传结果的 JSON 响应
+// 包含已上传文件名列表、阶段和预览选择器
 fn upload_result_json(files []string, phase string, preview_selector string) string {
 	files_json := '[' + files.map(json_str(os.file_name(it))).join(',') + ']'
 	mut p := '{"phase":${json_str(phase)},"files":${files_json}}'
@@ -497,14 +537,21 @@ fn clear_document_context(mut sess CdpSession) {
 	axref_clear(mut sess.axref)
 }
 
-// ─── close ──────────────────────────────────────────────────
+// cmd_close 关闭当前 CDP 会话对应的目标
+// 发送 Target.closeTarget 命令并关闭本地连接
 fn cmd_close(mut sess CdpSession) string {
 	sess.send_command('Target.closeTarget', '{}') or {}
 	sess.close()
 	return 'null'
 }
 
-// ─── screenshot ─────────────────────────────────────────────
+// cmd_screenshot 截取当前页面截图
+// 支持参数：
+//   - path: 保存路径
+//   - format: 图片格式（png/jpeg/webp）
+//   - quality: 图片质量（jpeg/webp）
+//   - full: 是否截取整个页面
+//   - annotate: 是否添加 UI 标注
 fn cmd_screenshot(mut sess CdpSession, params string) string {
 	path := cdp_extract_str(params, 'path')
 	full := cdp_extract_str(params, 'full') == 'true'
@@ -543,6 +590,8 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 	return json_str(out_path)
 }
 
+// cmd_screenshot_annotate 截取带标注的页面截图
+// 自动识别页面中的输入框并添加边框标注
 fn cmd_screenshot_annotate(mut sess CdpSession, params string, path string, fmt string, full bool, max_labels int) string {
 	js := build_screenshot_annotate_js(full, max_labels)
 	result := eval_scoped_expression(mut sess, js, true) or { return 'ERROR:${err}' }
@@ -596,6 +645,8 @@ fn capture_screenshot_base64(mut sess CdpSession, format string, full bool, sele
 	return data
 }
 
+// ensure_download_behavior 确保浏览器允许文件下载
+// 返回下载模式：'dom'（DOM直接设置）或 'default'（默认浏览器行为）
 fn ensure_download_behavior(mut sess CdpSession, download_dir string) !string {
 	os.mkdir_all(download_dir)!
 	browser_params := '{"behavior":"allow","downloadPath":${json_str(download_dir)},"eventsEnabled":true}'
@@ -647,6 +698,8 @@ fn update_download_event_state(mut state DownloadEventState, evt ProtocolRespons
 	return true
 }
 
+// resolve_downloaded_file_path 解析下载文件的实际路径
+// 根据下载状态事件确定文件名
 fn resolve_downloaded_file_path(download_dir string, state DownloadEventState) !string {
 	if state.file_path != '' && os.exists(state.file_path) {
 		return state.file_path
@@ -836,6 +889,8 @@ fn finalize_download_path(source_path string, target_path string) !string {
 	return target_path
 }
 
+// wait_for_download 等待浏览器下载完成
+// 订阅 Page.downloadWillBegin 和 Page.downloadProgress 事件
 fn wait_for_download(mut sess CdpSession, download_dir string, target_path string, timeout time.Duration) !string {
 	begin_browser := sess.subscribe('Browser.downloadWillBegin')
 	begin_page := sess.subscribe('Page.downloadWillBegin')
@@ -946,6 +1001,8 @@ fn capture_dom_snapshot(mut sess CdpSession, selector string, compact bool, max_
 	return cdp_extract_value_from_result(result)
 }
 
+// wait_for_navigation_state 等待页面导航到指定状态
+// 支持状态：commit/domcontentloaded/loaded/networkidle
 fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
 	match state {
 		'', 'load' {
@@ -1150,7 +1207,12 @@ fn run_screenshot_diff(mut sess CdpSession, baseline_b64 string, baseline_mime s
 	}
 }
 
-// ─── pdf ────────────────────────────────────────────────────
+// cmd_pdf 生成当前页面的 PDF 文档
+// 支持参数：
+//   - path: 保存路径
+//   - landscape: 横向布局
+//   - displayHeaderFooter: 显示页眉页脚
+//   - printBackground: 打印背景色和图片
 fn cmd_pdf(mut sess CdpSession, params string) string {
 	path := cdp_extract_str(params, 'path')
 	if path == '' {
@@ -1265,6 +1327,11 @@ fn collect_ax_subtree_bnids(nodes_json string, target_bnid int) map[int]bool {
 	return allowed
 }
 
+// cmd_snapshot 获取页面快照（Accessibility Tree）
+// 支持参数：
+//   - raw: 是否输出原始格式
+//   - extra/interactive: 是否包含 cursor-interactive 补全扫描
+//   - maxNodes: 返回的最大节点数限制
 fn cmd_snapshot(mut sess CdpSession, params string) string {
 	// 解析参数
 	raw := cdp_extract_bool(params, 'raw')
@@ -1534,7 +1601,9 @@ fn ax_prop(node_str string, prop string) string {
 	return val_obj.trim('"')
 }
 
-// ─── click ──────────────────────────────────────────────────
+// cmd_click 点击选择器指定的元素
+// 优先使用页面内的 el.click() 方法（最接近真实用户点击）
+// 支持参数：selector（CSS选择器）
 fn cmd_click(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' {
@@ -1549,6 +1618,7 @@ fn cmd_click(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
+// cmd_dblclick 双击指定选择器或坐标的元素
 fn cmd_dblclick(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' {
@@ -1587,7 +1657,7 @@ fn mouse_click(mut sess CdpSession, x f64, y f64) ! {
 	pointer_click(mut sess, x, y, 1)!
 }
 
-// ─── hover ──────────────────────────────────────────────────
+// cmd_hover 将鼠标悬停到指定元素
 fn cmd_hover(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' {
@@ -1600,7 +1670,7 @@ fn cmd_hover(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
-// ─── focus ──────────────────────────────────────────────────
+// cmd_focus 聚焦到指定元素
 fn cmd_focus(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' {
@@ -1621,7 +1691,8 @@ fn focus_selector(mut sess CdpSession, sel string) ! {
 	}
 }
 
-// ─── fill ───────────────────────────────────────────────────
+// cmd_fill 清空并填入文本到输入框
+// 支持参数：selector（CSS选择器）、text（要填入的文本）
 fn cmd_fill(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	text := cdp_extract_str(params, 'text')
@@ -1659,7 +1730,8 @@ fn fill_via_keyboard(mut sess CdpSession, sel string, text string) ! {
 	type_text_like_playwright(mut sess, text)!
 }
 
-// ─── type ───────────────────────────────────────────────────
+// cmd_type_text 模拟逐字符输入文本（像用户打字一样）
+// 支持参数：selector、text，以及 verify/timeout 验证设置
 fn cmd_type_text(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	text := cdp_extract_str(params, 'text')
@@ -1677,7 +1749,8 @@ fn cmd_type_text(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
-// ─── keyboard ───────────────────────────────────────────────
+// cmd_keyboard 执行键盘操作
+// 支持 action：type/inserttext（输入文本）、down/up（按键按下/释放）、setvalue（设置值）
 fn cmd_keyboard(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	text := cdp_extract_str(params, 'text')
@@ -1796,7 +1869,7 @@ fn cmd_select(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
-// ─── check / uncheck ────────────────────────────────────────
+// cmd_check 勾选复选框或单选按钮
 fn cmd_check(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' {
@@ -1806,6 +1879,7 @@ fn cmd_check(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
+// cmd_uncheck 取消勾选复选框
 fn cmd_uncheck(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' {
@@ -1846,6 +1920,8 @@ fn cmd_scroll(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
+// cmd_scrollintoview 将元素滚动到视口中
+// 默认将元素滚动到视口中央
 fn cmd_scrollintoview(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' {
@@ -1858,7 +1934,9 @@ fn cmd_scrollintoview(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
-// ─── drag ───────────────────────────────────────────────────
+// cmd_drag 拖拽元素
+// 支持参数：source（源选择器）、target（目标选择器）
+// 拖拽过程分10步平滑移动
 fn cmd_drag(mut sess CdpSession, params string) string {
 	src := cdp_extract_str(params, 'source')
 	tgt := cdp_extract_str(params, 'target')
@@ -1882,7 +1960,12 @@ fn cmd_drag(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
-// ─── upload ─────────────────────────────────────────────────
+// cmd_upload 上传文件到文件输入框
+// 支持参数：
+//   - selector：文件输入框选择器
+//   - files：逗号分隔的文件路径列表
+//   - waitPreview：是否等待预览更新
+//   - previewSelector：预览元素选择器
 fn cmd_upload(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	files_str := cdp_extract_str(params, 'files')
@@ -1919,7 +2002,11 @@ fn cmd_upload(mut sess CdpSession, params string) string {
 	return upload_result_json(files, 'selected', '')
 }
 
-// ─── get ────────────────────────────────────────────────────
+// cmd_get 获取页面或元素的属性值
+// 支持参数：
+//   - selector：元素选择器
+//   - property：属性类型（text/html/value/title/url/count/attr/box/styles）
+//   - attr：当 property 为 attr 时，指定属性名
 fn cmd_get(mut sess CdpSession, params string) string {
 	prop := cdp_extract_str(params, 'property')
 	sel := cdp_extract_str(params, 'selector')
@@ -1965,7 +2052,10 @@ fn cmd_get(mut sess CdpSession, params string) string {
 	return json_str(cdp_extract_value_from_result(result))
 }
 
-// ─── is ─────────────────────────────────────────────────────
+// cmd_is 检查元素的状态
+// 支持参数：
+//   - selector：元素选择器
+//   - state：状态类型（visible/hidden/editable/checked/selected/disabled/enabled）
 fn cmd_is(mut sess CdpSession, params string) string {
 	state := cdp_extract_str(params, 'state')
 	sel := cdp_extract_str(params, 'selector')
@@ -2017,7 +2107,13 @@ fn cmd_is(mut sess CdpSession, params string) string {
 	return val
 }
 
-// ─── wait ───────────────────────────────────────────────────
+// cmd_wait 等待各种条件
+// 支持参数：
+//   - ms：等待毫秒数
+//   - download：等待下载完成
+//   - timeout：超时毫秒数
+//   - selector/expected：等待元素文本/值达到期望
+//   - navigation：等待导航完成
 fn cmd_wait(mut sess CdpSession, params string) string {
 	// wait <ms>
 	ms_str := cdp_extract_obj_key(params, '"ms":')
@@ -2082,6 +2178,8 @@ fn cmd_wait(mut sess CdpSession, params string) string {
 	return 'ERROR:missing wait condition'
 }
 
+// wait_load 等待页面加载事件
+// 支持状态参数控制等待时机
 fn wait_load(mut sess CdpSession, state string) string {
 	event := match state {
 		'load' {
@@ -2157,6 +2255,8 @@ fn wait_text(mut sess CdpSession, text string) string {
 	return 'ERROR:timeout waiting for text "${text}"'
 }
 
+// wait_fn 等待 JavaScript 表达式返回真值
+// 轮询执行表达式直到返回 true 或超时
 fn wait_fn(mut sess CdpSession, expr string) string {
 	deadline := time.now().add(30 * time.second)
 	for time.now() < deadline {
@@ -2190,6 +2290,8 @@ fn wait_selector(mut sess CdpSession, sel string) string {
 }
 
 // wait_stable 连续两次读取内容相同则认为元素内容已稳定
+// wait_stable 等待元素稳定（位置和内容不再变化）
+// 用于等待动态内容渲染完成
 fn wait_stable(mut sess CdpSession, sel string, timeout time.Duration) string {
 	deadline := time.now().add(timeout)
 	poll_interval := 300 * time.millisecond
@@ -2221,7 +2323,17 @@ fn wait_stable(mut sess CdpSession, sel string, timeout time.Duration) string {
 	return 'ERROR:timeout waiting for ${sel} to stabilize'
 }
 
-// ─── find（语义定位器）──────────────────────────────────────
+// cmd_find 使用语义定位器查找元素
+// 支持参数：
+//   - locator：定位器类型（role/text/placeholder/label/title/alt/testid等）
+//   - query：语义查询文本
+//   - action：找到后执行的动作（click/hover等）
+//   - value：action的参数值
+//   - exact：是否精确匹配
+//   - name：ARIA name 过滤
+//   - index：返回第 N 个匹配（从0开始）
+//   - debug：调试模式
+//   - list：列表模式，返回所有匹配
 fn cmd_find(mut sess CdpSession, params string) string {
 	locator := cdp_extract_str(params, 'locator')
 	query := cdp_extract_str(params, 'query')
@@ -2648,6 +2760,8 @@ fn evaluate_semantic_result(mut sess CdpSession, js string, locator string, retu
 	return 'null'
 }
 
+// apply_action 对已解析的元素执行动作
+// 支持的 action：click、hover、focus、fill、check、uncheck、select 等
 fn apply_action(mut sess CdpSession, el ResolvedElement, sel string, action string, value string) string {
 	match action {
 		'click' {
@@ -2704,7 +2818,12 @@ fn apply_action(mut sess CdpSession, el ResolvedElement, sel string, action stri
 	}
 }
 
-// ─── tab ────────────────────────────────────────────────────
+// cmd_tab 管理标签页
+// 支持 action：
+//   - list：列出所有标签页
+//   - new：创建新标签页（可指定url）
+//   - switch：切换到指定标签页（通过tabId或windowId）
+//   - close：关闭当前标签页
 fn cmd_tab(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	match action {
@@ -2767,6 +2886,8 @@ fn cmd_tab(mut sess CdpSession, params string) string {
 	}
 }
 
+// cmd_window 管理浏览器窗口
+// 支持 action：new（创建新窗口，可指定url）
 fn cmd_window(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	match action {
@@ -2787,7 +2908,13 @@ fn cmd_window(mut sess CdpSession, params string) string {
 	}
 }
 
-// ─── mouse ──────────────────────────────────────────────────
+// cmd_mouse 执行鼠标操作
+// 支持 action：
+//   - move：移动鼠标到坐标
+//   - down：按下鼠标按钮
+//   - up：释放鼠标按钮
+//   - wheel：鼠标滚轮滚动
+// 参数：x、y坐标，button（left/right/middle），dx/dy（滚轮增量）
 fn cmd_mouse(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	x := cdp_extract_float(params, 'x')
@@ -2825,7 +2952,12 @@ fn cmd_mouse(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
-// ─── cookies ────────────────────────────────────────────────
+// cmd_cookies 管理浏览器 Cookie
+// 支持 action：
+//   - get/list：获取所有 Cookie
+//   - set：设置 Cookie（需要 name、value、domain）
+//   - delete：删除 Cookie
+//   - clear：清空所有 Cookie
 fn cmd_cookies(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	match action {
@@ -2929,7 +3061,12 @@ fn format_cookies_expires(cookies_json string) string {
 	return result
 }
 
-// ─── storage ────────────────────────────────────────────────
+// cmd_storage 管理浏览器 Web Storage
+// 支持参数：
+//   - type：存储类型（local/localStorage 或 session/sessionStorage）
+//   - action：操作类型（get、set、clear）
+//   - key：键名
+//   - value：值（set时使用）
 fn cmd_storage(mut sess CdpSession, params string) string {
 	storage_type := cdp_extract_str(params, 'type') // 'local' or 'session'
 	action := cdp_extract_str(params, 'action') // 'get', 'set', 'clear'
@@ -2964,7 +3101,13 @@ fn cmd_storage(mut sess CdpSession, params string) string {
 	return json_str(cdp_extract_value_from_result(result))
 }
 
-// ─── network ────────────────────────────────────────────────
+// cmd_network 网络请求管理
+// 支持 action：
+//   - requests：列出网络请求（支持 filter/mime/status/domain/type 过滤）
+//   - body：获取请求/响应体（需要 requestId）
+//   - save：保存响应到文件（需要 requestId、path）
+//   - save-images：批量保存图片
+//   - replay：重放请求
 fn cmd_network(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	match action {
@@ -4717,7 +4860,8 @@ fn network_response_mime_type(entry TrackedNetworkRequest) string {
 	return mime_type.trim_space()
 }
 
-// ─── frame ──────────────────────────────────────────────────
+// cmd_frame 切换到 iframe 上下文
+// 支持参数：selector（iframe 的 CSS 选择器，'main' 或空值切回主文档）
 fn cmd_frame(mut sess CdpSession, params string) string {
 	selector := cdp_extract_str(params, 'selector')
 	if selector == '' || selector == 'main' {
@@ -4742,7 +4886,11 @@ fn cmd_frame(mut sess CdpSession, params string) string {
 	return json_str(selector)
 }
 
-// ─── dialog ─────────────────────────────────────────────────
+// cmd_dialog 处理页面对话框（alert/confirm/prompt）
+// 支持 action：
+//   - events：获取历史对话框事件列表
+//   - clear：清空对话框事件历史
+//   - accept/dismiss：接受/关闭当前对话框（可指定text参数）
 fn cmd_dialog(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	text := cdp_extract_str(params, 'text')
@@ -4845,7 +4993,9 @@ fn cmd_highlight(mut sess CdpSession, params string) string {
 	return 'null'
 }
 
-// ─── console / errors ───────────────────────────────────────
+// cmd_console 获取控制台消息
+// 支持 action：clear（清空历史）
+// 返回控制台消息数组
 fn cmd_console(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	if action == 'clear' {
@@ -4873,7 +5023,11 @@ fn cmd_errors(mut sess CdpSession, params string) string {
 	return '[' + page_errors.map(it).join(',') + ']'
 }
 
-// ─── trace ──────────────────────────────────────────────────
+// cmd_trace Chrome DevTools 性能追踪
+// 支持 action：
+//   - start：开始追踪
+//   - stop：停止追踪并保存到文件（默认临时目录）
+// 支持参数：path（输出文件路径）
 fn cmd_trace(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	path := cdp_extract_str(params, 'path')
@@ -4915,7 +5069,11 @@ fn cmd_trace(mut sess CdpSession, params string) string {
 	}
 }
 
-// ─── profiler ───────────────────────────────────────────────
+// cmd_profiler Chrome V8 CPU 性能分析器
+// 支持 action：
+//   - start：开始性能分析
+//   - stop：停止分析并保存到文件（默认临时目录）
+// 支持参数：path（输出文件路径）
 fn cmd_profiler(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	path := cdp_extract_str(params, 'path')
@@ -4942,7 +5100,12 @@ fn cmd_profiler(mut sess CdpSession, params string) string {
 	}
 }
 
-// ─── set ────────────────────────────────────────────────────
+// cmd_set 设置浏览器状态
+// 支持 property：
+//   - viewport：设置视口大小（width/height/scale）
+//   - device：设置设备预设（device预设名称）
+//   - user_agent：设置 User-Agent
+//   - offline：设置离线模式
 fn cmd_set(mut sess CdpSession, params string) string {
 	prop := cdp_extract_str(params, 'property')
 	match prop {
@@ -5070,6 +5233,8 @@ fn resolve_device_preset(name string) !DevicePreset {
 	}
 }
 
+// apply_device_preset 应用设备预设配置
+// 包括视口大小、缩放比例、是否移动设备、touch支持、userAgent等
 fn apply_device_preset(mut sess CdpSession, preset DevicePreset) ! {
 	sess.send_command('Emulation.setDeviceMetricsOverride', '{"width":${preset.width},"height":${preset.height},"deviceScaleFactor":${preset.scale},"mobile":${preset.mobile}}')!
 	sess.send_command('Emulation.setTouchEmulationEnabled', '{"enabled":${preset.has_touch},"maxTouchPoints":${if preset.has_touch {
@@ -5097,7 +5262,15 @@ fn read_protocol_stream(mut sess CdpSession, stream string) !string {
 	return out
 }
 
-// ─── diff ───────────────────────────────────────────────────
+// cmd_diff 比较页面状态差异
+// 支持 type：
+//   - snapshot：比较当前快照与基准文件（返回文本差异）
+//   - screenshot：比较截图（支持像素差异阈值）
+//   - url：比较两个 URL 的快照和可选截图
+// 支持参数：
+//   - baseline：基准文件路径
+//   - threshold：像素差异容忍度（默认0.1）
+//   - output：差异图片输出路径
 fn cmd_diff(mut sess CdpSession, params string) string {
 	dtype := cdp_extract_str(params, 'type')
 	match dtype {
@@ -5179,9 +5352,11 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 	}
 }
 
-// ─── clipboard ─────────────────────────────────────────────
-// clipboard read image  — read image from system clipboard and save to a temp file
-// clipboard write image <path> — write a local image file to the system clipboard
+// cmd_clipboard 剪贴板操作（支持图片读写）
+// 支持 action：
+//   - read/r：读取剪贴板图片并保存到临时文件
+//   - write/w：写入本地图片文件到剪贴板
+// kind 参数：目前只支持 image
 fn cmd_clipboard(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	kind := cdp_extract_str(params, 'kind')
@@ -5282,7 +5457,12 @@ fn ensure_clipboard_permissions(mut sess CdpSession) {
 	sess.send_command('Browser.setPermission', '{"permission":{"name":"clipboardSanitizedWrite"},"setting":"granted"}') or {}
 }
 
-// ─── state ──────────────────────────────────────────────────
+// cmd_state 会话状态管理
+// 支持 action：
+//   - save：保存当前会话状态到文件
+//   - load：加载会话状态文件
+//   - clear：清除会话状态
+// 状态保存在 ~/.v-browser/states 目录
 fn cmd_state(mut sess CdpSession, params string) string {
 	action := cdp_extract_str(params, 'action')
 	path := cdp_extract_str(params, 'path')
