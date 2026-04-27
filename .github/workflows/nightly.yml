@@ -89,25 +89,60 @@ jobs:
           - target: linux-x86_64
             os: ubuntu-latest
             bin_ext: ""
-            stable_v: false
           - target: windows-x86_64
             os: windows-latest
             bin_ext: ".exe"
-            stable_v: true
           - target: darwin-arm64
             os: macos-14
             bin_ext: ""
-            stable_v: false
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Install V
+        if: runner.os != 'Windows'
         uses: vlang/setup-v@v1.4
         with:
           check-latest: true
-          stable: ${{ matrix.stable_v }}
+
+      - name: Install V (Windows prebuilt)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path $env:RUNNER_TEMP 'vlang-windows'
+          $zipPath = Join-Path $installRoot 'v_windows.zip'
+
+          if (Test-Path $installRoot) {
+            Remove-Item $installRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $installRoot | Out-Null
+
+          Invoke-WebRequest -Uri 'https://github.com/vlang/v/releases/latest/download/v_windows.zip' -OutFile $zipPath
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $installRoot -Force
+
+          $vExe = Get-ChildItem -Path $installRoot -Recurse -Filter 'v.exe' | Select-Object -First 1
+          if (-not $vExe) {
+            throw 'Failed to locate v.exe in the extracted V release.'
+          }
+
+          $vRoot = $vExe.Directory.FullName
+          while ($vRoot -and -not (Test-Path (Join-Path $vRoot 'vlib'))) {
+            $parent = Split-Path -Parent $vRoot
+            if ($parent -eq $vRoot) {
+              break
+            }
+            $vRoot = $parent
+          }
+
+          if (-not (Test-Path (Join-Path $vRoot 'vlib'))) {
+            throw 'Failed to locate vlib in the extracted V release.'
+          }
+
+          Add-Content -Path $env:GITHUB_PATH -Value $vExe.Directory.FullName
+          Add-Content -Path $env:GITHUB_ENV -Value "VROOT=$vRoot"
+
+          & $vExe.FullName version
 
       - name: Build binary
         shell: bash
