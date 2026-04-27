@@ -78,8 +78,7 @@ fn test_parse_cli_to_ipc_connect_routes_to_connect() {
 }
 
 fn test_parse_cli_to_ipc_connect_routes_tab_and_window_ids() {
-	method, params := parse_cli_to_ipc('connect', ['--tab-id', '12', '--window-id', '34'],
-		false)
+	method, params := parse_cli_to_ipc('connect', ['--tab-id', '12', '--window-id', '34'], false)
 	assert method == 'connect'
 	assert params == '{"tabId":12,"windowId":34}'
 }
@@ -168,7 +167,8 @@ fn test_browser_open_candidates_prefer_explicit_app() {
 }
 
 fn test_build_macos_open_command_quotes_arguments() {
-	cmd := build_macos_open_command('Google Chrome', "chrome-extension://abc/connect.html?token=o'hara")
+	cmd := build_macos_open_command('Google Chrome',
+		"chrome-extension://abc/connect.html?token=o'hara")
 	assert cmd == "open -a 'Google Chrome' 'chrome-extension://abc/connect.html?token=o'\\''hara'"
 }
 
@@ -184,8 +184,8 @@ fn test_build_pueue_add_command_quotes_arguments() {
 
 fn test_build_windows_open_command_supports_default_or_explicit_browser() {
 	$if windows {
-		default_cmd := build_windows_open_command('chrome-extension://abc/connect.html?token=tok-1&x=1',
-			'')
+		default_cmd :=
+			build_windows_open_command('chrome-extension://abc/connect.html?token=tok-1&x=1', '')
 		assert default_cmd == 'cmd /c start "" "chrome-extension://abc/connect.html?token=tok-1&x=1"'
 		explicit_cmd := build_windows_open_command('chrome-extension://abc/connect.html?token=tok-1&x=1',
 			'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe')
@@ -226,8 +226,8 @@ fn test_parse_cli_to_ipc_wait_variants() {
 }
 
 fn test_parse_cli_to_ipc_wait_download_variant() {
-	method, params := parse_cli_to_ipc('wait', ['--download', './report.pdf', '--timeout', '45000'],
-		false)
+	method, params := parse_cli_to_ipc('wait',
+		['--download', './report.pdf', '--timeout', '45000'], false)
 	assert method == 'wait'
 	assert params == '{"download":"./report.pdf","timeout":45000}'
 }
@@ -393,8 +393,8 @@ fn test_network_hook_status_json_from_state_renders_record_count() {
 }
 
 fn test_build_network_replay_js_includes_headers_and_overrides() {
-	js := build_network_replay_js('POST', 'https://x.com/i/api/test', '{"foo":1}', '{"accept":"application/json"}',
-		'{"x-test":"1"}')
+	js := build_network_replay_js('POST', 'https://x.com/i/api/test', '{"foo":1}',
+		'{"accept":"application/json"}', '{"x-test":"1"}')
 	assert js.contains('mergeHeaders')
 	assert js.contains('requestHeaders: headers')
 	assert js.contains('init.headers = headers')
@@ -573,8 +573,7 @@ fn test_parse_cli_to_ipc_keyboard_routes_type_and_inserttext() {
 	assert method_type == 'keyboard'
 	assert params_type == '{"action":"type","text":"Hello"}'
 
-	method_insert, params_insert := parse_cli_to_ipc('keyboard', ['inserttext', 'Hello'],
-		false)
+	method_insert, params_insert := parse_cli_to_ipc('keyboard', ['inserttext', 'Hello'], false)
 	assert method_insert == 'keyboard'
 	assert params_insert == '{"action":"inserttext","text":"Hello"}'
 }
@@ -677,16 +676,16 @@ fn test_parse_cli_to_ipc_eval_supports_stdin_shorthand() {
 }
 
 fn test_parse_cli_to_ipc_eval_supports_base64_long_flag() {
-	method, params := parse_cli_to_ipc_with_readers('eval', ['--base64', 'YWxlcnQoMSk='],
-		false, fake_eval_stdin_reader, fake_eval_file_reader)
+	method, params := parse_cli_to_ipc_with_readers('eval', ['--base64', 'YWxlcnQoMSk='], false,
+		fake_eval_stdin_reader, fake_eval_file_reader)
 	assert method == 'eval'
 	assert params.contains('"expression":"YWxlcnQoMSk="')
 	assert params.contains('"base64":"true"')
 }
 
 fn test_parse_cli_to_ipc_eval_reports_file_read_error() {
-	method, params := parse_cli_to_ipc_with_readers('eval', ['--file', 'missing.js'],
-		false, fake_eval_stdin_reader, failing_eval_file_reader)
+	method, params := parse_cli_to_ipc_with_readers('eval', ['--file', 'missing.js'], false,
+		fake_eval_stdin_reader, failing_eval_file_reader)
 	assert method == 'eval'
 	assert params.contains('"expression":""')
 	assert params.contains('failed to read eval file missing.js: cannot read missing.js')
@@ -722,7 +721,8 @@ fn test_cdp_parse_message_parses_error_object() {
 }
 
 fn test_parse_extension_registration_extracts_runtime_id() {
-	extension_id := parse_extension_registration('{"method":"registerExtension","params":{"extensionId":"pcomgagjilgkfioemopicalioepnanjj"}}')
+	extension_id :=
+		parse_extension_registration('{"method":"registerExtension","params":{"extensionId":"pcomgagjilgkfioemopicalioepnanjj"}}')
 	assert extension_id == 'pcomgagjilgkfioemopicalioepnanjj'
 }
 
@@ -874,23 +874,25 @@ fn test_server_stop_integration_stops_running_server() {
 	}
 	bin_path := build_integration_cli_binary() or { panic(err) }
 	test_home := new_integration_test_home('stop')
-	relay_port, ipc_port := integration_ports(1)
+	test_relay_port, test_ipc_port := integration_ports(1)
 	defer {
-		cleanup_integration_server(bin_path, test_home, relay_port, ipc_port)
+		cleanup_integration_server(bin_path, test_home, test_relay_port, test_ipc_port)
 		os.rmdir_all(test_home) or {}
 	}
 
-	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or {
+	orig_pid := start_integration_server(bin_path, test_home, test_relay_port, test_ipc_port) or {
 		panic(err)
 	}
 	assert orig_pid > 0
 	assert is_integration_process_running(orig_pid)
 
-	stop_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} server stop')
+	stop_result :=
+		os.execute('${integration_env_prefix(test_home, test_relay_port, test_ipc_port)} ${shell_quote(bin_path)} server stop')
 	assert stop_result.exit_code == 0
 	assert stop_result.output.contains('server shutdown via IPC')
 		|| stop_result.output.contains('server killed')
-	assert wait_for_integration_server_stop(orig_pid, relay_port, ipc_port, 5 * time.second)
+	assert wait_for_integration_server_stop(orig_pid, test_relay_port, test_ipc_port,
+		5 * time.second)
 	assert !is_integration_process_running(orig_pid)
 	assert !os.exists(os.join_path(test_home, '.v-browser', 'server.pid'))
 }
@@ -902,18 +904,19 @@ fn test_server_restart_integration_replaces_running_server() {
 	}
 	bin_path := build_integration_cli_binary() or { panic(err) }
 	test_home := new_integration_test_home('restart')
-	relay_port, ipc_port := integration_ports(2)
+	test_relay_port, test_ipc_port := integration_ports(2)
 	defer {
-		cleanup_integration_server(bin_path, test_home, relay_port, ipc_port)
+		cleanup_integration_server(bin_path, test_home, test_relay_port, test_ipc_port)
 		os.rmdir_all(test_home) or {}
 	}
 
-	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or {
+	orig_pid := start_integration_server(bin_path, test_home, test_relay_port, test_ipc_port) or {
 		panic(err)
 	}
 	assert orig_pid > 0
 
-	restart_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} server restart')
+	restart_result := os.execute('${integration_env_prefix(test_home, test_relay_port,
+		test_ipc_port)} ${shell_quote(bin_path)} server restart')
 	assert restart_result.exit_code == 0
 	assert restart_result.output.contains('Server restarted.')
 
@@ -922,11 +925,12 @@ fn test_server_restart_integration_replaces_running_server() {
 	assert new_pid != orig_pid
 	assert !is_integration_process_running(orig_pid)
 	assert is_integration_process_running(new_pid)
-	assert wait_for_integration_port_state(relay_port, true, 5 * time.second)
-	assert wait_for_integration_port_state(ipc_port, true, 5 * time.second)
-	assert can_reach_integration_ipc(ipc_port)
-	cleanup_integration_server(bin_path, test_home, relay_port, ipc_port)
-	assert wait_for_integration_server_stop(new_pid, relay_port, ipc_port, 5 * time.second)
+	assert wait_for_integration_port_state(test_relay_port, true, 5 * time.second)
+	assert wait_for_integration_port_state(test_ipc_port, true, 5 * time.second)
+	assert can_reach_integration_ipc(test_ipc_port)
+	cleanup_integration_server(bin_path, test_home, test_relay_port, test_ipc_port)
+	assert wait_for_integration_server_stop(new_pid, test_relay_port, test_ipc_port,
+		5 * time.second)
 }
 
 fn test_server_version_mismatch_integration_auto_restarts_server() {
@@ -936,30 +940,31 @@ fn test_server_version_mismatch_integration_auto_restarts_server() {
 	}
 	bin_path := build_integration_cli_binary() or { panic(err) }
 	test_home := new_integration_test_home('version-mismatch')
-	relay_port, ipc_port := integration_ports(4)
+	test_relay_port, test_ipc_port := integration_ports(4)
 	version_path := os.join_path(test_home, '.v-browser', 'server.version')
 	defer {
-		cleanup_integration_server(bin_path, test_home, relay_port, ipc_port)
+		cleanup_integration_server(bin_path, test_home, test_relay_port, test_ipc_port)
 		os.rmdir_all(test_home) or {}
 	}
 
-	orig_pid := start_integration_server(bin_path, test_home, relay_port, ipc_port) or {
+	orig_pid := start_integration_server(bin_path, test_home, test_relay_port, test_ipc_port) or {
 		panic(err)
 	}
 	assert orig_pid > 0
 	assert os.read_file(version_path) or { '' }.trim_space() == v_browser_version
 	os.write_file(version_path, 'stale-version') or { panic(err) }
 
-	status_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} status')
+	status_result :=
+		os.execute('${integration_env_prefix(test_home, test_relay_port, test_ipc_port)} ${shell_quote(bin_path)} status')
 	assert status_result.exit_code == 0
 	assert status_result.output.contains('"connected":false')
 
 	new_pid := wait_for_server_pid_file(test_home, orig_pid, 8 * time.second)
 	assert new_pid > 0
 	assert new_pid != orig_pid
-	assert wait_for_integration_port_state(relay_port, true, 5 * time.second)
-	assert wait_for_integration_port_state(ipc_port, true, 5 * time.second)
-	assert can_reach_integration_ipc(ipc_port)
+	assert wait_for_integration_port_state(test_relay_port, true, 5 * time.second)
+	assert wait_for_integration_port_state(test_ipc_port, true, 5 * time.second)
+	assert can_reach_integration_ipc(test_ipc_port)
 	assert os.read_file(version_path) or { '' }.trim_space() == v_browser_version
 }
 
@@ -970,10 +975,11 @@ fn test_server_stop_integration_returns_error_when_server_missing() {
 	}
 	bin_path := build_integration_cli_binary() or { panic(err) }
 	test_home := new_integration_test_home('stop-missing')
-	relay_port, ipc_port := integration_ports(3)
+	test_relay_port, test_ipc_port := integration_ports(3)
 	defer { os.rmdir_all(test_home) or {} }
 
-	stop_result := os.execute('${integration_env_prefix(test_home, relay_port, ipc_port)} ${shell_quote(bin_path)} server stop')
+	stop_result :=
+		os.execute('${integration_env_prefix(test_home, test_relay_port, test_ipc_port)} ${shell_quote(bin_path)} server stop')
 	assert stop_result.exit_code != 0
 	assert stop_result.output.contains('no running server found')
 }
@@ -1009,7 +1015,8 @@ fn integration_env_prefix(home string, relay_port int, ipc_port int) string {
 
 fn start_integration_server(bin_path string, home string, relay_port int, ipc_port int) !int {
 	log_path := os.join_path(home, 'server.log')
-	result := os.execute('${integration_env_prefix(home, relay_port, ipc_port)} nohup ${shell_quote(bin_path)} server > ${shell_quote(log_path)} 2>&1 & echo $!')
+	result :=
+		os.execute('${integration_env_prefix(home, relay_port, ipc_port)} nohup ${shell_quote(bin_path)} server > ${shell_quote(log_path)} 2>&1 & echo $!')
 	if result.exit_code != 0 {
 		return error('failed to start integration server: ${result.output}')
 	}
@@ -1083,7 +1090,8 @@ fn is_integration_process_running(pid int) bool {
 }
 
 fn cleanup_integration_server(bin_path string, home string, relay_port int, ipc_port int) {
-	stop_result := os.execute('${integration_env_prefix(home, relay_port, ipc_port)} ${shell_quote(bin_path)} server stop')
+	stop_result :=
+		os.execute('${integration_env_prefix(home, relay_port, ipc_port)} ${shell_quote(bin_path)} server stop')
 	if stop_result.exit_code == 0 {
 		return
 	}
@@ -1249,7 +1257,8 @@ fn test_is_attach_conflict_error_matches_debugger_conflict() {
 }
 
 fn test_connect_active_session_propagates_attach_conflict_without_reuse() {
-	result := connect_active_session_with(mock_send_ipc_attach_conflict_no_status, '{"tabId":12,"windowId":34}') or {
+	result := connect_active_session_with(mock_send_ipc_attach_conflict_no_status,
+		'{"tabId":12,"windowId":34}') or {
 		assert err.msg() == 'Debugger conflict: another debugger is already attached to the tab.'
 		return
 	}
@@ -1341,8 +1350,7 @@ fn test_parse_cli_to_ipc_clipboard_write_routes_action_and_path() {
 }
 
 fn test_parse_cli_to_ipc_clipboard_read_via_flag() {
-	method, params := parse_cli_to_ipc('clipboard', ['--action', 'read', '--kind', 'image'],
-		false)
+	method, params := parse_cli_to_ipc('clipboard', ['--action', 'read', '--kind', 'image'], false)
 	assert method == 'clipboard'
 	assert params.contains('"action":"read"')
 	assert params.contains('"kind":"image"')
@@ -1384,12 +1392,13 @@ fn test_clipboard_js_helpers_include_clipboard_calls() {
 fn test_network_save_path_helpers_infer_extensions() {
 	assert network_url_filename('https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium') == 'HDxhU9RWQAAw-2P'
 	assert network_file_extension('image/jpeg', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P') == '.jpg'
-	assert network_file_extension('', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium') == '.jpg'
+	assert network_file_extension('',
+		'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P?format=jpg&name=medium') == '.jpg'
 	assert network_file_extension('application/json', 'https://example.com/api') == '.json'
 	assert network_default_filename('req-1', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P',
 		'image/jpeg') == 'HDxhU9RWQAAw-2P.jpg'
-	assert resolve_network_save_path('./tmp/image', 'req-1', 'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P',
-		'image/jpeg') == './tmp/image.jpg'
+	assert resolve_network_save_path('./tmp/image', 'req-1',
+		'https://pbs.twimg.com/media/HDxhU9RWQAAw-2P', 'image/jpeg') == './tmp/image.jpg'
 }
 
 fn test_build_page_primary_image_urls_js_mentions_container_scoring() {
@@ -1427,8 +1436,7 @@ fn test_parse_cli_to_ipc_network_hook_default_max_body_len() {
 }
 
 fn test_parse_cli_to_ipc_network_hook_zero_max_body_len() {
-	method, params := parse_cli_to_ipc('network', ['hook', 'start', '--max-body-len', '0'],
-		false)
+	method, params := parse_cli_to_ipc('network', ['hook', 'start', '--max-body-len', '0'], false)
 	assert method == 'network'
 	assert params.contains('"maxBodyLen":"0"')
 }
@@ -1498,7 +1506,8 @@ fn test_handle_hook_binding_push_does_not_advance_poll_index() {
 fn test_sync_network_hook_records_dedupes_pushed_records() {
 	mut sess := new_cdp_session(noop_send)
 	sess.handle_hook_binding_push('{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"}')
-	items := split_json_array_objects('[{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"},{"recordId":"poll-2","method":"POST","url":"https://api.example.com/poll"}]')
+	items :=
+		split_json_array_objects('[{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"},{"recordId":"poll-2","method":"POST","url":"https://api.example.com/poll"}]')
 	added := append_polled_hook_records(mut sess, items, 0)
 	assert added == 1
 	assert sess.hook_record_order == ['push-1', 'poll-2']
@@ -1522,8 +1531,7 @@ fn test_activate_tab_context_restores_runtime_hook_chain() {
 			capture_response: true
 			max_body_len:     4000
 			all_frames:       true
-			activate_js:      network_hook_activate_js('api', true, true, false, 4000,
-				'hook-v1')
+			activate_js:      network_hook_activate_js('api', true, true, false, 4000, 'hook-v1')
 		}
 	}
 	sess.activate_tab_context_from_result('{"tabId":7}') or { panic(err) }
@@ -1629,8 +1637,7 @@ fn test_matches_network_filter_by_type() {
 
 fn test_parse_cli_to_ipc_network_requests_all_filters() {
 	cmd, params := parse_cli_to_ipc('network', ['requests', '--filter', 'api', '--mime',
-		'application/json', '--status', '2xx', '--domain', 'example.com', '--type', 'XHR'],
-		false)
+		'application/json', '--status', '2xx', '--domain', 'example.com', '--type', 'XHR'], false)
 	assert cmd == 'network'
 	assert params.contains('"action":"requests"')
 	assert params.contains('"filter":"api"')
@@ -1675,8 +1682,7 @@ fn test_network_requests_json_respects_limit() {
 fn test_get_response_body_uses_cached_text_without_cdp_fetch() {
 	mut sent := []string{}
 	mut sess := new_cdp_session(noop_send)
-	attach_network_body_mock_send(mut sess, mut sent, '', network_body_result_json('',
-		false))
+	attach_network_body_mock_send(mut sess, mut sent, '', network_body_result_json('', false))
 	sess.network_requests['req-1'] = TrackedNetworkRequest{
 		request_id:           'req-1'
 		finished:             true
@@ -1738,8 +1744,7 @@ fn test_cache_response_body_payload_populates_cache_fields() {
 fn test_save_network_response_uses_cached_body_without_extra_cdp_fetch() {
 	mut sent := []string{}
 	mut sess := new_cdp_session(noop_send)
-	attach_network_body_mock_send(mut sess, mut sent, '', network_body_result_json('',
-		false))
+	attach_network_body_mock_send(mut sess, mut sent, '', network_body_result_json('', false))
 	sess.network_requests['req-1'] = TrackedNetworkRequest{
 		request_id:           'req-1'
 		url:                  'https://example.com/image.png'
@@ -1750,7 +1755,8 @@ fn test_save_network_response_uses_cached_body_without_extra_cdp_fetch() {
 		response_body_base64: true
 		response_body_cached: true
 	}
-	tmp_dir := os.join_path(os.temp_dir(), 'v-browser-network-save-${os.getpid()}-${time.now().unix_milli()}')
+	tmp_dir := os.join_path(os.temp_dir(),
+		'v-browser-network-save-${os.getpid()}-${time.now().unix_milli()}')
 	os.mkdir_all(tmp_dir) or { panic(err) }
 	defer { os.rmdir_all(tmp_dir) or {} }
 	out_path := os.join_path(tmp_dir, 'image.bin')
