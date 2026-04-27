@@ -89,12 +89,15 @@ jobs:
           - target: linux-x86_64
             os: ubuntu-latest
             bin_ext: ""
+            stable_v: false
           - target: windows-x86_64
             os: windows-latest
             bin_ext: ".exe"
+            stable_v: true
           - target: darwin-arm64
             os: macos-14
             bin_ext: ""
+            stable_v: false
 
     steps:
       - name: Checkout
@@ -104,6 +107,7 @@ jobs:
         uses: vlang/setup-v@v1.4
         with:
           check-latest: true
+          stable: ${{ matrix.stable_v }}
 
       - name: Build binary
         shell: bash
