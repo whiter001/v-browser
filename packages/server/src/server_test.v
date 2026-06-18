@@ -1943,3 +1943,93 @@ fn test_dispatch_pointer_action_rejects_unknown_action() {
 	res := dispatch_pointer_action(mut sess, '#btn', 'scroll')
 	assert res == 'ERROR:unknown pointer action: scroll'
 }
+
+// ─── #9: tab 切换时 reject pending 请求 ─────────────────────────────
+
+fn test_reject_pending_reqs_clears_map_and_signals_channels() {
+	mut sess := new_cdp_session(noop_send)
+	// 模拟两个在飞的请求：每个请求对应一个 channel。
+	// 故意不响应（不调用 sess.on_message），让它们持续 pending。
+	ch1 := chan ProtocolResponse{cap: 1}
+	ch2 := chan ProtocolResponse{cap: 1}
+	sess.pending_mu.@lock()
+	sess.pending[10] = ch1
+	sess.pending[20] = ch2
+	sess.pending_mu.unlock()
+
+	sess.reject_pending_reqs('tab switched away')
+
+	// pending map 应该被清空
+	sess.pending_mu.@lock()
+	assert sess.pending.len == 0
+	sess.pending_mu.unlock()
+
+	// 每个 channel 都应收到带 reason 的错误响应
+	resp1 := <-ch1
+	assert resp1.id == 10
+	assert resp1.err == 'tab switched away'
+	resp2 := <-ch2
+	assert resp2.id == 20
+	assert resp2.err == 'tab switched away'
+}
+
+fn test_activate_tab_context_rejects_pending_when_switching_tabs() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_runtime_mock_send(mut sess, mut sent, 'ok')
+
+	// 第一次 attach 到 tab 1（建立 tab context）
+	sess.activate_tab_context_from_result('{"tabId":1}') or { panic(err) }
+	assert sess.current_tab_id == 1
+
+	// 注入一个模拟在飞的 CDP 请求
+	ch := chan ProtocolResponse{cap: 1}
+	sess.pending_mu.@lock()
+	sess.pending[99] = ch
+	sess.pending_mu.unlock()
+
+	// 切到 tab 2 — 应该触发 reject_pending_reqs
+	sess.activate_tab_context_from_result('{"tabId":2}') or { panic(err) }
+	assert sess.current_tab_id == 2
+
+	// 旧 tab 1 的 pending 应该被清空，channel 收到 'tab switched away'
+	sess.pending_mu.@lock()
+	assert sess.pending.len == 0
+	sess.pending_mu.unlock()
+
+	resp := <-ch
+	assert resp.id == 99
+	assert resp.err == 'tab switched away'
+}
+
+fn test_activate_tab_context_does_not_reject_pending_on_same_tab_refresh() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_runtime_mock_send(mut sess, mut sent, 'ok')
+
+	// 第一次 attach 到 tab 1
+	sess.activate_tab_context_from_result('{"tabId":1}') or { panic(err) }
+
+	// 注入一个在飞的请求
+	ch := chan ProtocolResponse{cap: 1}
+	sess.pending_mu.@lock()
+	sess.pending[77] = ch
+	sess.pending_mu.unlock()
+
+	// 再次 attach 同一个 tab（模拟 attachToTab 后再 attach 一次），
+	// 不应该 reject pending 请求（不是真正的切换）
+	sess.activate_tab_context_from_result('{"tabId":1}') or { panic(err) }
+
+	sess.pending_mu.@lock()
+	assert sess.pending.len == 1
+	sess.pending_mu.unlock()
+}
+
+fn test_reject_pending_reqs_with_empty_map_is_noop() {
+	mut sess := new_cdp_session(noop_send)
+	// 没东西要 reject 时调用不应该出错
+	sess.reject_pending_reqs('noop')
+	sess.pending_mu.@lock()
+	assert sess.pending.len == 0
+	sess.pending_mu.unlock()
+}

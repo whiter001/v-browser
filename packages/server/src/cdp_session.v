@@ -564,6 +564,11 @@ fn (mut s CdpSession) activate_tab_context_from_result(result string) ! {
 	}
 	if s.current_tab_id > 0 && s.current_tab_id != tab_id {
 		s.save_current_tab_context()
+		// 切 tab 时旧 tab 还未回的 CDP 命令再回来就会投递到新 tab 的等待者
+		// 上，可能在错误的 page / network 上下文里执行；这里统一 reject 掉
+		// (#9)。同 tab 刷新（current_tab_id == tab_id）不触发，避免影响合法的
+		// 在飞请求。
+		s.reject_pending_reqs('tab switched away')
 	}
 	s.current_tab_id = tab_id
 	s.restore_tab_context(tab_id)
@@ -978,10 +983,20 @@ fn (mut s CdpSession) clear_dialog_events() {
 fn (mut s CdpSession) close() {
 	s.pending_mu.@lock()
 	s.closed = true
+	s.pending_mu.unlock()
+	// 关掉 session 时也复用 reject_pending_reqs 把 pending 请求一并回收
+	s.reject_pending_reqs('cdp session closed')
+}
+
+// reject_pending_reqs 拒绝所有 pending 中的 CDP 命令，按 reason 写入错误并清空 map。
+// 在 close() 和 tab 切换时使用，避免旧 tab / 旧 session 的回包投递到错误等待者。
+// 见 #9（tab 切换吞请求）和 close()。
+fn (mut s CdpSession) reject_pending_reqs(reason string) {
+	s.pending_mu.@lock()
 	for id, ch in s.pending {
 		ch <- ProtocolResponse{
 			id:  id
-			err: 'session closed'
+			err: reason
 		}
 	}
 	s.pending.clear()
