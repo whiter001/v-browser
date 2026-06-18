@@ -2077,6 +2077,9 @@ fn cmd_get(mut sess CdpSession, params string) string {
 			build_element_scope_js(mut sess, sel, 'return el?.getAttribute(${js_str(attr)});')
 		}
 		'box' {
+			if sel == '' {
+				return 'ERROR:missing selector'
+			}
 			build_rect_query_js(mut sess, sel)
 		}
 		'styles' {
@@ -2089,6 +2092,17 @@ fn cmd_get(mut sess CdpSession, params string) string {
 
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
 		return 'ERROR:${err}'
+	}
+	// #36: box 分支需要把 "元素不存在"（JS 返回 null）转成 ERROR，
+	// 跟 click / is / wait 等命令保持一致；不然用户拿到的 'null'
+	// 无法区分 "元素不存在" 和 "元素 rect 为 0"。
+	if prop == 'box' {
+		result_obj := cdp_extract_obj_key(resp.result, '"result":')
+		value_obj := cdp_extract_obj_key(result_obj, '"value":')
+		if value_obj == '' || value_obj == 'null' {
+			return 'ERROR:element not found: ${sel}'
+		}
+		return json_str(value_obj)
 	}
 	result := cdp_extract_obj_key(resp.result, '"result":')
 	return json_str(cdp_extract_value_from_result(result))

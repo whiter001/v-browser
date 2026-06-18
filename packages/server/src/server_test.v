@@ -2190,3 +2190,38 @@ fn test_is_loopback_ip_handles_edge_cases() {
 	// IPv6 full address 不应误判
 	assert !is_loopback_ip('2001:db8::1')
 }
+
+// ─── #36: cmd_get box 不存在元素应返回 ERROR ─────────────────────────
+
+// box 不存在元素时，build_rect_query_js 会让 Runtime.evaluate 返回
+// {"type":"object","subtype":"null"}。Mock 返回这个，让 cmd_get 走 box 分支。
+fn attach_box_null_send(mut sess CdpSession, mut sent []string) {
+	sess.send_fn = fn [mut sess, mut sent] (data string) ! {
+		sent << data
+		id := cdp_extract_int(data, '"id":')
+		method := inner_cdp_method(data)
+		if method == 'Runtime.evaluate' {
+			sess.on_message('{"id":${id},"result":{"result":{"type":"object","subtype":"null"}}}')
+		} else {
+			sess.on_message('{"id":${id},"result":{}}')
+		}
+	}
+}
+
+fn test_cmd_get_box_returns_error_when_element_missing() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_box_null_send(mut sess, mut sent)
+	res := cmd_get(mut sess, '{"property":"box","selector":"#missing"}')
+	// 修复前：返回字符串 "null"
+	// 修复后：返回明确的 ERROR，跟 cmd_click 等保持一致
+	assert res == 'ERROR:element not found: #missing'
+}
+
+fn test_cmd_get_box_returns_error_when_selector_empty() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_box_null_send(mut sess, mut sent)
+	res := cmd_get(mut sess, '{"property":"box"}')
+	assert res == 'ERROR:missing selector'
+}
