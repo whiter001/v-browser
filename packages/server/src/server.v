@@ -174,8 +174,20 @@ fn (mut s VBrowserServer) start() ! {
 // 启动 WebSocket relay，用于接收扩展连接和转发 CDP 消息。
 fn (mut s VBrowserServer) run_ws_server() ! {
 	relay := configured_relay_port()
+	// V stdlib 的 websocket.new_server 会把 listener 绑到 INADDR_ANY（无
+	// 法只指定 loopback 地址），所以这里在 on_connect 里再二次过滤 peer IP，
+	// 拒绝非 loopback 的连接 (#26)。
 	mut ws := websocket.new_server(.ip, relay, '', websocket.ServerOpt{})
 	ws.on_connect(fn [mut s] (mut sc websocket.ServerClient) !bool {
+		// #26: 拒绝非 loopback 连接，避免 LAN / 公网攻击面
+		peer_ip_str := sc.client.conn.peer_ip() or {
+			srv_log_err('Cannot determine peer IP for relay connection; rejecting')
+			return false
+		}
+		if !is_loopback_ip(peer_ip_str) {
+			srv_log_err('Rejected non-loopback relay connection from ${peer_ip_str}')
+			return false
+		}
 		if !validate_extension_token(sc.resource_name, s.token) {
 			srv_log_err('Extension connection rejected: invalid token in ${sc.resource_name}')
 			return false
@@ -444,6 +456,18 @@ fn srv_log_err(msg string) {
 fn validate_extension_token(resource_name string, expected string) bool {
 	token := extract_query_param(resource_name, 'token')
 	return token != '' && token == expected
+}
+
+// is_loopback_ip 判断 IP 是否为 loopback 地址（#26）。
+// IPv4: 127.0.0.0/8；IPv6: ::1。
+fn is_loopback_ip(ip string) bool {
+	if ip == '::1' || ip == '127.0.0.1' {
+		return true
+	}
+	if ip.len >= 4 && ip[0..3] == '127' && ip[3] == `.` {
+		return true
+	}
+	return false
 }
 
 fn extract_query_param(resource_name string, key string) string {

@@ -2160,3 +2160,33 @@ fn test_cmd_network_route_can_be_replaced_by_second_route() {
 	// 新旧 channel 是不同的实例（goroutine 已替换）
 	assert first_stop_ch != second_stop_ch
 }
+
+// ─── #26: relay 拒绝非 loopback 连接 ───────────────────────────────
+
+fn test_is_loopback_ip_accepts_loopback_addresses() {
+	// IPv4 loopback 127.0.0.0/8
+	assert is_loopback_ip('127.0.0.1')
+	assert is_loopback_ip('127.0.0.42')
+	assert is_loopback_ip('127.255.255.254')
+	// IPv6 loopback
+	assert is_loopback_ip('::1')
+}
+
+fn test_is_loopback_ip_rejects_non_loopback_addresses() {
+	assert !is_loopback_ip('192.168.1.1')
+	assert !is_loopback_ip('10.0.0.1')
+	assert !is_loopback_ip('8.8.8.8')
+	assert !is_loopback_ip('172.16.0.1')
+	// 形似但不是 loopback 的 IPv6
+	assert !is_loopback_ip('::2')
+	assert !is_loopback_ip('fe80::1')
+}
+
+fn test_is_loopback_ip_handles_edge_cases() {
+	// 短字符串不能误判为 loopback
+	assert !is_loopback_ip('')
+	assert !is_loopback_ip('127')        // 缺小数点
+	assert !is_loopback_ip('127x0.0.1')  // 不是数字
+	// IPv6 full address 不应误判
+	assert !is_loopback_ip('2001:db8::1')
+}
