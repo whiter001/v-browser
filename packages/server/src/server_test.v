@@ -1842,3 +1842,104 @@ fn test_network_inspect_keeps_extra_cdp_entries_for_repeated_signature() {
 	assert !res.contains('"requestId":"req-1"')
 	assert res.contains('"requestId":"req-2"')
 }
+
+// ─── #8: cmd_click/dblclick/hover 双路径回退应该合并错误信息 ──────────
+
+// helper: 把 send_command 包装的 forwardCDPCommand 信封拆开取内层 CDP method。
+// bridge 命令（listTabs / createTab / attachToTab / ...）没有内层 method，
+// 此时直接返回外层 method。
+fn inner_cdp_method(data string) string {
+	outer := cdp_extract_str(data, 'method')
+	if outer == 'forwardCDPCommand' {
+		params_obj := cdp_extract_obj_key(data, '"params":')
+		return cdp_extract_str(params_obj, 'method')
+	}
+	return outer
+}
+
+// mock: Runtime.evaluate 返回 boolean false（元素找不到），其它 CDP 命令报错。
+// run_element_action 看到 false 会返回 error，pointer_action_for_selector
+// 路径下所有 CDP 命令（包括 Runtime.evaluate 和 Input.dispatchMouseEvent）都失败。
+fn attach_pointer_paths_failing_send(mut sess CdpSession, mut sent []string) {
+	sess.send_fn = fn [mut sess, mut sent] (data string) ! {
+		sent << data
+		id := cdp_extract_int(data, '"id":')
+		method := inner_cdp_method(data)
+		if method == 'Runtime.evaluate' {
+			// 注意：必须用 boolean 类型而不是 string 'false'，否则
+			// `cdp_extract_value_from_result` 会返回 '"false"'（带引号），
+			// `run_element_action` 里的 `result == 'false'` 比较不通过。
+			sess.on_message('{"id":${id},"result":{"result":{"type":"boolean","value":false}}}')
+		} else {
+			sess.on_message('{"id":${id},"error":{"message":"forced CDP failure"}}')
+		}
+	}
+}
+
+// mock: 所有 Runtime.evaluate 返回 boolean true，其它 CDP 命令成功。
+// 让 run_element_action 一路走通返回 ok=true，pointer_action_for_selector
+// 顺利 resolve + mouse click。
+fn attach_pointer_paths_succeeding_send(mut sess CdpSession, mut sent []string) {
+	sess.send_fn = fn [mut sess, mut sent] (data string) ! {
+		sent << data
+		id := cdp_extract_int(data, '"id":')
+		method := inner_cdp_method(data)
+		if method == 'Runtime.evaluate' {
+			sess.on_message('{"id":${id},"result":{"result":{"type":"boolean","value":true}}}')
+		} else {
+			sess.on_message('{"id":${id},"result":{}}')
+		}
+	}
+}
+
+fn test_cmd_click_rejects_empty_selector() {
+	mut sess := new_cdp_session(noop_send)
+	res := cmd_click(mut sess, '{}')
+	assert res == 'ERROR:missing selector'
+}
+
+fn test_cmd_click_returns_null_when_dom_path_succeeds() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_pointer_paths_succeeding_send(mut sess, mut sent)
+	res := cmd_click(mut sess, '{"selector":"#btn"}')
+	assert res == 'null'
+}
+
+fn test_cmd_click_combines_dom_and_mouse_errors_when_both_fail() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_pointer_paths_failing_send(mut sess, mut sent)
+	res := cmd_click(mut sess, '{"selector":"#missing"}')
+	// 修复前：只回报 mouse 路径的 error（甚至可能被 swallow 成 'null'）
+	// 修复后：必须包含两条错误，方便定位根因
+	assert res.starts_with('ERROR:click failed for selector #missing:')
+	assert res.contains('dom: element not found')
+	assert res.contains('mouse:')
+}
+
+fn test_cmd_dblclick_combines_errors_when_both_paths_fail() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_pointer_paths_failing_send(mut sess, mut sent)
+	res := cmd_dblclick(mut sess, '{"selector":"#missing"}')
+	assert res.starts_with('ERROR:dblclick failed for selector #missing:')
+	assert res.contains('dom:')
+	assert res.contains('mouse:')
+}
+
+fn test_cmd_hover_combines_errors_when_both_paths_fail() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_pointer_paths_failing_send(mut sess, mut sent)
+	res := cmd_hover(mut sess, '{"selector":"#missing"}')
+	assert res.starts_with('ERROR:hover failed for selector #missing:')
+	assert res.contains('dom:')
+	assert res.contains('mouse:')
+}
+
+fn test_dispatch_pointer_action_rejects_unknown_action() {
+	mut sess := new_cdp_session(noop_send)
+	res := dispatch_pointer_action(mut sess, '#btn', 'scroll')
+	assert res == 'ERROR:unknown pointer action: scroll'
+}

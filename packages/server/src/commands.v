@@ -1604,18 +1604,68 @@ fn ax_prop(node_str string, prop string) string {
 // cmd_click 点击选择器指定的元素
 // 优先使用页面内的 el.click() 方法（最接近真实用户点击）
 // 支持参数：selector（CSS选择器）
+// dispatch_pointer_action 统一处理 click / dblclick / hover 的双路径回退。
+// 优先走 DOM 事件触发（最贴合页面自身的监听器），失败时回退到 CDP 鼠标输入。
+// 两条路径都失败时，会把两条错误信息合并回报，避免只看到 fallback 的错误而
+// 丢失首选路径的根因（旧版会出现这种 swallow，见 #8）。
+//
+// V 的 `or` 块不支持给 err 命名，嵌套 or 还会触发编译器 bug，所以用 TryResult
+// 显式传递错误消息。
+struct TryResult {
+	ok  bool
+	msg string
+}
+
+fn try_run_element_action(mut sess CdpSession, sel string, body string) TryResult {
+	run_element_action(mut sess, sel, body) or {
+		return TryResult{
+			ok:  false
+			msg: err.msg()
+		}
+	}
+	return TryResult{
+		ok: true
+	}
+}
+
+fn try_pointer_action(mut sess CdpSession, sel string, action string) TryResult {
+	pointer_action_for_selector(mut sess, sel, action) or {
+		return TryResult{
+			ok:  false
+			msg: err.msg()
+		}
+	}
+	return TryResult{
+		ok: true
+	}
+}
+
+fn dispatch_pointer_action(mut sess CdpSession, sel string, action string) string {
+	body := match action {
+		'click'    { build_click_action_body() }
+		'dblclick' { build_dblclick_action_body() }
+		'hover'    { build_hover_action_body() }
+		else       { return 'ERROR:unknown pointer action: ${action}' }
+	}
+	dom_result := try_run_element_action(mut sess, sel, body)
+	if dom_result.ok {
+		return 'null'
+	}
+	mouse_result := try_pointer_action(mut sess, sel, action)
+	if mouse_result.ok {
+		// DOM path 失败但 mouse fallback 成功；保留 dom 错误供诊断
+		srv_log('[${action}] DOM path failed for ${sel}: ${dom_result.msg}; mouse fallback succeeded.')
+		return 'null'
+	}
+	return 'ERROR:${action} failed for selector ${sel}: dom: ${dom_result.msg}; mouse: ${mouse_result.msg}'
+}
+
 fn cmd_click(mut sess CdpSession, params string) string {
 	sel := cdp_extract_str(params, 'selector')
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	// Prefer the in-page JS click path: it is the most faithful to the page's
-	// own event handling and works for the fixture buttons that update state.
-	// If the DOM click cannot be resolved, fall back to CDP mouse input.
-	run_element_action(mut sess, sel, build_click_action_body()) or {
-		pointer_action_for_selector(mut sess, sel, 'click') or { return 'ERROR:${err}' }
-	}
-	return 'null'
+	return dispatch_pointer_action(mut sess, sel, 'click')
 }
 
 // cmd_dblclick 双击指定选择器或坐标的元素
@@ -1624,11 +1674,7 @@ fn cmd_dblclick(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	run_element_action(mut sess, sel, build_dblclick_action_body()) or {
-		pointer_action_for_selector(mut sess, sel, 'dblclick') or { return 'ERROR:${err}' }
-		return 'null'
-	}
-	return 'null'
+	return dispatch_pointer_action(mut sess, sel, 'dblclick')
 }
 
 fn cmd_download(mut sess CdpSession, params string) string {
@@ -1663,11 +1709,7 @@ fn cmd_hover(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	run_element_action(mut sess, sel, build_hover_action_body()) or {
-		pointer_action_for_selector(mut sess, sel, 'hover') or { return 'ERROR:${err}' }
-		return 'null'
-	}
-	return 'null'
+	return dispatch_pointer_action(mut sess, sel, 'hover')
 }
 
 // cmd_focus 聚焦到指定元素
