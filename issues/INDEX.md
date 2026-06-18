@@ -92,6 +92,12 @@
 | [ux/06-find-list-only-text.md](ux/06-find-list-only-text.md) | `find --list` 仅支持 `text`，错误信息脱节 | S | [#37](https://github.com/whiter001/v-browser/issues/37) |
 | [ux/07-stale-ref-error-message.md](ux/07-stale-ref-error-message.md) | snapshot 后导航 `@eN` 失效，错误信息不明确 | S | [#38](https://github.com/whiter001/v-browser/issues/38) |
 
+### P2 — Bug (1)
+
+| 文件 | 标题 | 工作量 | 状态 |
+|---|---|---|---|
+| [bug/06-wait-load-without-value.md](bug/06-wait-load-without-value.md) | `wait --load` 不带值时返回 `unknown load state: true` | S | [#39](https://github.com/whiter001/v-browser/issues/39) |
+
 ### P3 — Cleanup (1)
 
 | 文件 | 标题 | 工作量 | 状态 |
