@@ -89,6 +89,8 @@
 | [ux/03-snapshot-json-output.md](ux/03-snapshot-json-output.md) | `snapshot --json` 结构化输出 | S | [#32](https://github.com/whiter001/v-browser/issues/32) |
 | [ux/04-exit-code-standardization.md](ux/04-exit-code-standardization.md) | 退出码分层（0/1/2/3/4） | S | [#33](https://github.com/whiter001/v-browser/issues/33) |
 | [ux/05-shell-completion.md](ux/05-shell-completion.md) | `v-browser completion bash/zsh/fish` | M | [#34](https://github.com/whiter001/v-browser/issues/34) |
+| [ux/06-find-list-only-text.md](ux/06-find-list-only-text.md) | `find --list` 仅支持 `text`，错误信息脱节 | S | [#37](https://github.com/whiter001/v-browser/issues/37) |
+| [ux/07-stale-ref-error-message.md](ux/07-stale-ref-error-message.md) | snapshot 后导航 `@eN` 失效，错误信息不明确 | S | [#38](https://github.com/whiter001/v-browser/issues/38) |
 
 ### P3 — Cleanup (1)
 
