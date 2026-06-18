@@ -569,6 +569,10 @@ fn (mut s CdpSession) activate_tab_context_from_result(result string) ! {
 		// (#9)。同 tab 刷新（current_tab_id == tab_id）不触发，避免影响合法的
 		// 在飞请求。
 		s.reject_pending_reqs('tab switched away')
+		// 清空事件订阅 channel，避免旧 tab 还在路上或已经 buffered 的
+		// `Page.loadEventFired` / `Runtime.consoleAPICalled` 等事件被新 tab 的
+		// 等待者当作新 tab 的事件接收 (#10)。
+		s.clear_event_subs()
 	}
 	s.current_tab_id = tab_id
 	s.restore_tab_context(tab_id)
@@ -584,6 +588,14 @@ fn (mut s CdpSession) activate_tab_context_from_result(result string) ! {
 	if s.network_watch.active {
 		sync_network_watch_existing_requests(mut s)
 	}
+}
+
+// clear_event_subs 清空所有事件订阅 channel。在 tab 切换时调用，避免旧 tab
+// 的事件投递到新 tab 等待者 (#10)。
+fn (mut s CdpSession) clear_event_subs() {
+	s.event_mu.@lock()
+	s.event_subs = map[string][]chan ProtocolResponse{}
+	s.event_mu.unlock()
 }
 
 fn (mut s CdpSession) restore_runtime_hook_state() ! {

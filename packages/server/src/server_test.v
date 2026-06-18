@@ -2033,3 +2033,64 @@ fn test_reject_pending_reqs_with_empty_map_is_noop() {
 	assert sess.pending.len == 0
 	sess.pending_mu.unlock()
 }
+
+// ─── #10: tab 切换时清空 event_subs ─────────────────────────────
+
+fn test_clear_event_subs_empties_subscriptions() {
+	mut sess := new_cdp_session(noop_send)
+	// 模拟已有两个订阅
+	_ := sess.subscribe('Page.loadEventFired')
+	_ := sess.subscribe('Runtime.consoleAPICalled')
+	sess.event_mu.@lock()
+	assert sess.event_subs.len == 2
+	sess.event_mu.unlock()
+
+	sess.clear_event_subs()
+	sess.event_mu.@lock()
+	assert sess.event_subs.len == 0
+	sess.event_mu.unlock()
+}
+
+fn test_activate_tab_context_clears_event_subs_on_switch() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_runtime_mock_send(mut sess, mut sent, 'ok')
+
+	// attach 到 tab 1
+	sess.activate_tab_context_from_result('{"tabId":1}') or { panic(err) }
+
+	// 在 tab 1 上下文订阅几个事件
+	_ = sess.subscribe('Page.loadEventFired')
+	_ = sess.subscribe('Runtime.consoleAPICalled')
+
+	sess.event_mu.@lock()
+	assert sess.event_subs.len == 2
+	sess.event_mu.unlock()
+
+	// 切到 tab 2 — event_subs 应当被清空
+	sess.activate_tab_context_from_result('{"tabId":2}') or { panic(err) }
+	sess.event_mu.@lock()
+	subs_after := sess.event_subs.len
+	sess.event_mu.unlock()
+	assert subs_after == 0
+}
+
+fn test_activate_tab_context_does_not_clear_event_subs_on_same_tab_refresh() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_runtime_mock_send(mut sess, mut sent, 'ok')
+
+	// attach 到 tab 1
+	sess.activate_tab_context_from_result('{"tabId":1}') or { panic(err) }
+	_ = sess.subscribe('Page.loadEventFired')
+	sess.event_mu.@lock()
+	assert sess.event_subs.len == 1
+	sess.event_mu.unlock()
+
+	// 再次 attach 同一个 tab（不是真正的切换），订阅应保留
+	sess.activate_tab_context_from_result('{"tabId":1}') or { panic(err) }
+	sess.event_mu.@lock()
+	subs_after := sess.event_subs.len
+	sess.event_mu.unlock()
+	assert subs_after == 1
+}
