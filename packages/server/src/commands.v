@@ -3241,7 +3241,7 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			url := cdp_extract_str(params, 'url')
 			abort := cdp_extract_str(params, 'abort') == 'true'
 			body := cdp_extract_str(params, 'body')
-			// 如果已存在 route，先停止旧 goroutine 并取消订阅
+			// 如果已存在 route，先停掉旧 goroutine 并清理订阅
 			if sess.has_route {
 				sess.route_stop_ch <- true
 				sess.unsubscribe('Fetch.requestPaused', sess.route_ch)
@@ -3276,8 +3276,17 @@ fn cmd_network(mut sess CdpSession, params string) string {
 						_ := <-stop_ch {
 							break
 						}
+						// 30 秒兜底：防止客户端没 stop / 'unroute' 也直接断了连接
+						// 导致 goroutine 永远挂着 (#11)。
+						30 * time.second {
+							break
+						}
 					}
 				}
+				// 自清理：goroutine 退出时从 event_subs 注销 channel，避免
+				// event_subs 留下死引用。session 状态由 stop_route() /
+				// 下一次 'route' 调用负责重置 has_route。
+				sess.unsubscribe('Fetch.requestPaused', ch)
 			}()
 			return 'null'
 		}
@@ -3313,12 +3322,8 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			}
 		}
 		'unroute' {
-			// 停止 route goroutine 并取消订阅
-			if sess.has_route {
-				sess.route_stop_ch <- true
-				sess.unsubscribe('Fetch.requestPaused', sess.route_ch)
-				sess.has_route = false
-			}
+			// 复用 helper 停止 route goroutine 并清理订阅
+			sess.stop_route()
 			sess.send_command('Fetch.disable', '{}') or { return 'ERROR:${err}' }
 			return 'null'
 		}

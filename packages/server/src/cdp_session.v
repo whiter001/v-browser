@@ -998,6 +998,8 @@ fn (mut s CdpSession) close() {
 	s.pending_mu.unlock()
 	// 关掉 session 时也复用 reject_pending_reqs 把 pending 请求一并回收
 	s.reject_pending_reqs('cdp session closed')
+	// 同时停掉 network route 的后台 goroutine，避免客户端断连后永久挂起
+	s.stop_route()
 }
 
 // reject_pending_reqs 拒绝所有 pending 中的 CDP 命令，按 reason 写入错误并清空 map。
@@ -1013,6 +1015,17 @@ fn (mut s CdpSession) reject_pending_reqs(reason string) {
 	}
 	s.pending.clear()
 	s.pending_mu.unlock()
+}
+
+// stop_route 停止当前 network route 的后台 goroutine 并清理订阅状态。
+// 在 session close() 和外部 'route' / 'unroute' 命令路径调用，避免旧 goroutine
+// 在客户端断连 / server 异常退出后永久挂起 (#11)。
+fn (mut s CdpSession) stop_route() {
+	if s.has_route {
+		s.route_stop_ch <- true
+		s.unsubscribe('Fetch.requestPaused', s.route_ch)
+		s.has_route = false
+	}
 }
 
 fn (mut s CdpSession) enable_network_tracking() ! {

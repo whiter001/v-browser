@@ -2094,3 +2094,69 @@ fn test_activate_tab_context_does_not_clear_event_subs_on_same_tab_refresh() {
 	sess.event_mu.unlock()
 	assert subs_after == 1
 }
+
+// ─── #11: network route goroutine 泄漏 ─────────────────────────────
+
+fn test_stop_route_clears_route_state() {
+	mut sess := new_cdp_session(noop_send)
+	// 模拟当前已有 active route
+	sess.route_ch = chan ProtocolResponse{cap: 32}
+	sess.route_stop_ch = chan bool{cap: 1}
+	sess.has_route = true
+
+	sess.stop_route()
+
+	assert sess.has_route == false
+}
+
+fn test_stop_route_is_noop_when_no_active_route() {
+	mut sess := new_cdp_session(noop_send)
+	// 没 active route 时调用 stop_route 不应 panic
+	sess.stop_route()
+	assert sess.has_route == false
+}
+
+fn test_close_stops_route() {
+	mut sess := new_cdp_session(noop_send)
+	sess.route_ch = chan ProtocolResponse{cap: 32}
+	sess.route_stop_ch = chan bool{cap: 1}
+	sess.has_route = true
+
+	sess.close()
+
+	// close() 应该同时把 route 也停掉（#11）
+	assert sess.has_route == false
+}
+
+fn test_cmd_network_unroute_calls_stop_route() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_runtime_mock_send(mut sess, mut sent, 'ok')
+
+	// 启动一个 route
+	cmd_network(mut sess, '{"action":"route","url":"*example*"}')
+	assert sess.has_route == true
+
+	// 停止它
+	res := cmd_network(mut sess, '{"action":"unroute"}')
+	assert res == 'null'
+	assert sess.has_route == false
+}
+
+fn test_cmd_network_route_can_be_replaced_by_second_route() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_runtime_mock_send(mut sess, mut sent, 'ok')
+
+	// 第一次 route
+	cmd_network(mut sess, '{"action":"route","url":"*a*"}')
+	first_stop_ch := sess.route_stop_ch
+	assert sess.has_route == true
+
+	// 第二次 route — 应该替换掉第一次，旧 stop_ch 收到信号
+	cmd_network(mut sess, '{"action":"route","url":"*b*"}')
+	second_stop_ch := sess.route_stop_ch
+	assert sess.has_route == true
+	// 新旧 channel 是不同的实例（goroutine 已替换）
+	assert first_stop_ch != second_stop_ch
+}
