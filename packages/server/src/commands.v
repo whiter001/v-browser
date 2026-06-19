@@ -141,8 +141,11 @@ fn evaluate_bool_js(mut sess CdpSession, js string) !bool {
 }
 
 fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) !string {
-	encoded_expr := base64.encode_str(expr)
-	scoped_expr := build_scoped_runtime_js(mut sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
+	// #21: 直接 json_str 嵌入表达式，浏览器端用 JSON.parse 取回。
+	// 旧实现先 V 端 base64.encode，再浏览器 atob + Uint8Array + TextDecoder，
+	// 每次 eval 多 ~3 次全字符扫描 + 二进制解码。JSON 字符串本身就是合法
+	// 的 JS 字符串字面量，json_str 已经处理好转义。
+	scoped_expr := build_scoped_runtime_js(mut sess, 'return eval(JSON.parse(${js_str(json_str(expr))}));')
 	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":${await_promise}}'
 	resp := sess.send_command('Runtime.evaluate', p)!
 	result := cdp_extract_obj_key(resp.result, '"result":')
@@ -154,8 +157,8 @@ fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) 
 // eval_scoped_expression_short 短超时版本（3秒），用于可能触发对话框的操作
 // 避免对话框阻塞整个 CDP 会话
 fn eval_scoped_expression_short(mut sess CdpSession, expr string) !string {
-	encoded_expr := base64.encode_str(expr)
-	scoped_expr := build_scoped_runtime_js(mut sess, 'var raw=window.atob(${js_str(encoded_expr)}); var bytes=Uint8Array.from(raw, function(ch){ return ch.charCodeAt(0); }); return window.eval(new TextDecoder().decode(bytes));')
+	// 同上 #21
+	scoped_expr := build_scoped_runtime_js(mut sess, 'return eval(JSON.parse(${js_str(json_str(expr))}));')
 	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":false}'
 	resp := sess.send_command_to('Runtime.evaluate', p, '', 3 * time.second)!
 	result := cdp_extract_obj_key(resp.result, '"result":')

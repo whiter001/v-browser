@@ -2386,3 +2386,103 @@ fn test_cdp_parse_message_preserves_nested_params_for_forward_cdp_event() {
 	assert inner_params.contains('"requestId":"r1"')
 	assert inner_params.contains('"url":"https://example.com"')
 }
+
+// ─── #21: eval 去 base64 round-trip ───────────────────────────────
+
+// mock: Runtime.evaluate 立即把传进来的 expression 反向解出来执行，返回结果
+// 简单起见，我们让 mock 返回 'ok' 字面量；真正的 eval 行为靠对比传出去的 expression
+// 来验证（看 JSON.parse 路径走没走对）。
+fn attach_eval_capture_send(mut sess CdpSession, mut sent []string) {
+	sess.send_fn = fn [mut sess, mut sent] (data string) ! {
+		sent << data
+		id := cdp_extract_int(data, '"id":')
+		method := inner_cdp_method(data)
+		if method == 'Runtime.evaluate' {
+			// 返回一个 string 结果，Runtime.evaluate 的 returnByValue 形式
+			sess.on_message('{"id":${id},"result":{"result":{"type":"string","value":"ok"}}}')
+		} else {
+			sess.on_message('{"id":${id},"result":{}}')
+		}
+	}
+}
+
+fn test_eval_scoped_expression_sends_json_parsed_expression() {
+	// #21: 验证 V 端发送出去的 expression 走的是 JSON.parse(json_str(expr)) 路径
+	// 而不是 base64+atob+TextDecoder 路径
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_eval_capture_send(mut sess, mut sent)
+
+	// 含特殊字符的表达式：引号 + 换行 + 中文
+	expr := 'console.log("hello\nworld \\"escaped\\" 中文")'
+	result := eval_scoped_expression(mut sess, expr, false) or { panic(err) }
+	assert result == 'ok'
+
+	// 检查 sent 里有没有包含 base64 痕迹（不应有）
+	joined := sent.join('\n')
+	assert !joined.contains('window.atob')
+	assert !joined.contains('TextDecoder')
+
+	// 检查 sent 里有 JSON.parse 路径
+	assert joined.contains('eval(JSON.parse(')
+}
+
+fn test_eval_scoped_expression_handles_quotes_correctly() {
+	// JSON.parse + eval 能正确处理字符串内的引号
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_eval_capture_send(mut sess, mut sent)
+
+	expr := 'return "she said \\"hi\\" and left"'
+	result := eval_scoped_expression(mut sess, expr, false) or { panic(err) }
+	assert result == 'ok'
+
+	// sent 里应该看到经过 json_str 转义后的字符串
+	joined := sent.join('\n')
+	// json_str("return \"she said \\\"hi\\\" and left\"") 会输出
+	// "return \"she said \\\"hi\\\" and left\""
+	assert joined.contains('she said')
+	assert joined.contains('hi')
+}
+
+fn test_eval_scoped_expression_handles_unicode_and_newlines() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_eval_capture_send(mut sess, mut sent)
+
+	expr := 'return "中文 🚀 \n  newline test"'
+	result := eval_scoped_expression(mut sess, expr, false) or { panic(err) }
+	assert result == 'ok'
+
+	joined := sent.join('\n')
+	// 中文和 emoji 在 json_str 里会被原样保留（不被 escape 成 \uXXXX）
+	// （V 的 json_str 默认保留 unicode 字符）
+	assert joined.contains('中文')
+}
+
+fn test_eval_scoped_expression_short_uses_same_path() {
+	// 短超时版本应该走完全相同的 JSON.parse 路径
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_eval_capture_send(mut sess, mut sent)
+
+	expr := 'document.title'
+	eval_scoped_expression_short(mut sess, expr) or { panic(err) }
+
+	joined := sent.join('\n')
+	assert !joined.contains('window.atob')
+	assert joined.contains('eval(JSON.parse(')
+}
+
+fn test_eval_scoped_expression_short_sets_await_promise_false() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_eval_capture_send(mut sess, mut sent)
+
+	expr := 'somePromise'
+	eval_scoped_expression_short(mut sess, expr) or { panic(err) }
+
+	joined := sent.join('\n')
+	// 短超时版本 awaitPromise 必须是 false（避免 3s 内阻塞）
+	assert joined.contains('"awaitPromise":false')
+}
