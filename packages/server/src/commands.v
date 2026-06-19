@@ -2209,7 +2209,10 @@ fn cmd_wait(mut sess CdpSession, params string) string {
 	// wait --load
 	load := cdp_extract_str(params, 'load')
 	if load != '' {
-		return wait_load(mut sess, load)
+		// #39: CLI 通用 flag 解析在 --load 不带值时默认赋值为字符串 'true'，
+		// 这里把 'true' 当作 'load' 的别名，向后兼容 --load 和 --load load 两种写法。
+		state := if load == 'true' { 'load' } else { load }
+		return wait_load(mut sess, state)
 	}
 	// wait --url
 	url_pat := cdp_extract_str(params, 'url')

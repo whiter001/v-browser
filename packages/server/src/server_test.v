@@ -2225,3 +2225,90 @@ fn test_cmd_get_box_returns_error_when_selector_empty() {
 	res := cmd_get(mut sess, '{"property":"box"}')
 	assert res == 'ERROR:missing selector'
 }
+
+// ─── #39: wait --load 不带值应默认走 'load' 状态 ──────────────────
+
+fn test_cmd_wait_load_no_value_treats_true_as_load() {
+	// #39: CLI 解析把 --load（无值）设为 'true'，server 端要把这个当作
+	// 'load' 的别名，否则返回 'unknown load state: true'。
+	mut sess := new_cdp_session(noop_send)
+
+	// cmd_wait 会同步调用 wait_load，后者订阅 Page.loadEventFired 并 select。
+	// 我们 spawn 后 sleep 50ms 让 subscribe 完成，再 dispatch event 解除阻塞。
+	result_ch := chan string{cap: 1}
+	spawn fn [mut sess, result_ch] () {
+		r := cmd_wait(mut sess, '{"load":"true"}')
+		result_ch <- r
+	}()
+	time.sleep(50 * time.millisecond)
+
+	// 触发 Page.loadEventFired 让 wait_load 解除阻塞
+	sess.dispatch_event('Page.loadEventFired', ProtocolResponse{
+		method: 'Page.loadEventFired'
+		params: '{}'
+	})
+
+	// 收集结果
+	select {
+		r := <-result_ch {
+			// 修复前：返回 'ERROR:unknown load state: true'
+			// 修复后：'true' 被映射成 'load'，正常返回 'null'
+			assert r == 'null'
+		}
+		2 * time.second {
+			panic('cmd_wait --load (no value) timed out')
+		}
+	}
+}
+
+fn test_cmd_wait_load_explicit_load_still_works() {
+	// 回归测试：--load load 写法（带值）必须仍然走 'load' 状态
+	mut sess := new_cdp_session(noop_send)
+
+	result_ch := chan string{cap: 1}
+	spawn fn [mut sess, result_ch] () {
+		r := cmd_wait(mut sess, '{"load":"load"}')
+		result_ch <- r
+	}()
+	time.sleep(50 * time.millisecond)
+
+	sess.dispatch_event('Page.loadEventFired', ProtocolResponse{
+		method: 'Page.loadEventFired'
+		params: '{}'
+	})
+
+	select {
+		r := <-result_ch {
+			assert r == 'null'
+		}
+		2 * time.second {
+			panic('cmd_wait --load load timed out')
+		}
+	}
+}
+
+fn test_cmd_wait_load_domcontentloaded_still_works() {
+	// 回归测试：--load domcontentloaded 仍然走 domContentEventFired
+	mut sess := new_cdp_session(noop_send)
+
+	result_ch := chan string{cap: 1}
+	spawn fn [mut sess, result_ch] () {
+		r := cmd_wait(mut sess, '{"load":"domcontentloaded"}')
+		result_ch <- r
+	}()
+	time.sleep(50 * time.millisecond)
+
+	sess.dispatch_event('Page.domContentEventFired', ProtocolResponse{
+		method: 'Page.domContentEventFired'
+		params: '{}'
+	})
+
+	select {
+		r := <-result_ch {
+			assert r == 'null'
+		}
+		2 * time.second {
+			panic('cmd_wait --load domcontentloaded timed out')
+		}
+	}
+}
