@@ -1480,19 +1480,45 @@ const cdp_attach_timeout = 60 * time.second
 
 // ─── JSON 解析帮助函数 ──────────────────────────────────────
 
-// cdp_parse_message 解析扩展 WebSocket 消息
+// cdp_parse_message 解析扩展 WebSocket 消息。
+// 用 json.decode 一次解析成 map[string]json.Any，再用 map 查字段，避免
+// cdp_extract_* 的 substring 扫描。raw 消息越复杂、字段越多，省得越多 (#35)。
+// 为了避开 V 内建 `error` 函数，错误字段用 key 'error' 直接从 map 拿。
 fn cdp_parse_message(raw string) ProtocolResponse {
-	id := cdp_extract_int(raw, '"id":')
-	method := cdp_extract_str(raw, 'method')
-	result := cdp_extract_obj_key(raw, '"result":')
-	err_str := cdp_extract_error(raw)
-	params := cdp_extract_obj_key(raw, '"params":')
+	parsed := json.decode[map[string]json.Any](raw) or {
+		return ProtocolResponse{
+			id:  0
+			err: 'invalid JSON: ${err.msg()}'
+		}
+	}
+	// 顶层字段：map[key] 返回 Option<Any>，absent 时用 default
+	id_val := parsed['id'] or { json.Any(0) }
+	method_val := parsed['method'] or { json.Any('') }
+	// result / params 是 JSON 值（object/array/string），下游仍按 JSON
+	// 字符串消费（cdp_extract_*），所以再序列化成字符串。
+	result_str := parsed['result'] or { json.Any('') }.str()
+	params_str := parsed['params'] or { json.Any('') }.str()
+	// error 字段特殊处理：CDP 可能返回 string 或 {code, message} 对象
+	mut err_str := ''
+	err_any := parsed['error'] or { json.Any('') }
+	if err_any != json.Any('') {
+		// as_map 对任何非 map 类型会返回包装（如 string → {'0': v}），
+		// 所以不能用 .len > 0 判定。改为查 'message' key 是否存在。
+		err_obj := err_any.as_map()
+		if 'message' in err_obj {
+			msg_val := err_obj['message'] or { json.Any('') }
+			err_str = msg_val.str()
+		} else {
+			// 不是真正的 error 对象（多半是字符串）：直接 .str() 取字符串
+			err_str = err_any.str()
+		}
+	}
 	return ProtocolResponse{
-		id:     id
-		method: method
-		result: result
+		id:     id_val.int()
+		method: method_val.str()
+		result: result_str
 		err:    err_str
-		params: params
+		params: params_str
 	}
 }
 

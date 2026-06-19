@@ -2312,3 +2312,77 @@ fn test_cmd_wait_load_domcontentloaded_still_works() {
 		}
 	}
 }
+
+// ─── #35: cdp_parse_message 用 json.decode 替代 substring 扫描 ──────
+
+fn test_cdp_parse_message_extracts_id_method_result_params() {
+	// 正常 CDP 响应：id + result
+	raw1 := '{"id":42,"result":{"frameTree":{"frame":{"id":"main"}}}}'
+	resp := cdp_parse_message(raw1)
+	assert resp.id == 42
+	assert resp.method == ''
+	assert resp.err == ''
+	// result 字段保留为 JSON 字符串，下游 cdp_extract_* 可继续解析
+	assert resp.result.contains('"frameTree"')
+	assert resp.result.contains('"main"')
+	assert resp.params == ''
+}
+
+fn test_cdp_parse_message_extracts_method_and_params() {
+	// CDP 事件：method + params（没有 id）
+	raw := '{"method":"Page.loadEventFired","params":{"timestamp":1234.5}}'
+	resp := cdp_parse_message(raw)
+	assert resp.id == 0
+	assert resp.method == 'Page.loadEventFired'
+	assert resp.err == ''
+	// params 也保留为 JSON 字符串
+	assert resp.params.contains('"timestamp"')
+	assert resp.params.contains('1234.5')
+}
+
+fn test_cdp_parse_message_extracts_error_message_from_object() {
+	// CDP 错误响应：error 字段是 {code, message}
+	raw := '{"id":7,"error":{"code":-32000,"message":"boom"}}'
+	resp := cdp_parse_message(raw)
+	assert resp.id == 7
+	assert resp.err == 'boom'
+	assert resp.method == ''
+}
+
+fn test_cdp_parse_message_extracts_error_string() {
+	// error 字段也可能直接是字符串
+	raw := '{"id":8,"error":"simple error"}'
+	resp := cdp_parse_message(raw)
+	assert resp.id == 8
+	assert resp.err == 'simple error'
+}
+
+fn test_cdp_parse_message_handles_invalid_json() {
+	// 损坏的 JSON 应该返回 err 字段，非 panic
+	resp := cdp_parse_message('not json {{{')
+	assert resp.err != ''
+	assert resp.err.contains('invalid JSON')
+	assert resp.id == 0
+}
+
+fn test_cdp_parse_message_handles_empty_input() {
+	resp := cdp_parse_message('')
+	assert resp.id == 0
+	assert resp.method == ''
+	assert resp.result == ''
+	assert resp.params == ''
+	assert resp.err != ''
+}
+
+fn test_cdp_parse_message_preserves_nested_params_for_forward_cdp_event() {
+	// forwardCDPEvent 是最常见的消息类型，inner 字段需要完整保留
+	raw := '{"method":"forwardCDPEvent","params":{"method":"Network.requestWillBeSent","params":{"requestId":"r1","request":{"url":"https://example.com","method":"GET"},"timestamp":12345.6,"type":"Document"}}}'
+	resp := cdp_parse_message(raw)
+	assert resp.method == 'forwardCDPEvent'
+	// params 应该完整保留，下游 cdp_extract_str(resp.params, 'method') 才能拿到 'Network.requestWillBeSent'
+	inner_method := cdp_extract_str(resp.params, 'method')
+	assert inner_method == 'Network.requestWillBeSent'
+	inner_params := cdp_extract_obj(resp.params, 'params')
+	assert inner_params.contains('"requestId":"r1"')
+	assert inner_params.contains('"url":"https://example.com"')
+}
