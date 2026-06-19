@@ -66,6 +66,8 @@
 | [performance/03-network-spawn-storm.md](performance/03-network-spawn-storm.md) | `Network.loadingFinished` 每个请求都 spawn 协程 | M | [#23](https://github.com/whiter001/v-browser/issues/23) |
 | [performance/04-snapshot-incremental.md](performance/04-snapshot-incremental.md) | `snapshot` 每次全量重算，可增量缓存 | M | [#24](https://github.com/whiter001/v-browser/issues/24) |
 | [performance/05-cdp-msg-json-decode.md](performance/05-cdp-msg-json-decode.md) | CDP 消息字段解析用 substring 扫描 | M | [#35](https://github.com/whiter001/v-browser/issues/35) |
+| [performance/06-dispatch-event-clone.md](performance/06-dispatch-event-clone.md) | `dispatch_event` 每次都 `clone()` 订阅者列表 | S | [#40](https://github.com/whiter001/v-browser/issues/40) |
+| [performance/07-network-watch-polling.md](performance/07-network-watch-polling.md) | `sync_network_watch_records` 每 200ms 轮询 JS 字符串 | L | [#41](https://github.com/whiter001/v-browser/issues/41) |
 
 ### P1 — Feature (8)
 
@@ -103,6 +105,7 @@
 | 文件 | 标题 | 工作量 | 状态 |
 |---|---|---|---|
 | [cleanup/01-style-and-doc.md](cleanup/01-style-and-doc.md) | L1-L20 风格/注释/死代码集中清理 | M | [#12](https://github.com/whiter001/v-browser/issues/12) |
+| [cleanup/02-ax-tree-silent-truncation.md](cleanup/02-ax-tree-silent-truncation.md) | `render_ax_tree` 在 10000 节点静默截断 | S | [#42](https://github.com/whiter001/v-browser/issues/42) |
 
 ---
 
