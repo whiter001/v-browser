@@ -293,16 +293,35 @@ fn pointer_click(mut sess CdpSession, x f64, y f64, click_count int) ! {
 }
 
 // pointer_action_for_selector 对选择器指定的元素执行指针操作（click/dblclick/hover）
-// 自动解析元素坐标并执行相应操作
+// #22: 单次 Runtime.evaluate 同时做 scrollIntoView + 可见性检查 + rect 读取，
+// 替代旧的 3 次 CDP round-trip（旧流程 resolve → scrollIntoView → 再 resolve）。
 fn pointer_action_for_selector(mut sess CdpSession, sel string, action string) ! {
-	mut el := resolve_selector(mut sess, sel)!
-	scroll_resolved_element_into_view(mut sess, sel, el)!
-	el = resolve_selector(mut sess, sel) or { el }
+	el := resolve_action_point_by_selector(mut sess, sel)!
 	match action {
 		'click' { pointer_click(mut sess, el.x, el.y, 1)! }
 		'dblclick' { pointer_click(mut sess, el.x, el.y, 2)! }
 		'hover' { pointer_hover(mut sess, el.x, el.y)! }
 		else { return error('unknown pointer action: ${action}') }
+	}
+}
+
+// resolve_action_point_by_selector 单次 eval 完成：querySelector/XPath + 可见性 +
+// 滚动到视口中央 + 读 rect。复用 build_action_point_query_js 的合并逻辑。
+fn resolve_action_point_by_selector(mut sess CdpSession, sel string) !ResolvedElement {
+	locator_js := build_element_scope_js(mut sess, sel, 'if(!el) return null;')
+	// build_action_point_query_js 会拼上 visibility / scrollIntoView / rect
+	js := build_action_point_query_js(mut sess, locator_js)
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
+	result_obj := cdp_extract_obj_key(resp.result, '"result":')
+	value_obj := cdp_extract_obj_key(result_obj, '"value":')
+	if value_obj == '' || value_obj == 'null' {
+		return error('element not actionable: ${sel}')
+	}
+	return ResolvedElement{
+		x:      cdp_extract_float(value_obj, 'x')
+		y:      cdp_extract_float(value_obj, 'y')
+		width:  cdp_extract_float(value_obj, 'width')
+		height: cdp_extract_float(value_obj, 'height')
 	}
 }
 

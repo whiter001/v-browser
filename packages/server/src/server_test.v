@@ -2486,3 +2486,109 @@ fn test_eval_scoped_expression_short_sets_await_promise_false() {
 	// 短超时版本 awaitPromise 必须是 false（避免 3s 内阻塞）
 	assert joined.contains('"awaitPromise":false')
 }
+
+// ─── #22: pointer_action_for_selector 单次 resolve ─────────────────
+
+// mock: Runtime.evaluate 返回 {x, y, width, height} 对象（action_point 查询结果）
+fn attach_action_point_send(mut sess CdpSession, mut sent []string, x f64, y f64, w f64, h f64) {
+	sess.send_fn = fn [mut sess, mut sent, x, y, w, h] (data string) ! {
+		sent << data
+		id := cdp_extract_int(data, '"id":')
+		method := inner_cdp_method(data)
+		if method == 'Runtime.evaluate' {
+			resp := '{"id":${id},"result":{"result":{"type":"object","value":{"x":${x},"y":${y},"width":${w},"height":${h}}}}}'
+			sess.on_message(resp)
+		} else {
+			sess.on_message('{"id":${id},"result":{}}')
+		}
+	}
+}
+
+// mock: Runtime.evaluate 返回 null（元素不可点击）
+fn attach_action_point_null_send(mut sess CdpSession, mut sent []string) {
+	sess.send_fn = fn [mut sess, mut sent] (data string) ! {
+		sent << data
+		id := cdp_extract_int(data, '"id":')
+		method := inner_cdp_method(data)
+		if method == 'Runtime.evaluate' {
+			sess.on_message('{"id":${id},"result":{"result":{"type":"object","subtype":"null"}}}')
+		} else {
+			sess.on_message('{"id":${id},"result":{}}')
+		}
+	}
+}
+
+fn test_pointer_action_for_selector_uses_single_resolve() {
+	// #22: pointer_action_for_selector 现在只发 1 次 Runtime.evaluate，
+	// 不再走 resolve → scrollIntoViewIfNeeded → resolve 三件套
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_action_point_send(mut sess, mut sent, 100.0, 200.0, 50.0, 30.0)
+
+	pointer_action_for_selector(mut sess, '#btn', 'click') or { panic(err) }
+
+	// 统计 Runtime.evaluate 调用次数
+	joined := sent.join('\n')
+	eval_count := joined.split('Runtime.evaluate').len - 1
+	// 旧版本会有 2 次（resolve + re-resolve）+ 可能的 1 次 scrollIntoViewIfNeeded
+	// 新版本只发 1 次 Runtime.evaluate
+	assert eval_count == 1
+
+	// 也不应该再有 DOM.scrollIntoViewIfNeeded（合并到 JS 里了）
+	assert !joined.contains('scrollIntoViewIfNeeded')
+}
+
+fn test_pointer_action_for_selector_click_uses_returned_coords() {
+	// 验证 click 用了第一次 resolve 返回的坐标
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_action_point_send(mut sess, mut sent, 250.0, 350.0, 100.0, 40.0)
+
+	pointer_action_for_selector(mut sess, '#target', 'click') or { panic(err) }
+
+	joined := sent.join('\n')
+	// V 序列化 250.0 浮点数会保留 .0 小数位，所以匹配 "x":250.0,"y":350.0
+	assert joined.contains('"x":250.0,"y":350.0')
+	assert joined.contains('"type":"mousePressed"')
+	assert joined.contains('"type":"mouseReleased"')
+}
+
+fn test_pointer_action_for_selector_hover_uses_returned_coords() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_action_point_send(mut sess, mut sent, 500.0, 600.0, 80.0, 20.0)
+
+	pointer_action_for_selector(mut sess, '#h', 'hover') or { panic(err) }
+
+	joined := sent.join('\n')
+	assert joined.contains('"x":500.0,"y":600.0')
+	// hover 只发 mouseMoved，不发 mousePressed / mouseReleased
+	assert !joined.contains('"type":"mousePressed"')
+	assert !joined.contains('"type":"mouseReleased"')
+}
+
+fn test_pointer_action_for_selector_returns_error_when_element_not_actionable() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_action_point_null_send(mut sess, mut sent)
+
+	// pointer_action_for_selector 返回 !（void 或 error），用 or 捕获错误
+	pointer_action_for_selector(mut sess, '#missing', 'click') or {
+		assert err.msg().contains('element not actionable')
+		return
+	}
+	panic('expected error but pointer_action_for_selector succeeded')
+}
+
+fn test_pointer_action_for_selector_dblclick_uses_count_2() {
+	mut sent := []string{}
+	mut sess := new_cdp_session(noop_send)
+	attach_action_point_send(mut sess, mut sent, 100.0, 100.0, 50.0, 50.0)
+
+	pointer_action_for_selector(mut sess, '#btn', 'dblclick') or { panic(err) }
+
+	joined := sent.join('\n')
+	// dblclick 应该发 2 次 mousePressed（clickCount=1, clickCount=2）
+	pressed_count := joined.split('"type":"mousePressed"').len - 1
+	assert pressed_count == 2
+}
