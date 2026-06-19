@@ -867,15 +867,14 @@ fn (mut s CdpSession) on_message(raw string) {
 }
 
 fn (mut s CdpSession) dispatch_event(method string, evt ProtocolResponse) {
+	// #40: 去掉 .clone() 改在锁内迭代 + 用 defer 释放锁。channel cap=32 在
+	// buffer 未满时 send 是非阻塞，所以锁持有时间极短（只是写 buffer 指针）。
 	s.event_mu.@lock()
-	subs := if method in s.event_subs {
-		s.event_subs[method].clone()
-	} else {
-		[]chan ProtocolResponse{}
-	}
-	s.event_mu.unlock()
-	for sub in subs {
-		sub <- evt
+	defer { s.event_mu.unlock() }
+	if method in s.event_subs {
+		for sub in s.event_subs[method] {
+			sub <- evt
+		}
 	}
 }
 
@@ -883,25 +882,29 @@ fn (mut s CdpSession) dispatch_event(method string, evt ProtocolResponse) {
 fn (mut s CdpSession) subscribe(method string) chan ProtocolResponse {
 	ch := chan ProtocolResponse{cap: 32}
 	s.event_mu.@lock()
+	defer { s.event_mu.unlock() }
 	if method !in s.event_subs {
 		s.event_subs[method] = []chan ProtocolResponse{}
 	}
 	s.event_subs[method] << ch
-	s.event_mu.unlock()
 	return ch
 }
 
+// unsubscribe 取消订阅。
+// #40: 改用下标遍历 + delete 替代全量 filter+copy，O(n) → O(1) ~ O(n) 单次匹配。
+// 注意：V 里 map value 的 mutation 需要赋值回 map，否则只改了局部副本。
 fn (mut s CdpSession) unsubscribe(method string, ch chan ProtocolResponse) {
 	s.event_mu.@lock()
 	defer { s.event_mu.unlock() }
 	if method in s.event_subs {
-		mut filtered := []chan ProtocolResponse{}
-		for c in s.event_subs[method] {
-			if c != ch {
-				filtered << c
+		mut subs := s.event_subs[method]
+		for i, c in subs {
+			if c == ch {
+				subs.delete(i)
+				s.event_subs[method] = subs
+				break
 			}
 		}
-		s.event_subs[method] = filtered
 	}
 }
 

@@ -2592,3 +2592,89 @@ fn test_pointer_action_for_selector_dblclick_uses_count_2() {
 	pressed_count := joined.split('"type":"mousePressed"').len - 1
 	assert pressed_count == 2
 }
+
+// ─── #40: dispatch_event 锁内迭代（无 clone）───────────────────────
+
+fn test_dispatch_event_delivers_to_multiple_subscribers() {
+	mut sess := new_cdp_session(noop_send)
+	ch1 := sess.subscribe('Network.requestWillBeSent')
+	ch2 := sess.subscribe('Network.requestWillBeSent')
+	ch3 := sess.subscribe('Network.responseReceived')
+
+	// dispatch Network.requestWillBeSent 应该投递给 ch1 + ch2 但不投递给 ch3
+	sess.dispatch_event('Network.requestWillBeSent', ProtocolResponse{
+		method: 'Network.requestWillBeSent'
+		params: '{"requestId":"r1"}'
+	})
+
+	evt1 := <-ch1
+	assert evt1.method == 'Network.requestWillBeSent'
+	assert evt1.params == '{"requestId":"r1"}'
+
+	evt2 := <-ch2
+	assert evt2.method == 'Network.requestWillBeSent'
+	assert evt2.params == '{"requestId":"r1"}'
+
+	// ch3 不应该收到
+	select {
+		_ := <-ch3 {
+			panic('ch3 should not receive Network.requestWillBeSent')
+		}
+		50 * time.millisecond {}
+	}
+}
+
+fn test_dispatch_event_is_noop_for_unknown_method() {
+	mut sess := new_cdp_session(noop_send)
+	// 没订阅者时 dispatch 不应 panic
+	sess.dispatch_event('Network.unknown', ProtocolResponse{
+		method: 'Network.unknown'
+		params: '{}'
+	})
+	// 也不应该报错
+}
+
+fn test_unsubscribe_removes_only_target_channel() {
+	// #40: unsubscribe 应该用下标遍历 + delete 精确移除匹配项
+	mut sess := new_cdp_session(noop_send)
+	ch1 := sess.subscribe('Page.loadEventFired')
+	ch2 := sess.subscribe('Page.loadEventFired')
+
+	sess.unsubscribe('Page.loadEventFired', ch1)
+
+	// 验证 event_subs 里只剩 ch2
+	sess.event_mu.@lock()
+	remaining := sess.event_subs['Page.loadEventFired']
+	sess.event_mu.unlock()
+	assert remaining.len == 1
+	assert remaining[0] == ch2
+
+	// dispatch 事件：ch2 应该收到，ch1 不应该
+	sess.dispatch_event('Page.loadEventFired', ProtocolResponse{
+		method: 'Page.loadEventFired'
+		params: '{}'
+	})
+	select {
+		_ := <-ch1 {
+			panic('ch1 should not receive after unsubscribe')
+		}
+		50 * time.millisecond {}
+	}
+	evt := <-ch2
+	assert evt.method == 'Page.loadEventFired'
+}
+
+fn test_subscribe_creates_method_entry_on_first_subscribe() {
+	// #40: subscribe 加 defer 释放锁，第一次订阅应该创建 method entry
+	mut sess := new_cdp_session(noop_send)
+	sess.event_mu.@lock()
+	assert 'BrandNewMethod' !in sess.event_subs
+	sess.event_mu.unlock()
+
+	ch := sess.subscribe('BrandNewMethod')
+	// chan 是引用类型，默认零值是 nil；subscribe 一定返回非 nil channel
+	sess.event_mu.@lock()
+	assert 'BrandNewMethod' in sess.event_subs
+	assert sess.event_subs['BrandNewMethod'].len == 1
+	sess.event_mu.unlock()
+}
