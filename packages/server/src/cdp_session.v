@@ -225,6 +225,10 @@ mut:
 	route_ch      chan ProtocolResponse
 	route_stop_ch chan bool
 	has_route     bool
+	// #23: loadingFinished 固定 worker 池（替代每条事件 spawn 协程）
+	body_task_ch         chan string
+	body_workers_started bool
+	body_workers_alive   int // 存活 worker 计数（network_mu 保护，供测试和观测）
 }
 
 fn new_cdp_session(send_fn fn (string) !) &CdpSession {
@@ -242,6 +246,7 @@ fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 			saved_request_ids: map[string]bool{}
 		}
 		hook_state:        HookState{}
+		body_task_ch:      chan string{cap: 4096}
 	}
 }
 
@@ -796,17 +801,8 @@ fn (mut s CdpSession) on_message(raw string) {
 				if inner_method == 'Network.loadingFinished' {
 					request_id := cdp_extract_str(inner_params, 'requestId')
 					if request_id != '' {
-						spawn fn [mut s, request_id] () {
-							handle_network_watch_loading_finished(mut s, request_id)
-						}()
-						s.network_mu.@lock()
-						do_cache := s.auto_body_cache
-						s.network_mu.unlock()
-						if do_cache {
-							spawn fn [mut s, request_id] () {
-								s.cache_response_body(request_id)
-							}()
-						}
+						// #23: 投递给固定 worker 池，不再每条事件 spawn 协程
+						s.queue_loading_finished(request_id)
 					}
 				}
 			} else if inner_method == 'Runtime.bindingCalled' {
@@ -1457,6 +1453,77 @@ fn (mut s CdpSession) cache_response_body(request_id string) {
 	_ := s.ensure_response_body_cached(request_id) or { return }
 }
 
+// ensure_body_workers 惰性启动固定大小的 loadingFinished worker 池 (#23)。
+// 原来每条 Network.loadingFinished 事件都 spawn 1-2 个 goroutine，高频页面
+// （一秒几百请求）会造成协程风暴；改为 body_worker_count 个常驻 worker 从
+// body_task_ch 消费任务。
+fn (mut s CdpSession) ensure_body_workers() {
+	s.network_mu.@lock()
+	if s.body_workers_started {
+		s.network_mu.unlock()
+		return
+	}
+	s.body_workers_started = true
+	s.network_mu.unlock()
+	for _ in 0 .. body_worker_count {
+		spawn fn [mut s] () {
+			s.network_mu.@lock()
+			s.body_workers_alive++
+			s.network_mu.unlock()
+			for {
+				select {
+					request_id := <-s.body_task_ch {
+						// watch 未激活时内部会直接 return，无需在此判断
+						handle_network_watch_loading_finished(mut s, request_id)
+						s.network_mu.@lock()
+						do_cache := s.auto_body_cache
+						s.network_mu.unlock()
+						if do_cache {
+							s.cache_response_body(request_id)
+						}
+					}
+					// 空闲巡检：session 关闭后退出，防止 worker 泄漏
+					500 * time.millisecond {
+						s.pending_mu.@lock()
+						closed := s.closed
+						s.pending_mu.unlock()
+						if closed {
+							s.network_mu.@lock()
+							s.body_workers_alive--
+							s.network_mu.unlock()
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+}
+
+// queue_loading_finished 把 loadingFinished 任务投递给 worker 池 (#23)。
+// network watch 和 auto_body_cache 都关闭时直接返回，默认路径零开销。
+fn (mut s CdpSession) queue_loading_finished(request_id string) {
+	s.network_watch_mu.@lock()
+	watch_active := s.network_watch.active
+	s.network_watch_mu.unlock()
+	s.network_mu.@lock()
+	do_cache := s.auto_body_cache
+	s.network_mu.unlock()
+	if !watch_active && !do_cache {
+		return
+	}
+	s.ensure_body_workers()
+	// 必须非阻塞投递：worker 内的 CDP round-trip（getResponseBody）响应要靠
+	// on_message 这同一条 goroutine 分发；若这里阻塞在满队列上，就会出现
+	// worker 等响应、on_message 等队列空位的死锁。队列满时丢弃任务即可。
+	select {
+		s.body_task_ch <- request_id {}
+		else {
+			eprintln('[network] body task queue full, dropping ${request_id}')
+		}
+	}
+}
+
 // handle_hook_binding_push 处理 Runtime.bindingCalled 推送的 hook 记录，无需轮询
 fn (mut s CdpSession) handle_hook_binding_push(payload string) {
 	record_id := cdp_extract_str(payload, 'recordId')
@@ -1480,6 +1547,9 @@ fn (mut s CdpSession) handle_hook_binding_push(payload string) {
 // ─── 超时常量 ───────────────────────────────────────────────
 const cdp_default_timeout = 60 * time.second
 const cdp_attach_timeout = 60 * time.second
+
+// loadingFinished worker 池大小 (#23)
+const body_worker_count = 4
 
 // ─── JSON 解析帮助函数 ──────────────────────────────────────
 

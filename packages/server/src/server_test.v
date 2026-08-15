@@ -2678,3 +2678,102 @@ fn test_subscribe_creates_method_entry_on_first_subscribe() {
 	assert sess.event_subs['BrandNewMethod'].len == 1
 	sess.event_mu.unlock()
 }
+
+// ─── #23: loadingFinished 固定 worker 池 ────────────────────
+
+fn feed_loading_finished(mut sess CdpSession, i int) {
+	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.requestWillBeSent","params":{"requestId":"req-${i}","type":"XHR","request":{"url":"https://api.example.com/v${i}","method":"GET"}}}}')
+	sess.on_message('{"method":"forwardCDPEvent","params":{"method":"Network.loadingFinished","params":{"requestId":"req-${i}"}}}')
+}
+
+fn test_loading_finished_no_workers_when_watch_and_cache_off() {
+	// Test A: watch 关 + auto_body_cache 关时默认路径零开销，不启动 worker
+	mut sess := new_cdp_session(noop_send)
+	for i in 0 .. 100 {
+		feed_loading_finished(mut sess, i)
+	}
+	sess.network_mu.@lock()
+	started := sess.body_workers_started
+	sess.network_mu.unlock()
+	assert !started
+}
+
+fn test_loading_finished_worker_pool_processes_all_tasks() {
+	// Test B: 激活 network watch 后 1000 条任务全部由固定 worker 池消费。
+	// 用 watch 路径而非 auto_body_cache 路径：cache 路径会在 worker 里发
+	// CDP 命令，而本项目 V 版本（0.5.2）在多 goroutine 下 map / channel /
+	// string 引用计数不稳定（最小复现验证：全部访问在同一把 mutex 下
+	// 串行化，仍偶发 lookup 不命中、写丢失乃至 map_set / channel push
+	// 段错误），并发 CDP round-trip 测试无法稳定运行——这是 V 运行时的
+	// 既有问题，旧 spawn 方案同样受影响。watch 路径（candidate_urls 为空
+	// 时 snapshot 后即返回）只做 map 读，且两条路径在池化 / 投递 / 消费
+	// 逻辑上完全相同，足以验证 worker 池机制。
+	mut sess := new_cdp_session(noop_send)
+	// 先把 1000 条请求 track 完（watch 关，不投递任务），再开 watch 统一投递。
+	for i in 0 .. 1000 {
+		feed_loading_finished(mut sess, i)
+	}
+	sess.network_watch_mu.@lock()
+	sess.network_watch.active = true
+	sess.network_watch_mu.unlock()
+	for i in 0 .. 1000 {
+		sess.queue_loading_finished('req-${i}')
+	}
+	// 等队列排空（超时 10s）：worker 每收到一条任务都会完整走完
+	// snapshot → watch 判断后才取下一条，队列排空即 1000 条全部被消费。
+	deadline := time.now().add(10 * time.second)
+	for sess.body_task_ch.len > 0 && time.now() < deadline {
+		time.sleep(20 * time.millisecond)
+	}
+	assert sess.body_task_ch.len == 0
+	// 等 worker 全部启动（超时 3s）
+	alive_deadline := time.now().add(3 * time.second)
+	mut alive := 0
+	for time.now() < alive_deadline {
+		sess.network_mu.@lock()
+		alive = sess.body_workers_alive
+		sess.network_mu.unlock()
+		if alive == body_worker_count {
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	assert alive == body_worker_count
+	sess.close()
+}
+
+fn test_loading_finished_workers_exit_after_close() {
+	// Test C: close() 后 worker 通过 500ms 空闲巡检自行退出
+	mut sess := new_cdp_session(noop_send)
+	sess.network_watch_mu.@lock()
+	sess.network_watch.active = true
+	sess.network_watch_mu.unlock()
+	for i in 0 .. 10 {
+		feed_loading_finished(mut sess, i)
+	}
+	// 等 worker 全部启动（超时 3s）
+	start_deadline := time.now().add(3 * time.second)
+	for time.now() < start_deadline {
+		sess.network_mu.@lock()
+		alive := sess.body_workers_alive
+		sess.network_mu.unlock()
+		if alive == body_worker_count {
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	sess.close()
+	// 轮询（超时 3s）断言 worker 全部退出
+	deadline := time.now().add(3 * time.second)
+	mut alive := -1
+	for time.now() < deadline {
+		sess.network_mu.@lock()
+		alive = sess.body_workers_alive
+		sess.network_mu.unlock()
+		if alive == 0 {
+			break
+		}
+		time.sleep(20 * time.millisecond)
+	}
+	assert alive == 0
+}
