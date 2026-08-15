@@ -147,10 +147,13 @@ mut:
 // 初始化 server 实例并加载连接 token。
 fn new_server() !&VBrowserServer {
 	token := load_or_create_token()!
-	return &VBrowserServer{
+	mut s := &VBrowserServer{
 		token:   token
 		running: true
 	}
+	// 同 new_cdp_session：macOS 上全零 pthread_mutex_t 不互斥，必须显式 init
+	s.ext_mu.init()
+	return s
 }
 
 // start 启动所有监听（阻塞，直至 WebSocket server 退出）

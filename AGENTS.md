@@ -30,6 +30,15 @@ bash ./fmt.sh
 oxfmt .
 ```
 
+### 并发规范
+
+- **`sync.Mutex` 结构体字段必须在构造函数里显式 `.init()`**。V 不会自动初始化
+  Mutex 字段（vlib 的 `init_with` 仍是 TODO）；macOS 上全零 `pthread_mutex_t`
+  非法，`pthread_mutex_lock` 静默失败、完全不互斥（Linux 上恰好可用，问题会被
+  掩盖）。参考 `new_cdp_session` / `new_server` 的写法，根因记录见
+  `issues/bug/07-sync-mutex-field-uninitialized-macos.md`。
+- `sync.RwMutex` 自带 `lazy_init`，不受此限制。
+
 ### 验证约定
 
 - 每次改完代码、准备做功能验证前，优先先重启 `v-browser server`。
@@ -65,4 +74,3 @@ v test ./src
 ## 注释规范
 
 生成代码时，只在非显而易见的地方添加注释，重点解释业务意图、为什么选择这种实现、边缘case处理和任何权衡。避免逐行解释简单语句，补足隐藏条件说明就行。使用中文注释
-

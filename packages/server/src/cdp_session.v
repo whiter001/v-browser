@@ -232,7 +232,7 @@ mut:
 }
 
 fn new_cdp_session(send_fn fn (string) !) &CdpSession {
-	return &CdpSession{
+	mut s := &CdpSession{
 		send_fn:           send_fn
 		pending:           map[int]chan ProtocolResponse{}
 		event_subs:        map[string][]chan ProtocolResponse{}
@@ -248,6 +248,21 @@ fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 		hook_state:        HookState{}
 		body_task_ch:      chan string{cap: 4096}
 	}
+	// sync.Mutex 作为结构体字段时 V 不会自动初始化（vlib 里 init_with 还是 TODO），
+	// 而 macOS 上全零的 pthread_mutex_t 不是合法互斥锁：pthread_mutex_lock 会静默
+	// 失败，完全不互斥（Linux 上全零恰好等于静态初始化器所以不暴露）。已在最小
+	// 复现中验证：未 init 时双线程同一把锁下读到撕裂状态，init 后 20 万次无异常。
+	// 因此所有 Mutex 字段必须显式 init()。
+	s.pending_mu.init()
+	s.event_mu.init()
+	s.network_mu.init()
+	s.network_watch_mu.init()
+	s.hook_mu.init()
+	s.runtime_mu.init()
+	s.tab_contexts_mu.init()
+	s.page_mu.init()
+	s.axref.mu.init()
+	return s
 }
 
 fn (s &CdpSession) do_send(data string) ! {

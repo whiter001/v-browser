@@ -2185,8 +2185,8 @@ fn test_is_loopback_ip_rejects_non_loopback_addresses() {
 fn test_is_loopback_ip_handles_edge_cases() {
 	// 短字符串不能误判为 loopback
 	assert !is_loopback_ip('')
-	assert !is_loopback_ip('127')        // 缺小数点
-	assert !is_loopback_ip('127x0.0.1')  // 不是数字
+	assert !is_loopback_ip('127') // 缺小数点
+	assert !is_loopback_ip('127x0.0.1') // 不是数字
 	// IPv6 full address 不应误判
 	assert !is_loopback_ip('2001:db8::1')
 }
@@ -2701,13 +2701,10 @@ fn test_loading_finished_no_workers_when_watch_and_cache_off() {
 fn test_loading_finished_worker_pool_processes_all_tasks() {
 	// Test B: 激活 network watch 后 1000 条任务全部由固定 worker 池消费。
 	// 用 watch 路径而非 auto_body_cache 路径：cache 路径会在 worker 里发
-	// CDP 命令，而本项目 V 版本（0.5.2）在多 goroutine 下 map / channel /
-	// string 引用计数不稳定（最小复现验证：全部访问在同一把 mutex 下
-	// 串行化，仍偶发 lookup 不命中、写丢失乃至 map_set / channel push
-	// 段错误），并发 CDP round-trip 测试无法稳定运行——这是 V 运行时的
-	// 既有问题，旧 spawn 方案同样受影响。watch 路径（candidate_urls 为空
-	// 时 snapshot 后即返回）只做 map 读，且两条路径在池化 / 投递 / 消费
-	// 逻辑上完全相同，足以验证 worker 池机制。
+	// CDP 命令，noop_send mock 不会回包，send_command 会阻塞到超时，
+	// 没法在单测里跑通。watch 路径（candidate_urls 为空时 snapshot 后即
+	// 返回）只做 map 读，且两条路径在池化 / 投递 / 消费逻辑上完全相同，
+	// 足以验证 worker 池机制。
 	mut sess := new_cdp_session(noop_send)
 	// 先把 1000 条请求 track 完（watch 关，不投递任务），再开 watch 统一投递。
 	for i in 0 .. 1000 {
@@ -2776,4 +2773,44 @@ fn test_loading_finished_workers_exit_after_close() {
 		time.sleep(20 * time.millisecond)
 	}
 	assert alive == 0
+}
+
+// ─── 回归：sync.Mutex 字段必须显式 init（macOS 全零 pthread_mutex_t 不互斥）───
+
+@[heap]
+struct MutexPairState {
+mut:
+	a    int
+	b    int
+	done bool
+}
+
+fn test_session_mutex_actually_excludes() {
+	// new_cdp_session 必须 init 所有 sync.Mutex 字段。macOS 上全零
+	// pthread_mutex_t 会让 pthread_mutex_lock 静默失败（不互斥），
+	// 若 init 被回退，本测试在 macOS 上会观察到撕裂读（a != b）。
+	mut sess := new_cdp_session(noop_send)
+	mut state := &MutexPairState{}
+	spawn fn [mut sess, mut state] () {
+		for {
+			sess.network_mu.@lock()
+			a := state.a
+			b := state.b
+			done := state.done
+			sess.network_mu.unlock()
+			assert a == b
+			if done {
+				return
+			}
+		}
+	}()
+	for i in 0 .. 100000 {
+		sess.network_mu.@lock()
+		state.a = i
+		state.b = i
+		sess.network_mu.unlock()
+	}
+	sess.network_mu.@lock()
+	state.done = true
+	sess.network_mu.unlock()
 }
