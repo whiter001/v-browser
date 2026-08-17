@@ -151,7 +151,8 @@ fn new_server() !&VBrowserServer {
 		token:   token
 		running: true
 	}
-	// 同 new_cdp_session：macOS 上全零 pthread_mutex_t 不互斥，必须显式 init
+	// 同 new_cdp_session：上游 V 已修复零值 Mutex 自动初始化，此处保留显式
+	// init() 仅为兼容旧版 V（幂等，无副作用）
 	s.ext_mu.init()
 	return s
 }
@@ -409,7 +410,8 @@ fn (mut s VBrowserServer) attach_session(params string) !string {
 	window_id := cdp_extract_int(params, '"windowId":')
 	target_url := cdp_extract_str(params, 'url')
 	if tab_id > 0 {
-		resp := conn.session.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}')!
+		resp := conn.session.send_bridge_command('switchToTab',
+			'{"tabId":${tab_id},"windowId":${window_id}}')!
 		conn.session.activate_tab_context_from_result(resp.result) or {}
 		return resp.result
 	}

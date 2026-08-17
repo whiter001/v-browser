@@ -32,12 +32,13 @@ oxfmt .
 
 ### 并发规范
 
-- **`sync.Mutex` 结构体字段必须在构造函数里显式 `.init()`**。V 不会自动初始化
-  Mutex 字段（vlib 的 `init_with` 仍是 TODO）；macOS 上全零 `pthread_mutex_t`
-  非法，`pthread_mutex_lock` 静默失败、完全不互斥（Linux 上恰好可用，问题会被
-  掩盖）。参考 `new_cdp_session` / `new_server` 的写法，根因记录见
-  `issues/bug/07-sync-mutex-field-uninitialized-macos.md`。
-- `sync.RwMutex` 自带 `lazy_init`，不受此限制。
+- **`sync.Mutex` 结构体字段建议在构造函数里显式 `.init()`**。旧版 V 不会自动
+  初始化 Mutex 字段（`init_with` 未实现），macOS 上全零 `pthread_mutex_t`
+  非法，`pthread_mutex_lock` 静默失败、完全不互斥（Linux 上恰好可用，问题被
+  掩盖）。上游已修复：`Mutex` 自带原子 `lazy_init`，零值安全，`init()` 幂等。
+  保留显式 `.init()` 仅为兼容旧版 V。参考 `new_cdp_session` / `new_server`
+  的写法，根因记录见 `issues/bug/07-sync-mutex-field-uninitialized-macos.md`。
+- `sync.RwMutex` 自带 `lazy_init`，一直不受此影响。
 
 ### 验证约定
 

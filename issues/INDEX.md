@@ -50,13 +50,13 @@
 
 ### P0 — Bug (4)
 
-| 文件                                                                                             | 标题                                                    | 工作量 | 状态                                                    |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------- | ------ | ------------------------------------------------------- |
-| [bug/01-cmd-click-error-swallowed.md](bug/01-cmd-click-error-swallowed.md)                       | `cmd_click/dblclick/hover` 内层 fallback 报错被外层吞掉 | S      | [#8](https://github.com/whiter001/v-browser/issues/8)   |
-| [bug/02-pending-leak-tab-switch.md](bug/02-pending-leak-tab-switch.md)                           | tab 切换不清空 `pending`，旧请求可能投递到错误 tab      | M      | [#9](https://github.com/whiter001/v-browser/issues/9)   |
-| [bug/03-event-subscribe-race.md](bug/03-event-subscribe-race.md)                                 | `subscribe` 前已触发的事件会通过新 channel 立刻投递     | M      | [#10](https://github.com/whiter001/v-browser/issues/10) |
-| [bug/04-route-goroutine-leak.md](bug/04-route-goroutine-leak.md)                                 | `network route` 启动的 goroutine 缺少兜底退出           | M      | [#11](https://github.com/whiter001/v-browser/issues/11) |
-| [bug/07-sync-mutex-field-uninitialized-macos.md](bug/07-sync-mutex-field-uninitialized-macos.md) | macOS 上 `sync.Mutex` 结构体字段未初始化，完全不互斥    | S      | ✅ 已修复（待提交）                                     |
+| 文件                                                                                             | 标题                                                    | 工作量 | 状态                                                               |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------- | ------ | ------------------------------------------------------------------ |
+| [bug/01-cmd-click-error-swallowed.md](bug/01-cmd-click-error-swallowed.md)                       | `cmd_click/dblclick/hover` 内层 fallback 报错被外层吞掉 | S      | [#8](https://github.com/whiter001/v-browser/issues/8)              |
+| [bug/02-pending-leak-tab-switch.md](bug/02-pending-leak-tab-switch.md)                           | tab 切换不清空 `pending`，旧请求可能投递到错误 tab      | M      | [#9](https://github.com/whiter001/v-browser/issues/9)              |
+| [bug/03-event-subscribe-race.md](bug/03-event-subscribe-race.md)                                 | `subscribe` 前已触发的事件会通过新 channel 立刻投递     | M      | [#10](https://github.com/whiter001/v-browser/issues/10)            |
+| [bug/04-route-goroutine-leak.md](bug/04-route-goroutine-leak.md)                                 | `network route` 启动的 goroutine 缺少兜底退出           | M      | [#11](https://github.com/whiter001/v-browser/issues/11)            |
+| [bug/07-sync-mutex-field-uninitialized-macos.md](bug/07-sync-mutex-field-uninitialized-macos.md) | macOS 上 `sync.Mutex` 结构体字段未初始化，完全不互斥    | S      | ✅ 已修复（上游 V 已落地 lazy_init，本仓库保留显式 init 兼容旧版） |
 
 ### P1 — Performance (5)
 

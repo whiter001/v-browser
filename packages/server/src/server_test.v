@@ -2775,7 +2775,7 @@ fn test_loading_finished_workers_exit_after_close() {
 	assert alive == 0
 }
 
-// ─── 回归：sync.Mutex 字段必须显式 init（macOS 全零 pthread_mutex_t 不互斥）───
+// ─── 回归：sync.Mutex 字段保持互斥（macOS 全零 pthread_mutex_t 曾不互斥）───
 
 @[heap]
 struct MutexPairState {
@@ -2786,9 +2786,10 @@ mut:
 }
 
 fn test_session_mutex_actually_excludes() {
-	// new_cdp_session 必须 init 所有 sync.Mutex 字段。macOS 上全零
-	// pthread_mutex_t 会让 pthread_mutex_lock 静默失败（不互斥），
-	// 若 init 被回退，本测试在 macOS 上会观察到撕裂读（a != b）。
+	// 历史上 new_cdp_session 必须显式 init 所有 sync.Mutex 字段：旧版 V 不自动
+	// 初始化，macOS 上全零 pthread_mutex_t 会让 pthread_mutex_lock 静默失败
+	// （不互斥）。上游已修复（Mutex 自带 lazy_init，零值安全），本测试保留作为
+	// 互斥性回归保障：任何破坏互斥的改动都会在 macOS 上观察到撕裂读（a != b）。
 	mut sess := new_cdp_session(noop_send)
 	mut state := &MutexPairState{}
 	spawn fn [mut sess, mut state] () {

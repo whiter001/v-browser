@@ -248,11 +248,12 @@ fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 		hook_state:        HookState{}
 		body_task_ch:      chan string{cap: 4096}
 	}
-	// sync.Mutex 作为结构体字段时 V 不会自动初始化（vlib 里 init_with 还是 TODO），
-	// 而 macOS 上全零的 pthread_mutex_t 不是合法互斥锁：pthread_mutex_lock 会静默
-	// 失败，完全不互斥（Linux 上全零恰好等于静态初始化器所以不暴露）。已在最小
-	// 复现中验证：未 init 时双线程同一把锁下读到撕裂状态，init 后 20 万次无异常。
-	// 因此所有 Mutex 字段必须显式 init()。
+	// 历史背景：旧版 V 不会自动初始化结构体里的 sync.Mutex 字段（init_with 未实现），
+	// macOS 上全零 pthread_mutex_t 会让 pthread_mutex_lock 静默失败、完全不互斥
+	// （Linux 上全零恰好等于静态初始化器所以不暴露）。上游已修复：Mutex 现在自带
+	// 原子 lazy_init，零值安全（见 vlib/sync/sync_darwin.c.v 及回归测试
+	// mutex_zero_value_darwin_test.c.v）。这里保留显式 init() 以兼容旧版 V，
+	// 调用幂等无副作用。详见 issues/bug/07-sync-mutex-field-uninitialized-macos.md。
 	s.pending_mu.init()
 	s.event_mu.init()
 	s.network_mu.init()
@@ -636,8 +637,8 @@ fn (mut s CdpSession) restore_runtime_hook_state() ! {
 	activate_js := if state.activate_js != '' {
 		state.activate_js
 	} else {
-		network_hook_activate_js(state.filter, state.capture_body, state.capture_response,
-			false, state.max_body_len, script_id)
+		network_hook_activate_js(state.filter, state.capture_body, state.capture_response, false,
+			state.max_body_len, script_id)
 	}
 	eval_scoped_expression(mut s, activate_js, false)!
 }
@@ -851,7 +852,8 @@ fn (mut s CdpSession) on_message(raw string) {
 				if should_inject {
 					if is_default && ctx_id > 0 {
 						spawn fn [mut s, activate_js, ctx_id] () {
-							s.send_command('Runtime.evaluate', '{"expression":${json_str(activate_js)},"contextId":${ctx_id},"silent":true}') or {}
+							s.send_command('Runtime.evaluate',
+								'{"expression":${json_str(activate_js)},"contextId":${ctx_id},"silent":true}') or {}
 						}()
 					}
 				}
@@ -1096,7 +1098,8 @@ fn (mut s CdpSession) network_requests_json(f NetworkFilter, limit int) string {
 // matches_network_filter 检查 TrackedNetworkRequest 是否满足所有过滤条件
 fn matches_network_filter(entry TrackedNetworkRequest, f NetworkFilter) bool {
 	if f.url != '' {
-		haystack := '${entry.method} ${entry.url} ${entry.resource_type} ${entry.status_text} ${entry.error_text}'.to_lower()
+		haystack :=
+			'${entry.method} ${entry.url} ${entry.resource_type} ${entry.status_text} ${entry.error_text}'.to_lower()
 		if !haystack.contains(f.url_lower) {
 			return false
 		}

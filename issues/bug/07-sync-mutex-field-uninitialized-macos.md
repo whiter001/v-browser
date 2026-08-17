@@ -2,7 +2,7 @@
 
 > 标签: `bug`, `P0`, `area/server`
 > 工作量: S
-> 状态: ✅ 已修复（`new_cdp_session` / `new_server` 显式 init，待提交）
+> 状态: ✅ 已修复（本仓库显式 init 兜底；上游 V 已修复零值 Mutex 自动初始化）
 > 相关文件:
 >
 > - `packages/server/src/cdp_session.v` (`new_cdp_session`，8 个 Mutex 字段)
@@ -29,7 +29,20 @@ V 的 `sync.Mutex` 作为结构体字段时不会被自动初始化（vlib 的
 `VBrowserServer.ext_mu`、`AxRefStore.mu`。
 
 最小复现与完整分析见 `docs/upstream-issue-v-sync-mutex-darwin.md`，
-已提交上游：<https://github.com/vlang/v/issues/28091>。
+已提交上游：<https://github.com/vlang/v/issues/28091>（链接现已 404，
+但修复已落地，见下方"上游修复"）。
+
+## 上游修复
+
+上游已按建议方案 2 落地修复（本机验证 V 0.5.2 `45676a0`）：
+
+- `vlib/sync/sync_darwin.c.v`：`Mutex` 新增 `inited u32` 原子标记，
+  `lock()` / `try_lock()` 入口调用 `lazy_init()`（CAS 保证只初始化一次），
+  零值 Mutex 首次使用自动初始化，macOS 上不再静默不互斥
+- `init()` 变为幂等的 `lazy_init()` 包装，重复调用无副作用
+- 上游新增回归测试 `vlib/sync/mutex_zero_value_darwin_test.c.v`
+
+因此本仓库的显式 `.init()` 调用已属冗余，但保留以兼容旧版 V（幂等无害）。
 
 ## 修复方案
 
@@ -52,5 +65,6 @@ return s
 
 ## 防范规则
 
-已写入 `AGENTS.md`：新增 `sync.Mutex` 字段必须在构造函数显式 `init()`。
-`sync.RwMutex` 自带 `lazy_init`，不受此影响。
+已写入 `AGENTS.md`：新增 `sync.Mutex` 字段建议在构造函数显式 `init()`（兼容
+旧版 V；新版 V 的 `Mutex` 自带 `lazy_init`，零值已安全）。`sync.RwMutex`
+自带 `lazy_init`，一直不受此影响。

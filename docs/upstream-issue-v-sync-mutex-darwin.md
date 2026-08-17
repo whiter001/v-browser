@@ -1,6 +1,12 @@
 # Draft: upstream issue for vlang/v
 
-> ✅ 已提交：<https://github.com/vlang/v/issues/28091>
+> ✅ 已提交：<https://github.com/vlang/v/issues/28091>（该链接现已 404）
+> ✅ 上游已修复：按建议方案 2 落地，`Mutex` 新增 `inited` 原子标记 +
+> `lazy_init()`（CAS 单次初始化），`lock()` / `try_lock()` 入口自动初始化，
+> 零值 Mutex 在 macOS 上已安全；上游新增回归测试
+> `vlib/sync/mutex_zero_value_darwin_test.c.v`。本机已在 V 0.5.2 `45676a0`
+> 的 vlib 源码中确认。本仓库的显式 `.init()` 调用因此变为冗余，但保留以兼容
+> 旧版 V（`init()` 现幂等无害）。
 > 以下为提交时的正文（去除标题行）。在 v-browser 项目排查并发崩溃时定位到此根因，
 > 最小复现已在本机验证。
 
