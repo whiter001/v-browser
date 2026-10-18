@@ -20,6 +20,8 @@ import os
 import net
 import net.urllib
 import time
+import x.json2 as json
+import strconv
 
 type EvalStdinReader = fn () !string
 
@@ -128,16 +130,17 @@ fn handle_connect_command(args []string, json_output bool) {
 	}
 	if !is_extension_connected(status_before) {
 		if extension_id != '' {
-			connect_url := open_extension_connect_page(extension_id) or {
+			// connect_url 里带 ?token=<真实 token>，属于凭据，绝不能打印到 stderr。
+			_ := open_extension_connect_page(extension_id) or {
 				print_error(err.msg(), json_output)
 				exit(1)
 				return
 			}
-			eprintln('[v-browser] Opened extension connect page: ${connect_url}')
+			eprintln('[v-browser] Opened extension connect page.')
 			if !wait_for_extension_connection(35 * time.second) {
 				print_error('extension did not connect within 35s; select a tab in the extension page, then run v-browser connect again',
 					json_output)
-				return
+				exit(1)
 			}
 		} else {
 			print_error('no extension connected; set V_BROWSER_EXTENSION_ID or run v-browser connect --extension-id <id>',
@@ -218,8 +221,9 @@ fn reconnect_current_session() ! {
 			if extension_id == '' {
 				return error('no extension connected; set V_BROWSER_EXTENSION_ID or run v-browser connect --extension-id <id>')
 			}
-			connect_url := open_extension_connect_page(extension_id)!
-			eprintln('[v-browser] Reconnecting via extension page: ${connect_url}')
+			// 同上：返回值含 token，只消费不打印。
+			_ := open_extension_connect_page(extension_id)!
+			eprintln('[v-browser] Reconnecting via extension page.')
 			if !wait_for_extension_connection(35 * time.second) {
 				return error('extension did not connect within 35s; select a tab in the extension page, then rerun the command')
 			}
@@ -411,9 +415,20 @@ fn cleanup_server_runtime_state() {
 	for path in [ipc_sock_path(), server_pid_path(), server_version_path()] {
 		os.rm(path) or {}
 	}
+	// server_task_path() 里存的是 pueue 的 stdout，属于外部数据。
+	// 只有能严格解析成正整数（pueue task id 从 1 开始）时才允许拼进 shell，
+	// 否则宁可漏清理，也不能把它当命令执行。
 	task_id := (os.read_file(server_task_path()) or { '' }).trim_space()
 	if task_id != '' {
-		os.execute('pueue remove ${task_id}')
+		if parsed := strconv.atoi(task_id) {
+			if parsed > 0 {
+				os.execute('pueue remove ${parsed}')
+			} else {
+				eprintln('[v-browser] Skipping pueue cleanup: recorded task id is not positive.')
+			}
+		} else {
+			eprintln('[v-browser] Skipping pueue cleanup: recorded task id is not an integer.')
+		}
 	}
 	os.write_file(server_task_path(), '') or {}
 }
@@ -713,7 +728,59 @@ fn resolve_eval_input(flags map[string]string, positionals []string, stdin_reade
 }
 
 // ─── CLI → IPC 参数解析 ──────────────────────────────────────
-// 将命令行参数转换为 (method, params_json) 对
+// 布尔开关名：这些选项自身不携带值，只有显式写出 true / false 时才把下一个
+// 参数当成它的值；其余情况一律记为 'true' 且**不消费**后一个参数。
+// 否则 `eval --await <expr>`、`screenshot --full shot.png`、`eval --stdin -b`
+// 这类命令会把紧随其后的位置参数吞掉。
+// 注意：--base64 / -b 与 --raw / -r 不在此列 —— base64 的值就是待执行的脚本，
+// 必须作为值消费（见 resolve_eval_input）；raw/r 在 main() 全局预处理里已被剥掉。
+const boolean_switch_names = [
+	'full',
+	'extra',
+	'interactive',
+	'raw',
+	'raw-output',
+	'await',
+	'stdin',
+	'verify',
+	'wait-preview',
+	'capture-body',
+	'captureBody',
+	'capture-response',
+	'captureResponse',
+	'all-frames',
+	'allFrames',
+	'dry-run',
+	'dryRun',
+	'debug',
+	'list',
+	'click',
+	'screenshot',
+	'abort',
+	'stable',
+	'compact',
+	'persistent',
+	'clear',
+	'exact',
+]
+
+// 判断某个选项名是否属于布尔开关。
+fn is_boolean_switch(name string) bool {
+	return name in boolean_switch_names
+}
+
+// 决定选项要不要吃掉后一个参数。布尔开关只接受显式的 true/false，
+// 这样位置参数不会被开关意外吞掉。
+fn should_consume_flag_value(key string, next string, has_next bool) bool {
+	if !has_next || next.starts_with('-') {
+		return false
+	}
+	if is_boolean_switch(key) {
+		return next == 'true' || next == 'false'
+	}
+	return true
+}
+
 // 将 CLI 命令翻译成 IPC method/params。
 fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string) {
 	return parse_cli_to_ipc_with_readers(cmd, args, raw_output, default_eval_stdin_reader,
@@ -730,7 +797,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 		arg := args[i]
 		if arg.starts_with('--') {
 			key := arg[2..]
-			if i + 1 < args.len && !args[i + 1].starts_with('--') {
+			if should_consume_flag_value(key, if i + 1 < args.len {
+				args[i + 1]
+			} else {
+				''
+			}, i + 1 < args.len) {
 				flags[key] = args[i + 1]
 				i += 2
 			} else {
@@ -739,7 +810,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			}
 		} else if arg.starts_with('-') && arg.len == 2 {
 			key := arg[1..]
-			if i + 1 < args.len && !args[i + 1].starts_with('-') {
+			if should_consume_flag_value(key, if i + 1 < args.len {
+				args[i + 1]
+			} else {
+				''
+			}, i + 1 < args.len) {
 				flags[key] = args[i + 1]
 				i += 2
 			} else {
@@ -1564,11 +1639,12 @@ fn send_ipc_internal(method string, params string, auto_start bool) !string {
 	if resp.err != '' {
 		return error(resp.err)
 	}
-	// 美化输出：去除外层引号（如果是字符串 JSON）
+	// 美化输出：去除外层引号（如果是字符串 JSON）。
+	// 必须用真正的 JSON 解码：手工 replace 会把 `\\n`（字面反斜杠+n）、
+	// `\t`/`\r`/`\uXXXX` 全部解错。解不动就原样返回，不算命令失败。
 	result := resp.result
 	if result.starts_with('"') && result.ends_with('"') {
-		return result[1..result.len - 1].replace('\\"', '"').replace('\\n', '\n').replace('\\\\',
-			'\\')
+		return json.decode[string](result) or { return result }
 	}
 	return result
 }

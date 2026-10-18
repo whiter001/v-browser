@@ -319,8 +319,8 @@ fn test_parse_cli_to_ipc_network_hook_variants() {
 	assert params_records.contains('"filter":"home"')
 
 	method_replay, params_replay := parse_cli_to_ipc('network', ['hook', 'replay', 'record-1',
-		'--method', 'POST', '--override-url', 'https://x.com/i/api/test', '--override-body',
-		'{"foo":1}', '--override-headers', '{"x-test":"1"}', '--dry-run'], false)
+		'--method', 'POST', '--override-url', 'https://x.com/i/api/test', '--override-body', '{"foo":1}',
+		'--override-headers', '{"x-test":"1"}', '--dry-run'], false)
 	assert method_replay == 'network'
 	assert params_replay.contains('"action":"hook"')
 	assert params_replay.contains('"subaction":"replay"')
@@ -683,6 +683,138 @@ fn test_parse_cli_to_ipc_eval_supports_base64_long_flag() {
 	assert params.contains('"base64":"true"')
 }
 
+// ─── 布尔开关不得吞掉后一个位置参数 ──────────────────────────────
+
+fn test_parse_cli_to_ipc_eval_await_keeps_expression() {
+	method, params := parse_cli_to_ipc_with_readers('eval', ['--await', 'Promise.resolve(42)'],
+		false, fake_eval_stdin_reader, fake_eval_file_reader)
+	assert method == 'eval'
+	assert params.contains('"expression":"Promise.resolve(42)"')
+	assert params.contains('"awaitPromise":"true"')
+}
+
+fn test_parse_cli_to_ipc_screenshot_full_keeps_path() {
+	method, params := parse_cli_to_ipc('screenshot', ['--full', 'shot.png'], false)
+	assert method == 'screenshot'
+	assert params.contains('"path":"shot.png"')
+	assert params.contains('"full":"true"')
+}
+
+fn test_parse_cli_to_ipc_eval_stdin_and_base64_switches() {
+	method, params := parse_cli_to_ipc_with_readers('eval', ['--stdin', '-b'], false,
+		fake_eval_stdin_reader, fake_eval_file_reader)
+	assert method == 'eval'
+	assert params.contains('"base64":"true"')
+	assert params.contains('const answer = 42;')
+}
+
+fn test_parse_cli_to_ipc_fill_verify_keeps_text() {
+	method, params := parse_cli_to_ipc('fill', ['#name', 'hello world', '--verify'], false)
+	assert method == 'fill'
+	assert params.contains('"selector":"#name"')
+	assert params.contains('"text":"hello world"')
+	assert params.contains('"verify":"true"')
+}
+
+// ─── token 生成 ────────────────────────────────────────────────
+
+// V 0.5.2 没有 os.permissions()，这里借 stat 读回权限位。
+fn stat_mode_octal(path string) string {
+	stat_cmd := $if macos { 'stat -f %Lp' } $else { 'stat -c %a' }
+	res := os.execute('${stat_cmd} ${shell_quote(path)}')
+	if res.exit_code != 0 {
+		return ''
+	}
+	return res.output.trim_space()
+}
+
+fn test_load_or_create_token_is_stable_and_private() {
+	home := os.join_path(os.temp_dir(), 'v-browser-token-test-${os.getpid()}')
+	os.mkdir_all(home) or { panic(err) }
+	defer {
+		os.rmdir_all(home) or {}
+	}
+	old_home := os.getenv('V_BROWSER_HOME')
+	os.setenv('V_BROWSER_HOME', home, true)
+	defer {
+		os.setenv('V_BROWSER_HOME', old_home, true)
+	}
+	os.rm(token_path()) or {}
+
+	first := load_or_create_token() or { panic(err) }
+	second := load_or_create_token() or { panic(err) }
+	assert first != ''
+	assert first.len >= 16
+	assert first == second
+	assert first.len == 64 // 32 字节密码学随机 → 64 位十六进制
+	mode := stat_mode_octal(token_path())
+	if mode != '' {
+		assert mode == '600'
+	}
+}
+
+// ─── dispatch_event 不得持锁发送 ────────────────────────────────
+
+fn test_dispatch_event_does_not_hold_lock_while_sending() {
+	mut sess := new_cdp_session(noop_send)
+	ch := sess.subscribe('Page.loadEventFired')
+	// 先把 cap=32 的 channel 灌满，让随后的 dispatch_event 必然阻塞在 send 上。
+	for i in 0 .. 32 {
+		ch <- ProtocolResponse{
+			id:     i + 1
+			method: 'Page.loadEventFired'
+		}
+	}
+	dispatch_done := chan bool{cap: 1}
+	unsub_done := chan bool{cap: 1}
+	// A：阻塞在 channel send 上的事件分发。
+	spawn fn [mut sess, dispatch_done] () {
+		sess.dispatch_event('Page.loadEventFired', ProtocolResponse{
+			id:     999
+			method: 'Page.loadEventFired'
+		})
+		dispatch_done <- true
+	}()
+	// B：与 A 同时抢 event_mu。修复前 A 持锁阻塞在 send，B 会一直拿不到锁。
+	spawn fn [mut sess, ch, unsub_done] () {
+		sess.unsubscribe('Page.loadEventFired', ch)
+		unsub_done <- true
+	}()
+	mut unsub_progressed := false
+	select {
+		_ := <-unsub_done {
+			unsub_progressed = true
+		}
+		500 * time.millisecond {
+		}
+	}
+	// 抽掉一个槽位把 A 放行 —— 无论上面是否超时，测试都能退出。
+	select {
+		_ := <-ch {
+		}
+		2 * time.second {
+			panic('dispatch_event never returned after the channel was drained')
+		}
+	}
+	select {
+		_ := <-dispatch_done {
+		}
+		3 * time.second {
+			panic('dispatch_event never returned')
+		}
+	}
+	if !unsub_progressed {
+		select {
+			_ := <-unsub_done {
+			}
+			3 * time.second {
+				panic('unsubscribe never returned')
+			}
+		}
+	}
+	assert unsub_progressed
+}
+
 fn test_parse_cli_to_ipc_eval_reports_file_read_error() {
 	method, params := parse_cli_to_ipc_with_readers('eval', ['--file', 'missing.js'], false,
 		fake_eval_stdin_reader, failing_eval_file_reader)
@@ -812,7 +944,7 @@ fn test_axref_store_round_trip() {
 		role:            'button'
 		name:            'Submit'
 	})
-	r := axref_get(&store, '@e1') or { panic(err) }
+	r := axref_get(&store, '@e1') or { panic('axref @e1 should exist') }
 	assert r.backend_node_id == 101
 	assert r.selector == '.submit'
 	assert r.role == 'button'
@@ -915,8 +1047,7 @@ fn test_server_restart_integration_replaces_running_server() {
 	}
 	assert orig_pid > 0
 
-	restart_result := os.execute('${integration_env_prefix(test_home, test_relay_port,
-		test_ipc_port)} ${shell_quote(bin_path)} server restart')
+	restart_result := os.execute('${integration_env_prefix(test_home, test_relay_port, test_ipc_port)} ${shell_quote(bin_path)} server restart')
 	assert restart_result.exit_code == 0
 	assert restart_result.output.contains('Server restarted.')
 
@@ -2620,7 +2751,8 @@ fn test_dispatch_event_delivers_to_multiple_subscribers() {
 		_ := <-ch3 {
 			panic('ch3 should not receive Network.requestWillBeSent')
 		}
-		50 * time.millisecond {}
+		50 * time.millisecond {
+		}
 	}
 }
 
@@ -2658,7 +2790,8 @@ fn test_unsubscribe_removes_only_target_channel() {
 		_ := <-ch1 {
 			panic('ch1 should not receive after unsubscribe')
 		}
-		50 * time.millisecond {}
+		50 * time.millisecond {
+		}
 	}
 	evt := <-ch2
 	assert evt.method == 'Page.loadEventFired'
