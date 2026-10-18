@@ -25,6 +25,7 @@ import {
 } from "./authToken";
 
 import type { TabInfo } from "./tabItem";
+import { redactUrl } from "../redact";
 
 type Status =
   | { type: "connecting"; message: string }
@@ -64,7 +65,7 @@ const ConnectApp: React.FC = () => {
           return;
         }
       } catch (e) {
-        handleReject(`Invalid mcpRelayUrl parameter in URL: ${relayUrl}. ${e}`);
+        handleReject(`Invalid mcpRelayUrl parameter in URL: ${redactUrl(relayUrl)}. ${e}`);
         return;
       }
 

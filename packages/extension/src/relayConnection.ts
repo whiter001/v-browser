@@ -14,12 +14,52 @@
  * limitations under the License.
  */
 
-export function debugLog(...args: unknown[]): void {
-  const enabled = true;
-  if (enabled) {
-    // eslint-disable-next-line no-console
-    console.log("[Extension]", ...args);
+import { redactPayload } from "./redact";
+
+const DEBUG_LOGGING_STORAGE_KEY = "debugLogging";
+const DEBUG_LOGGING_GLOBAL_KEY = "__V_BROWSER_DEBUG_LOGGING__";
+
+let _debugLogging: boolean | undefined;
+
+function readDebugLogging(): boolean {
+  // 构建期/测试期的显式开关，优先于 storage。
+  const globalOverride = (globalThis as Record<string, unknown>)[DEBUG_LOGGING_GLOBAL_KEY];
+  if (typeof globalOverride === "boolean") return globalOverride;
+
+  if (_debugLogging !== undefined) return _debugLogging;
+
+  _debugLogging = false; // 默认关闭：诊断日志会打印 CDP 载荷，价值不足以换取泄露风险。
+  try {
+    if (typeof chrome !== "undefined" && chrome.storage?.local) {
+      void chrome.storage.local
+        .get(DEBUG_LOGGING_STORAGE_KEY)
+        .then((result) => {
+          if (typeof result?.[DEBUG_LOGGING_STORAGE_KEY] === "boolean") {
+            _debugLogging = result[DEBUG_LOGGING_STORAGE_KEY];
+          }
+        })
+        .catch(() => {});
+    }
+  } catch {
+    // storage 不可用时保持关闭。
   }
+  return _debugLogging;
+}
+
+export function isDebugLoggingEnabled(): boolean {
+  return readDebugLogging();
+}
+
+export function debugLog(...args: unknown[]): void {
+  if (!readDebugLogging()) return;
+  // 兜底：即使调用点漏改，结构化参数也不会带着凭据进控制台。
+  // eslint-disable-next-line no-console
+  console.log(
+    "[Extension]",
+    ...args.map((arg) =>
+      typeof arg === "object" && arg !== null ? redactPayload(arg) : arg,
+    ),
+  );
 }
 
 type ProtocolCommand = {
@@ -121,7 +161,7 @@ export class RelayConnection {
     params: any,
   ): void {
     if (source.tabId !== this._debuggee.tabId) return;
-    debugLog("Forwarding CDP event:", method, params);
+    debugLog("Forwarding CDP event:", method, redactPayload(params));
     const sessionId = source.sessionId;
     this._sendMessage({
       method: "forwardCDPEvent",
@@ -179,7 +219,7 @@ export class RelayConnection {
       return;
     }
 
-    debugLog("Received message:", message);
+    debugLog("Received message:", redactPayload(message));
 
     const response: ProtocolResponse = {
       id: message.id,
@@ -190,7 +230,7 @@ export class RelayConnection {
       debugLog("Error handling command:", error);
       response.error = error.message;
     }
-    debugLog("Sending response:", response);
+    debugLog("Sending response:", redactPayload(response));
     this._sendMessage(response);
   }
 
@@ -287,7 +327,7 @@ export class RelayConnection {
       );
     if (message.method === "forwardCDPCommand") {
       const { sessionId, method, params } = message.params;
-      debugLog("CDP command:", method, params);
+      debugLog("CDP command:", method, redactPayload(params));
       const debuggerSession: chrome.debugger.DebuggerSession = {
         ...this._debuggee,
         sessionId,

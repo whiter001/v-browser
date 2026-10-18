@@ -15,6 +15,7 @@
  */
 
 import { RelayConnection, debugLog } from "./relayConnection";
+import { redactUrl } from "./redact";
 
 type PageMessage =
   | {
@@ -135,7 +136,7 @@ class TabShareExtension {
   // 先连上 relay，但暂不绑定 tab，等待用户选择或自动选择目标页。
   private async _connectToRelay(selectorTabId: number, mcpRelayUrl: string): Promise<void> {
     try {
-      debugLog(`Connecting to relay at ${mcpRelayUrl}`);
+      debugLog(`Connecting to relay at ${redactUrl(mcpRelayUrl)}`);
       const socket = new WebSocket(mcpRelayUrl);
       await new Promise<void>((resolve, reject) => {
         socket.onopen = () => resolve();
@@ -195,7 +196,7 @@ class TabShareExtension {
     mcpRelayUrl: string,
   ): Promise<void> {
     try {
-      debugLog(`Connecting tab ${tabId} to relay at ${mcpRelayUrl}`);
+      debugLog(`Connecting tab ${tabId} to relay at ${redactUrl(mcpRelayUrl)}`);
       const previousConnection = this._activeConnection;
       const nextConnection = this._pendingTabSelection.get(selectorTabId)?.connection;
       if (!nextConnection) throw new Error("No active MCP relay connection");
