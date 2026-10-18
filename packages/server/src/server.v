@@ -6,6 +6,7 @@ import net
 import os
 import time
 import sync
+import crypto.rand
 
 pub const relay_port = 47978
 pub const ipc_port = 47979
@@ -120,7 +121,8 @@ fn server_version_path() string {
 struct ExtensionConn {
 mut:
 	session    &CdpSession
-	client_ptr voidptr // unsafe &websocket.Client，用于从其他 goroutine 向扩展发消息
+	client_ptr voidptr // unsafe &websocket.Client，用于从其他 goroutine 向扩展发消息，
+	// 同时用作连接身份标识（on_message / on_close 回调里比对用）
 }
 
 // 向已连接的扩展转发一条 WebSocket 消息。
@@ -207,13 +209,25 @@ fn (mut s VBrowserServer) run_ws_server() ! {
 		}
 		mut sess := new_cdp_session(send_fn)
 		mut conn := &ExtensionConn{ session: sess, client_ptr: client_ptr }
+		mut stale_ptr := voidptr(0)
 		s.ext_mu.@lock()
 		// 关闭旧连接
 		if mut old := s.ext_conn {
 			old.session.close()
+			stale_ptr = old.client_ptr
 		}
 		s.ext_conn = conn
 		s.ext_mu.unlock()
+		// 旧连接的 WebSocket 本身也必须关掉，否则它会一直留着 message/close 回调，
+		// 之后再发消息或断开时就会串到新连接上（靠下面回调里的身份校验兜底）。
+		// 必须放在 ext_mu 之外：websocket.Client.close() 会同步触发本文件的
+		// on_close_ref 回调，持锁调用会自死锁。
+		if stale_ptr != 0 && stale_ptr != client_ptr {
+			unsafe {
+				mut stale_client := &websocket.Client(stale_ptr)
+				stale_client.close(1000, 'replaced by a newer extension connection') or {}
+			}
+		}
 		srv_log('Extension connected, waiting for attachToTab...')
 		return true
 	})!
@@ -221,8 +235,18 @@ fn (mut s VBrowserServer) run_ws_server() ! {
 	ws.on_message_ref(fn [mut s] (mut c websocket.Client, msg &websocket.Message, v voidptr) ! {
 		if msg.opcode == .text_frame || msg.opcode == .binary_frame {
 			raw := msg.payload.bytestr()
+			// 身份校验（必须）：旧扩展连接的 on_message / on_close 回调可能晚于新连接的
+			// on_connect 到达。ext_mu 只能保证 ext_conn 不被并发修改，不能保证这个回调
+			// 属于当前连接；不校验就会把旧连接的消息投递给新 session（响应串线）。
+			caller := unsafe { voidptr(&c) }
+			if !s.is_active_conn(caller) {
+				srv_log('Dropped relay message from a stale extension connection')
+				return
+			}
 			extension_id := parse_extension_registration(raw)
 			if extension_id != '' {
+				// 同理，只有当前活动连接发来的注册消息才允许落盘，避免被顶掉的旧连接
+				// 覆盖新连接写入的扩展 id。
 				save_extension_id(extension_id) or {
 					srv_log_err('Failed to persist extension id ${extension_id}: ${err}')
 					return
@@ -232,20 +256,35 @@ fn (mut s VBrowserServer) run_ws_server() ! {
 			}
 			s.ext_mu.@lock()
 			if mut conn := s.ext_conn {
-				conn.session.on_message(raw)
+				if conn.client_ptr == caller {
+					conn.session.on_message(raw)
+				} else {
+					srv_log('Dropped relay message from a stale extension connection')
+				}
 			}
 			s.ext_mu.unlock()
 		}
 	}, unsafe { voidptr(&s) })
 
 	ws.on_close_ref(fn [mut s] (mut c websocket.Client, code int, reason string, v voidptr) ! {
-		srv_log('Extension disconnected: code=${code} reason=${reason}')
+		// 身份校验（必须）：被顶掉的旧连接 close 回调晚到时，不能去关新连接的 session，
+		// 也不能把 ext_conn 置空——否则新连接还挂着 WebSocket，服务端却认为没有扩展。
+		caller := unsafe { voidptr(&c) }
+		mut closed_active := false
 		s.ext_mu.@lock()
 		if mut conn := s.ext_conn {
-			conn.session.close()
+			if conn.client_ptr == caller {
+				conn.session.close()
+				s.ext_conn = none
+				closed_active = true
+			}
 		}
-		s.ext_conn = none
 		s.ext_mu.unlock()
+		if closed_active {
+			srv_log('Extension disconnected: code=${code} reason=${reason}')
+		} else {
+			srv_log('Extension disconnected: code=${code} reason=${reason} (stale connection, ignored)')
+		}
 	}, unsafe { voidptr(&s) })
 
 	srv_log('WebSocket relay listening on ws://127.0.0.1:${relay}')
@@ -261,11 +300,26 @@ fn parse_extension_registration(raw string) string {
 	return cdp_extract_str(msg.params, 'extensionId').trim_space()
 }
 
+// is_active_conn 判断 caller（回调里的 websocket.Client 地址）是否就是当前的活动扩展连接。
+// 旧连接被新连接顶掉后，它的 message/close 回调仍可能晚到；ext_mu 只能保证 ext_conn
+// 不被并发修改，保证不了回调属于当前连接，所以 relay 回调都要做这个身份比对。
+fn (mut s VBrowserServer) is_active_conn(caller voidptr) bool {
+	s.ext_mu.@lock()
+	mut active := false
+	if cur := s.ext_conn {
+		active = cur.client_ptr == caller
+	}
+	s.ext_mu.unlock()
+	return active
+}
+
 // 启动本地 IPC 服务器，供 CLI 与 relay 侧交互。
 fn (mut s VBrowserServer) run_ipc_server() {
 	ipc := configured_ipc_port()
-	mut listener := net.listen_tcp(.ip, ':${ipc}') or {
-		srv_log_err('IPC listen failed on :${ipc}: ${err}')
+	// 必须显式绑 127.0.0.1：':port' 是通配地址，会监听 0.0.0.0 上所有网卡，
+	// 让同网段的任意主机都能直连 IPC 驱动浏览器。
+	mut listener := net.listen_tcp(.ip, '127.0.0.1:${ipc}') or {
+		srv_log_err('IPC listen failed on 127.0.0.1:${ipc}: ${err}')
 		return
 	}
 	srv_log('IPC server listening on 127.0.0.1:${ipc}')
@@ -290,6 +344,16 @@ fn (mut s VBrowserServer) run_ipc_server() {
 // 处理单个 IPC 连接，按行读取请求并逐条回复。
 fn (mut s VBrowserServer) handle_ipc_client(mut conn net.TcpConn) {
 	defer { conn.close() or {} }
+	// 二次防线：即便绑定地址被改动，非 loopback 的对端也一律拒绝。
+	// 取不到 peer ip 说明连接来路不明，同样按拒绝处理。
+	peer := conn.peer_ip() or {
+		srv_log_err('IPC connection without a resolvable peer address; rejected.')
+		return
+	}
+	if !is_loopback_ip(peer.str()) {
+		srv_log_err('IPC connection from non-loopback peer ${peer.str()}; rejected.')
+		return
+	}
 	conn.set_read_timeout(120 * time.second)
 
 	mut buf := []u8{len: 8192}
@@ -431,22 +495,26 @@ fn (mut s VBrowserServer) get_session() !&CdpSession {
 
 fn load_or_create_token() !string {
 	dir := os.dir(token_path())
-	os.mkdir_all(dir) or {}
+	os.mkdir_all(dir) or {
+		return error('could not create token dir ${dir}: ${err}')
+	}
+	// token 文件是凭据，umask 022 下默认可被同机其他用户读取，这里显式收紧。
+	os.chmod(dir, 0o700) or {}
 	if os.exists(token_path()) {
 		t := os.read_file(token_path()) or { '' }
 		if t.trim_space().len >= 16 {
+			// 旧版本落盘时没设权限，这里补一次修正。
+			os.chmod(token_path(), 0o600) or {}
 			return t.trim_space()
 		}
 	}
-	// 简易伪随机 token（生产可换 crypto random）
-	now := time.now().unix_milli()
-	raw := '${now}-${os.getpid()}-vbrowser'
-	mut h := u64(0)
-	for b in raw.bytes() {
-		h = h * 31 + u64(b)
-	}
-	token := h.hex()
-	os.write_file(token_path(), token)!
+	// 必须用密码学随机：时间戳 + PID + 固定后缀是可枚举的，猜到启动时间就能推算出 token。
+	raw := rand.bytes(32)!
+	token := raw.hex()
+	// os.write_file 无法指定权限，用 open_file 以 0600 创建/截断。
+	mut f := os.open_file(token_path(), 'w', 0o600)!
+	f.write_string(token)!
+	f.close()
 	return token
 }
 

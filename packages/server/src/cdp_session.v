@@ -317,8 +317,10 @@ fn (mut s CdpSession) send_bridge_command_to(method string, params_json string, 
 					ch <- ProtocolResponse{
 						id:  id
 						err: 'timeout'
-					} {}
-					else {}
+					} {
+					}
+					else {
+					}
 				}
 			} else {
 				s.pending_mu.unlock()
@@ -387,8 +389,10 @@ fn (mut s CdpSession) send_command_to(method string, params_json string, session
 					ch <- ProtocolResponse{
 						id:  id
 						err: 'timeout'
-					} {}
-					else {}
+					} {
+					}
+					else {
+					}
 				}
 			} else {
 				s.pending_mu.unlock()
@@ -880,14 +884,16 @@ fn (mut s CdpSession) on_message(raw string) {
 }
 
 fn (mut s CdpSession) dispatch_event(method string, evt ProtocolResponse) {
-	// #40: 去掉 .clone() 改在锁内迭代 + 用 defer 释放锁。channel cap=32 在
-	// buffer 未满时 send 是非阻塞，所以锁持有时间极短（只是写 buffer 指针）。
+	// 必须「先出锁、再发送」：channel cap=32 在 buffer 满时 send 会阻塞
+	// （Fetch.requestPaused 之类的关键事件不能静默丢弃）。如果持锁发送，
+	// 订阅方读得慢导致阻塞时，unsubscribe() / clear_event_subs() 就拿不到锁，
+	// 永远无法消费掉积压事件把阻塞解开 —— 随后所有 CDP 响应也无法分发，
+	// 整个 session 卡死到请求超时。所以锁内只拷贝订阅列表，锁外再发。
 	s.event_mu.@lock()
-	defer { s.event_mu.unlock() }
-	if method in s.event_subs {
-		for sub in s.event_subs[method] {
-			sub <- evt
-		}
+	subs := s.event_subs[method].clone()
+	s.event_mu.unlock()
+	for sub in subs {
+		sub <- evt
 	}
 }
 
@@ -1535,7 +1541,8 @@ fn (mut s CdpSession) queue_loading_finished(request_id string) {
 	// on_message 这同一条 goroutine 分发；若这里阻塞在满队列上，就会出现
 	// worker 等响应、on_message 等队列空位的死锁。队列满时丢弃任务即可。
 	select {
-		s.body_task_ch <- request_id {}
+		s.body_task_ch <- request_id {
+		}
 		else {
 			eprintln('[network] body task queue full, dropping ${request_id}')
 		}
