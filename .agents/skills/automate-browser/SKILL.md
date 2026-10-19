@@ -17,7 +17,7 @@ description: 面向 AI Agent 的浏览器自动化 CLI 工具，适合网页操�
 | **文件下载** | `download`, `upload` |
 | **多标签页** | `tab list`, `tab new`, `tab switch` |
 | **网络调试** | `network requests`, `network hook`, `network inspect` |
-| **Server 管理** | `server start`, `server stop`, `server restart` |
+| **Server 管理** | `server bg`, `server stop`, `server restart` |
 | **状态保存** | `state save`, `state load` |
 
 ---
@@ -58,7 +58,7 @@ v -o ./v-browser ./src
 | `v-browser get text <sel>`   | 获取文本内容（需要 selector）                      |
 | `v-browser screenshot [path]`| 截图                                               |
 | `v-browser close`             | 关闭浏览器                                         |
-| `v-browser server start`      | 启动本地 daemon                                    |
+| `v-browser server bg`          | 后台启动本地 daemon（独立进程，不占用当前 shell，`start` 为别名） |
 | `v-browser server stop`       | 停止本地 daemon                                    |
 | `v-browser server restart`    | 重启本地 daemon                                    |
 

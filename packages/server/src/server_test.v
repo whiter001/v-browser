@@ -1064,6 +1064,40 @@ fn test_server_restart_integration_replaces_running_server() {
 		5 * time.second)
 }
 
+fn test_server_bg_integration_starts_detached_server() {
+	$if windows {
+		assert true
+		return
+	}
+	bin_path := build_integration_cli_binary() or { panic(err) }
+	test_home := new_integration_test_home('bg')
+	test_relay_port, test_ipc_port := integration_ports(5)
+	defer {
+		cleanup_integration_server(bin_path, test_home, test_relay_port, test_ipc_port)
+		os.rmdir_all(test_home) or {}
+	}
+
+	start_result :=
+		os.execute('${integration_env_prefix(test_home, test_relay_port, test_ipc_port)} ${shell_quote(bin_path)} server bg')
+	assert start_result.exit_code == 0
+	assert start_result.output.contains('server started in background')
+
+	pid := wait_for_server_pid_file(test_home, 0, 8 * time.second)
+	assert pid > 0
+	assert is_integration_process_running(pid)
+	assert wait_for_integration_port_state(test_relay_port, true, 5 * time.second)
+	assert wait_for_integration_port_state(test_ipc_port, true, 5 * time.second)
+
+	// 再次 bg 应该是幂等的：不会另起进程，只报告已在运行。
+	again_result :=
+		os.execute('${integration_env_prefix(test_home, test_relay_port, test_ipc_port)} ${shell_quote(bin_path)} server bg')
+	assert again_result.exit_code == 0
+	assert again_result.output.contains('server already running')
+	assert (os.read_file(os.join_path(test_home, '.v-browser', 'server.pid')) or {
+		''
+	}).trim_space().int() == pid
+}
+
 fn test_server_version_mismatch_integration_auto_restarts_server() {
 	$if windows {
 		assert true

@@ -1,6 +1,9 @@
 // main.v — v-browser CLI 入口
 // 用法:
-//   v-browser server          — 启动中继服务（守护模式）
+//   v-browser server          — 启动中继服务（前台）
+//   v-browser server bg       — 后台独立进程启动中继服务，不占用当前 shell
+//   v-browser server stop     — 停止中继服务
+//   v-browser server restart  — 重启中继服务
 //   v-browser connect         — 触发 attachToTab（需要打开过 Chrome 并连接中继服务）
 //   v-browser status          — 检查中继服务是否运行 + 是否已连接扩展
 //   v-browser open <url>      — 导航到指定 URL
@@ -78,6 +81,13 @@ fn main() {
 						exit(1)
 					}
 					eprintln('[v-browser] Server restarted.')
+					return
+				}
+				'bg', 'start' {
+					handle_server_start(json_output) or {
+						print_error(err.msg(), json_output)
+						exit(1)
+					}
 					return
 				}
 				else {}
@@ -301,11 +311,15 @@ fn start_server_daemon() ! {
 	if executable == '' {
 		return error('could not determine current executable path')
 	}
+	// Windows 不走 pueue：它依赖常驻的 pueued 守护进程，且在 Windows 上经 PowerShell
+	// 执行任务、引号规则与 POSIX 不一致，历史上多次导致 server 根本拉不起来；
+	// 守护进程一旦退出，pueue 客户端还会阻塞在重连上，让 CLI 整个卡死。
+	$if windows {
+		start_server_detached_windows(executable)!
+		return
+	}
 	result := os.execute(build_pueue_add_command(executable))
 	if result.exit_code != 0 {
-		$if windows {
-			return error('failed to enqueue v-browser server with pueue: ${result.output}')
-		}
 		fallback := os.execute('nohup ${shell_quote(executable)} server >> ${shell_quote(server_log_path())} 2>&1 &')
 		if fallback.exit_code != 0 {
 			return error('failed to start v-browser server: ${result.output}\nfallback failed: ${fallback.output}')
@@ -319,6 +333,24 @@ fn start_server_daemon() ! {
 	}
 }
 
+// 分离启动 server 守护进程（Windows），不依赖 pueue 守护进程。
+fn start_server_detached_windows(executable string) ! {
+	// 必须用 os.Process 而非 os.execute：os.execute 会一直读取管道直到 EOF，而 V 在
+	// Windows 上以 bInheritHandles=TRUE 创建子进程，管道句柄会被 server 继承，
+	// server 又永不退出，于是 CLI 永久挂死（无论中间是否套了 cmd / PowerShell）。
+	// os.Process 的 run() 只负责启动、不等待，正好用来拉起常驻进程。
+	mut p := os.new_process(executable)
+	p.set_args(['server'])
+	p.set_work_folder(os.dir(executable))
+	p.create_no_window = true
+	p.run()
+	if p.status != .running && p.status != .not_started {
+		return error('failed to start v-browser server: ${p.err}')
+	}
+	// 未经过 pueue，没有任务号可记；留空表示“无 pueue 任务”。
+	os.write_file(server_task_path(), '') or {}
+}
+
 // 停止旧 server 并重新拉起当前版本的 daemon。
 fn restart_server_daemon() ! {
 	_ := handle_server_stop(false, true, false) or {
@@ -328,7 +360,8 @@ fn restart_server_daemon() ! {
 	wait_for_server_ready()!
 }
 
-// 构造 pueue 任务命令，并保留当前可执行文件所在目录。
+// 构造 pueue 任务命令，并保留当前可执行文件所在目录。仅用于 Unix：Windows 走
+// start_server_detached_windows，不经过 pueue。
 fn build_pueue_add_command(executable string) string {
 	work_dir := os.dir(executable)
 	return 'pueue add --immediate --print-task-id --label ${host_shell_quote('v-browser server')} --working-directory ${host_shell_quote(work_dir)} --escape ${host_shell_quote(executable)} server'
@@ -515,6 +548,32 @@ fn is_port_listening(port int) bool {
 }
 
 // ─── 启动服务 ────────────────────────────────────────────────
+// 后台拉起 server：已在运行则直接返回，版本过旧则先停再拉，命令本身立即退出，
+// 不占用调用方 shell（Windows 用分离进程，Unix 用 pueue，无 pueue 时回退 nohup）。
+fn handle_server_start(json_output bool) ! {
+	if can_reach_ipc_server() {
+		if server_runtime_version_matches() {
+			report_server_start('server already running', json_output)
+			return
+		}
+		restart_server_daemon()!
+		report_server_start('server started in background', json_output)
+		return
+	}
+	start_server_daemon()!
+	wait_for_server_ready()!
+	report_server_start('server started in background', json_output)
+}
+
+// 按 JSON 或普通文本输出 server 后台启动结果。
+fn report_server_start(message string, json_output bool) {
+	if json_output {
+		println('{"ok":true,"result":${json_str(message)}}')
+	} else {
+		eprintln('[v-browser] ${message} (pid ${read_server_pid()}).')
+	}
+}
+
 // 启动 server 主循环，并在失败时直接退出。
 fn run_server() {
 	mut s := new_server() or {
