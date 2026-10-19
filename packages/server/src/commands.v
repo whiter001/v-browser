@@ -6,6 +6,8 @@ import os
 import time
 import encoding.base64
 import strings
+import sync
+import rand
 
 struct DevicePreset {
 	name       string
@@ -131,12 +133,34 @@ fn build_scoped_runtime_js(mut sess CdpSession, body string) string {
 	return '(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; return (function(document, window){ ${body} })(doc, win); })()'
 }
 
+// evaluate_check_exception 检查 Runtime.evaluate 响应里的 exceptionDetails。
+// 页面脚本抛异常时 CDP 仍然返回 result（只是带 exceptionDetails），
+// 不检查就会把「抛了异常」当成「执行成功但没有返回值」。
+// 解析统一走 cdp_exception_detail（与 resolver.v 的调用点共用同一实现），
+// 避免两处对 "exceptionDetails":null / {} 的判断不一致。
+fn evaluate_check_exception(result string) ! {
+	detail := cdp_exception_detail(result)
+	// 空详情（字段缺失 / null / {}）表示这次执行没有异常。
+	if detail == '' || detail == '{}' {
+		return
+	}
+	// 详情里没有可读文案时用固定提示，不要把原始 JSON 抛给用户。
+	message := if detail.starts_with('{') { 'javascript exception' } else { detail }
+	return error(message)
+}
+
+// evaluate_result_value 统一解析 Runtime.evaluate 的响应：
+// 先看异常详情，再取返回值。
+fn evaluate_result_value(result string) !string {
+	evaluate_check_exception(result)!
+	return cdp_extract_value_from_result(cdp_extract_obj_key(result, '"result":'))
+}
+
 // evaluate_bool_js 在页面上下文中执行 JavaScript 并返回布尔值结果
 // 用于检查元素可见性、可操作性等条件
 fn evaluate_bool_js(mut sess CdpSession, js string) !bool {
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
-	result := cdp_extract_obj_key(resp.result, '"result":')
-	val := cdp_extract_value_from_result(result)
+	val := evaluate_result_value(resp.result)!
 	return val == 'true'
 }
 
@@ -148,8 +172,7 @@ fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) 
 	scoped_expr := build_scoped_runtime_js(mut sess, 'return eval(JSON.parse(${js_str(json_str(expr))}));')
 	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":${await_promise}}'
 	resp := sess.send_command('Runtime.evaluate', p)!
-	result := cdp_extract_obj_key(resp.result, '"result":')
-	return cdp_extract_value_from_result(result)
+	return evaluate_result_value(resp.result)
 }
 
 // Short-timeout (3 s) variant for use during dialog-triggering actions to avoid
@@ -161,8 +184,7 @@ fn eval_scoped_expression_short(mut sess CdpSession, expr string) !string {
 	scoped_expr := build_scoped_runtime_js(mut sess, 'return eval(JSON.parse(${js_str(json_str(expr))}));')
 	p := '{"expression":${json_str(scoped_expr)},"returnByValue":true,"awaitPromise":false}'
 	resp := sess.send_command_to('Runtime.evaluate', p, '', 3 * time.second)!
-	result := cdp_extract_obj_key(resp.result, '"result":')
-	return cdp_extract_value_from_result(result)
+	return evaluate_result_value(resp.result)
 }
 
 // Run element action with a short (3 s) timeout — used when the action may
@@ -244,6 +266,8 @@ fn build_action_point_query_js(mut sess CdpSession, locator_js string) string {
 fn resolve_action_point_by_js(mut sess CdpSession, locator_js string) !ResolvedElement {
 	js := build_action_point_query_js(mut sess, locator_js)
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
+	// 页面脚本抛异常时不能当成「元素不可操作」
+	evaluate_check_exception(resp.result)!
 	result_obj := cdp_extract_obj_key(resp.result, '"result":')
 	value_obj := cdp_extract_obj_key(result_obj, '"value":')
 	if value_obj == '' || value_obj == 'null' {
@@ -308,10 +332,14 @@ fn pointer_action_for_selector(mut sess CdpSession, sel string, action string) !
 // resolve_action_point_by_selector 单次 eval 完成：querySelector/XPath + 可见性 +
 // 滚动到视口中央 + 读 rect。复用 build_action_point_query_js 的合并逻辑。
 fn resolve_action_point_by_selector(mut sess CdpSession, sel string) !ResolvedElement {
-	locator_js := build_element_scope_js(mut sess, sel, 'if(!el) return null;')
+	// build_element_scope_js 生成的是一个 IIFE，函数体必须显式 return el，
+	// 否则表达式求值得到 undefined，鼠标回退（click/dblclick/hover）全部失效。
+	locator_js := build_element_scope_js(mut sess, sel, 'if(!el) return null; return el;')
 	// build_action_point_query_js 会拼上 visibility / scrollIntoView / rect
 	js := build_action_point_query_js(mut sess, locator_js)
 	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}')!
+	// 页面脚本抛异常时不能当成「元素不可操作」
+	evaluate_check_exception(resp.result)!
 	result_obj := cdp_extract_obj_key(resp.result, '"result":')
 	value_obj := cdp_extract_obj_key(result_obj, '"value":')
 	if value_obj == '' || value_obj == 'null' {
@@ -543,11 +571,23 @@ fn cmd_open(mut sess CdpSession, params string) string {
 	load_ch := sess.subscribe('Page.loadEventFired')
 	defer { sess.unsubscribe('Page.loadEventFired', load_ch) }
 
-	sess.send_command('Page.navigate', '{"url":${json_str(url)}}') or { return 'ERROR:${err}' }
+	resp := sess.send_command('Page.navigate', '{"url":${json_str(url)}}') or { return 'ERROR:${err}' }
+	// 导航失败时 Page.navigate 会返回 errorText，必须报错而不是当作成功
+	error_text := cdp_extract_str(resp.result, 'errorText')
+	if error_text != '' {
+		return 'ERROR:navigation failed: ${error_text}'
+	}
 	// 等待页面加载完成（最多 30s）
+	mut loaded := false
 	select {
-		_ := <-load_ch {}
-		30 * time.second {}
+		_ := <-load_ch {
+			loaded = true
+		}
+		30 * time.second {
+		}
+	}
+	if !loaded {
+		return 'ERROR:timeout waiting for page load: ${url}'
 	}
 	clear_document_context(mut sess)
 	return json_str('navigated to ${url}')
@@ -567,6 +607,19 @@ fn cmd_close(mut sess CdpSession) string {
 	return 'null'
 }
 
+// normalize_screenshot_format 校验截图格式白名单。
+// format 会拼进 Page.captureScreenshot 的方法参数，必须限制成已知格式，
+// 否则可以注入改写整个 CDP 方法调用。
+fn normalize_screenshot_format(format string) !string {
+	f := format.trim_space().to_lower()
+	match f {
+		'png' { return 'png' }
+		'jpeg' { return 'jpeg' }
+		'webp' { return 'webp' }
+		else { return error('unsupported screenshot format: ${format}') }
+	}
+}
+
 // cmd_screenshot 截取当前页面截图
 // 支持参数：
 //   - path: 保存路径
@@ -578,7 +631,11 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 	path := cdp_extract_str(params, 'path')
 	full := cdp_extract_str(params, 'full') == 'true'
 	format := cdp_extract_str(params, 'format')
-	fmt := if format != '' { format } else { 'png' }
+	fmt := if format != '' {
+		normalize_screenshot_format(format) or { return 'ERROR:${err}' }
+	} else {
+		'png'
+	}
 	quality := cdp_extract_int(params, '"quality":')
 	annotate := cdp_extract_bool(params, 'annotate')
 	mut max_labels := cdp_extract_int(params, 'maxLabels')
@@ -590,7 +647,7 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 		return cmd_screenshot_annotate(mut sess, params, path, fmt, full, max_labels)
 	}
 
-	mut p := '{"format":"${fmt}","captureBeyondViewport":${full}'
+	mut p := '{"format":${json_str(fmt)},"captureBeyondViewport":${full}'
 	if quality > 0 {
 		p += ',"quality":${quality}'
 	}
@@ -646,7 +703,9 @@ fn cmd_screenshot_annotate(mut sess CdpSession, _params string, path string, fmt
 }
 
 fn capture_screenshot_base64(mut sess CdpSession, format string, full bool, selector string) !string {
-	mut p := '{"format":"${format}"'
+	// 格式同样要过白名单，避免注入改写 CDP 方法
+	safe_format := normalize_screenshot_format(format)!
+	mut p := '{"format":${json_str(safe_format)}'
 	if selector != '' {
 		mut el := resolve_selector(mut sess, selector)!
 		scroll_resolved_element_into_view(mut sess, selector, el)!
@@ -840,16 +899,61 @@ fn write_dom_download_result(raw string, target_path string) !string {
 	if data == '' {
 		return error('download payload missing data')
 	}
-	out_path := if target_path != '' {
-		target_path
-	} else {
-		os.join_path(os.temp_dir(), if filename != '' { filename } else { 'download.bin' })
-	}
-	parent_dir := os.dir(out_path)
-	if parent_dir != '' {
-		os.mkdir_all(parent_dir)!
-	}
+	out_path := resolve_dom_download_path(filename, target_path)!
 	os.write_file_array(out_path, base64.decode(data))!
+	return out_path
+}
+
+// sanitize_download_filename 把文件名压成安全的单段文件名。
+// 只做字符层面的清洗，路径语义的拒绝在 resolve_dom_download_path 里做。
+fn sanitize_download_filename(name string) string {
+	mut out := []u8{cap: name.len}
+	for ch in name {
+		if ch < 32 || ch == 127 {
+			continue
+		}
+		if ch in [`/`, `\\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`] {
+			continue
+		}
+		out << ch
+	}
+	mut result := out.bytestr().trim_space()
+	if result == '' || result == '.' || result == '..' {
+		return 'download.bin'
+	}
+	if result.len > 120 {
+		result = result[..120]
+	}
+	return result
+}
+
+// resolve_dom_download_path 计算 DOM 下载的落盘路径。
+// 网页给出的文件名不可信：绝对路径、.. 与路径分隔符一律拒绝；
+// 合法文件名只作元数据保留，实际落盘使用独立下载目录内生成的安全文件名，
+// 并校验规范化后的路径仍在下载目录内。
+fn resolve_dom_download_path(raw_filename string, target_path string) !string {
+	if target_path != '' {
+		// 调用方显式给的目标路径由用户自己负责
+		parent_dir := os.dir(target_path)
+		if parent_dir != '' {
+			os.mkdir_all(parent_dir)!
+		}
+		return target_path
+	}
+	name := if raw_filename.trim_space() == '' { 'download.bin' } else { raw_filename.trim_space() }
+	if os.is_abs_path(name) || name.contains('/') || name.contains('\\') || name.contains('..') || name.contains(':') {
+		return error('unsafe download filename: ${raw_filename}')
+	}
+	// 原子创建私有目录，避免时间戳碰撞及预先放置的符号链接。
+	download_dir := os.join_path(os.temp_dir(), 'v_browser_dom_download_${rand.uuid_v4()}')
+	os.mkdir(download_dir)!
+	os.chmod(download_dir, 0o700)!
+	out_path := os.join_path(download_dir, sanitize_download_filename(name))
+	norm_dir := os.real_path(download_dir)
+	norm_path := os.norm_path(os.join_path(norm_dir, os.file_name(out_path)))
+	if !norm_path.starts_with(norm_dir + os.path_separator) {
+		return error('download path escaped download dir: ${out_path}')
+	}
 	return out_path
 }
 
@@ -959,7 +1063,8 @@ fn wait_for_download(mut sess CdpSession, download_dir string, target_path strin
 					return error('download canceled')
 				}
 			}
-			250 * time.millisecond {}
+			250 * time.millisecond {
+			}
 		}
 		fallback_path := detect_completed_download_in_dir(download_dir)
 		if fallback_path != '' {
@@ -1031,7 +1136,8 @@ fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
 			ch := sess.subscribe('Page.loadEventFired')
 			defer { sess.unsubscribe('Page.loadEventFired', ch) }
 			select {
-				_ := <-ch {}
+				_ := <-ch {
+				}
 				30 * time.second {
 					return error('timeout waiting for load')
 				}
@@ -1041,7 +1147,8 @@ fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
 			ch := sess.subscribe('Page.domContentEventFired')
 			defer { sess.unsubscribe('Page.domContentEventFired', ch) }
 			select {
-				_ := <-ch {}
+				_ := <-ch {
+				}
 				30 * time.second {
 					return error('timeout waiting for domcontentloaded')
 				}
@@ -1094,7 +1201,8 @@ fn navigate_and_wait(mut sess CdpSession, url string, state string) ! {
 		}
 	}
 	select {
-		_ := <-ch {}
+		_ := <-ch {
+		}
 		30 * time.second {
 			return error('timeout waiting for ${state}')
 		}
@@ -1664,10 +1772,10 @@ fn try_pointer_action(mut sess CdpSession, sel string, action string) TryResult 
 
 fn dispatch_pointer_action(mut sess CdpSession, sel string, action string) string {
 	body := match action {
-		'click'    { build_click_action_body() }
+		'click' { build_click_action_body() }
 		'dblclick' { build_dblclick_action_body() }
-		'hover'    { build_hover_action_body() }
-		else       { return 'ERROR:unknown pointer action: ${action}' }
+		'hover' { build_hover_action_body() }
+		else { return 'ERROR:unknown pointer action: ${action}' }
 	}
 	dom_result := try_run_element_action(mut sess, sel, body)
 	if dom_result.ok {
@@ -1872,11 +1980,12 @@ fn dispatch_key(mut sess CdpSession, key string, typ string, text string) ! {
 	if parts.len > 1 {
 		actual_key = parts.last()
 		for mod in parts[..parts.len - 1] {
+			// CDP 规范里的修饰键位掩码：Alt=1、Ctrl=2、Meta=4、Shift=8
 			modifiers |= match mod.to_lower() {
 				'alt' { 1 }
-				'control', 'ctrl' { 4 }
-				'meta', 'command' { 8 }
-				'shift' { 2 }
+				'control', 'ctrl' { 2 }
+				'meta', 'command' { 4 }
+				'shift' { 8 }
 				else { 0 }
 			}
 		}
@@ -1927,9 +2036,11 @@ fn cmd_select(mut sess CdpSession, params string) string {
 		return 'ERROR:missing selector'
 	}
 	js := build_element_scope_js(mut sess, sel, 'if(!el) return false; el.value=${js_str(value)}; el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true})); return true;')
-	sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)}}') or {
 		return 'ERROR:${err}'
 	}
+	// 页面脚本抛异常时必须报错，不能当成选择成功
+	evaluate_result_value(resp.result) or { return 'ERROR:${err}' }
 	return 'null'
 }
 
@@ -2011,16 +2122,27 @@ fn cmd_drag(mut sess CdpSession, params string) string {
 	tgt_el := resolve_selector(mut sess, tgt) or { return 'ERROR:tgt: ${err}' }
 
 	// mousePressed → mouseMoved (steps) → mouseReleased
-	sess.send_command('Input.dispatchMouseEvent', '{"type":"mousePressed","x":${src_el.x},"y":${src_el.y},"button":"left","clickCount":1}') or {}
+	// 各阶段的 CDP 错误必须往外抛，否则拖拽失败会被当成成功。
+	sess.send_command('Input.dispatchMouseEvent', '{"type":"mousePressed","x":${src_el.x},"y":${src_el.y},"button":"left","clickCount":1}') or {
+		return 'ERROR:${err}'
+	}
 	// 分 10 步移动
 	for step in 1 .. 11 {
 		t := f64(step) / 10.0
 		mx := src_el.x + (tgt_el.x - src_el.x) * t
 		my := src_el.y + (tgt_el.y - src_el.y) * t
-		sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseMoved","x":${mx},"y":${my},"button":"left"}') or {}
+		sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseMoved","x":${mx},"y":${my},"button":"left"}') or {
+			// 已经按下鼠标，中途失败要尽力补发释放事件，避免页面一直处于按下状态
+			sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseReleased","x":${mx},"y":${my},"button":"left"}') or {}
+			return 'ERROR:${err}'
+		}
 		time.sleep(10 * time.millisecond)
 	}
-	sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseReleased","x":${tgt_el.x},"y":${tgt_el.y},"button":"left"}') or {}
+	sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseReleased","x":${tgt_el.x},"y":${tgt_el.y},"button":"left"}') or {
+		message := err.msg()
+		sess.send_command('Input.dispatchMouseEvent', '{"type":"mouseReleased","x":${tgt_el.x},"y":${tgt_el.y},"button":"left"}') or {}
+		return 'ERROR:${message}'
+	}
 	return 'null'
 }
 
@@ -2200,10 +2322,12 @@ fn cmd_wait(mut sess CdpSession, params string) string {
 		time.sleep(ms * time.millisecond)
 		return 'null'
 	}
-	// wait --download
+	// wait --download：只有请求里带 download 字段才走下载等待，
+	// 否则 --stable --timeout 会被误判成下载等待。
+	has_download := cdp_extract_obj_key(params, '"download":') != ''
 	download_path := cdp_extract_str(params, 'download')
 	timeout_ms := cdp_extract_int(params, '"timeout":')
-	if download_path != '' || timeout_ms > 0 {
+	if has_download {
 		download_dir := unique_download_dir()
 		timeout := if timeout_ms > 0 { timeout_ms } else { 30000 }
 		mode := ensure_download_behavior(mut sess, download_dir) or { return 'ERROR:${err}' }
@@ -2295,7 +2419,8 @@ fn wait_load(mut sess CdpSession, state string) string {
 	ch := sess.subscribe(event)
 	defer { sess.unsubscribe(event, ch) }
 	select {
-		_ := <-ch {}
+		_ := <-ch {
+		}
 		30 * time.second {
 			return 'ERROR:timeout waiting for ${state}'
 		}
@@ -3182,6 +3307,294 @@ fn cmd_storage(mut sess CdpSession, params string) string {
 	return json_str(cdp_extract_value_from_result(result))
 }
 
+// ─── Fetch 拦截（route + HTTP 基本认证）────────────────────────────
+//
+// route 与 HTTP 基本认证都落在 CDP 的 Fetch 域：Fetch.enable 的参数
+// （patterns / handleAuthRequests）会被后一次调用整体覆盖，
+// 因此两者必须合并成一次 Fetch.enable 下发，并由同一个消费者协程
+// 统一处理 Fetch.requestPaused 与 Fetch.authRequired 两种事件：
+//   - requestPaused：按 route 规则 abort / fulfill / continue；
+//     没有 route 规则时也必须 continueRequest，否则请求会一直挂在 Fetch 队列里。
+//   - authRequired：只对目标 origin 回 ProvideCredentials，
+//     其它 origin 一律交回浏览器默认处理，凭据不会外泄给第三方站点。
+//
+// CdpSession 定义在 cdp_session.v（本次不允许修改），加不了新字段，
+// 所以这里用函数级 static 表按会话地址保存 Fetch 配置：
+// static 变量不依赖 -enable-globals，且进程内唯一。
+
+struct FetchRouteConfig {
+mut:
+	active  bool
+	pattern string
+	abort   bool
+	body    string
+}
+
+struct FetchAuthConfig {
+mut:
+	active   bool
+	username string
+	password string
+	origin   string
+}
+
+struct FetchSessionConfig {
+mut:
+	route                  FetchRouteConfig
+	auth                   FetchAuthConfig
+	interceptor_generation int
+	interceptor_running    bool
+	paused_ch              chan ProtocolResponse
+	auth_ch                chan ProtocolResponse
+	stop_ch                chan bool
+}
+
+@[unsafe]
+fn fetch_config_table() &map[u64]FetchSessionConfig {
+	mut static table := &map[u64]FetchSessionConfig{}
+	return table
+}
+
+@[unsafe]
+fn fetch_config_mutex() &sync.Mutex {
+	mut static m := &sync.Mutex{}
+	return m
+}
+
+// fetch_session_key 用会话对象地址作为会话标识。
+fn fetch_session_key(mut sess CdpSession) u64 {
+	return unsafe { u64(voidptr(&sess.next_id)) }
+}
+
+// fetch_config_snapshot 读取当前会话的 Fetch 配置快照。
+fn fetch_config_snapshot(mut sess CdpSession) FetchSessionConfig {
+	key := fetch_session_key(mut sess)
+	unsafe {
+		fetch_config_mutex().lock()
+		cfg := fetch_config_table()[key]
+		fetch_config_mutex().unlock()
+		return cfg
+	}
+}
+
+// fetch_config_update 修改当前会话的 Fetch 配置。
+fn fetch_config_update(mut sess CdpSession, mutator fn (mut FetchSessionConfig)) {
+	key := fetch_session_key(mut sess)
+	unsafe {
+		fetch_config_mutex().lock()
+		mut cfg := fetch_config_table()[key]
+		mutator(mut cfg)
+		fetch_config_table()[key] = cfg
+		fetch_config_mutex().unlock()
+	}
+}
+
+// fetch_config_set_route 写入 route 拦截规则。
+fn fetch_config_set_route(mut sess CdpSession, pattern string, abort bool, body string) {
+	fetch_config_update(mut sess, fn [pattern, abort, body] (mut cfg FetchSessionConfig) {
+		cfg.route.active = true
+		cfg.route.pattern = pattern
+		cfg.route.abort = abort
+		cfg.route.body = body
+	})
+}
+
+// fetch_config_clear_route 清掉 route 规则（认证配置保留）。
+fn fetch_config_clear_route(mut sess CdpSession) {
+	fetch_config_update(mut sess, fn (mut cfg FetchSessionConfig) {
+		cfg.route.active = false
+		cfg.route.pattern = ''
+		cfg.route.abort = false
+		cfg.route.body = ''
+	})
+}
+
+// fetch_config_set_auth 写入 HTTP 基本认证凭据与目标 origin。
+fn fetch_config_set_auth(mut sess CdpSession, username string, password string, origin string) {
+	fetch_config_update(mut sess, fn [username, password, origin] (mut cfg FetchSessionConfig) {
+		cfg.auth.active = true
+		cfg.auth.username = username
+		cfg.auth.password = password
+		cfg.auth.origin = origin
+	})
+}
+
+// 认证要接收所有 origin 的挑战，route 在消费者中再按 URL 匹配。
+fn fetch_enable_params(mut sess CdpSession) string {
+	cfg := fetch_config_snapshot(mut sess)
+	pattern := if cfg.auth.active || cfg.route.pattern == '' { '*' } else { cfg.route.pattern }
+	return '{"patterns":[{"urlPattern":${json_str(pattern)}}],"handleAuthRequests":${cfg.auth.active}}'
+}
+
+fn cdp_session_closed(mut sess CdpSession) bool {
+	sess.pending_mu.@lock()
+	closed := sess.closed
+	sess.pending_mu.unlock()
+	return closed
+}
+
+// 消费者跟随 session，不因空闲退出；替换 route 时复用订阅，避免丢失暂停请求。
+fn ensure_fetch_interceptor(mut sess CdpSession, replace bool) {
+	key := fetch_session_key(mut sess)
+	previous := fetch_config_snapshot(mut sess)
+	if previous.interceptor_running && !replace {
+		return
+	}
+	paused_ch := if previous.interceptor_running {
+		previous.paused_ch
+	} else {
+		sess.subscribe('Fetch.requestPaused')
+	}
+	auth_ch := if previous.interceptor_running {
+		previous.auth_ch
+	} else {
+		sess.subscribe('Fetch.authRequired')
+	}
+	stop_ch := chan bool{cap: 1}
+	generation := previous.interceptor_generation + 1
+	fetch_config_update(mut sess, fn [generation, paused_ch, auth_ch, stop_ch] (mut cfg FetchSessionConfig) {
+		cfg.interceptor_generation = generation
+		cfg.interceptor_running = true
+		cfg.paused_ch = paused_ch
+		cfg.auth_ch = auth_ch
+		cfg.stop_ch = stop_ch
+	})
+	if previous.interceptor_running {
+		previous.stop_ch <- true
+	}
+	sess.route_ch = paused_ch
+	sess.route_stop_ch = stop_ch
+	spawn fn [mut sess, key, generation, paused_ch, auth_ch, stop_ch] () {
+		for {
+			if cdp_session_closed(mut sess) { break }
+			select {
+				evt := <-paused_ch {
+					handle_fetch_request_paused(mut sess, evt)
+				}
+				evt := <-auth_ch {
+					handle_fetch_auth_required(mut sess, evt)
+				}
+				_ := <-stop_ch {
+					break
+				}
+				1 * time.second {
+				}
+			}
+		}
+		// 旧消费者不能注销新消费者共享的订阅，更不能发送 Fetch.disable。
+		unsafe {
+			fetch_config_mutex().lock()
+			if fetch_config_table()[key].interceptor_generation == generation {
+				sess.unsubscribe('Fetch.requestPaused', paused_ch)
+				sess.unsubscribe('Fetch.authRequired', auth_ch)
+				fetch_config_table().delete(key)
+			}
+			fetch_config_mutex().unlock()
+		}
+	}()
+}
+
+fn handle_fetch_request_paused(mut sess CdpSession, evt ProtocolResponse) {
+	// 结构化解析事件参数：子串搜索会命中嵌套层级里的同名字段
+	// （例如 request 内部的 requestId），取到错误的请求 ID。
+	params := cdp_json_object(evt.params)
+	request_id := cdp_json_str(params, 'requestId')
+	if request_id == '' { return }
+	cfg := fetch_config_snapshot(mut sess)
+	request := cdp_json_object_field(params, 'request')
+	url := cdp_json_str(request, 'url')
+	matched := cfg.route.active && fetch_url_matches(cfg.route.pattern, url)
+	if matched && cfg.route.abort {
+		sess.send_command('Fetch.failRequest', '{"requestId":${json_str(request_id)},"errorReason":"Aborted"}') or {}
+	} else if matched && cfg.route.body != '' {
+		sess.send_command('Fetch.fulfillRequest', '{"requestId":${json_str(request_id)},"responseCode":200,"body":${json_str(base64.encode_str(cfg.route.body))}}') or {}
+	} else {
+		// 只开启认证时，普通请求也会暂停，必须放行。
+		sess.send_command('Fetch.continueRequest', '{"requestId":${json_str(request_id)}}') or {}
+	}
+}
+
+// CDP URL 模式支持 *、? 和反斜杠转义，不使用文件路径 glob 语义。
+fn fetch_url_matches(pattern string, url string) bool {
+	if pattern == '' { return true }
+	mut row := []bool{len: url.len + 1}
+	row[0] = true
+	mut i := 0
+	for i < pattern.len {
+		mut ch := pattern[i]
+		mut escaped := false
+		if ch == `\\` && i + 1 < pattern.len {
+			i++
+			ch = pattern[i]
+			escaped = true
+		}
+		mut next := []bool{len: url.len + 1}
+		if ch == `*` && !escaped {
+			next[0] = row[0]
+			for j in 1 .. next.len { next[j] = row[j] || next[j - 1] }
+		} else {
+			for j in 1 .. next.len {
+				next[j] = row[j - 1] && ((ch == `?` && !escaped) || ch == url[j - 1])
+			}
+		}
+		row = next.clone()
+		i++
+	}
+	return row[url.len]
+}
+
+fn handle_fetch_auth_required(mut sess CdpSession, evt ProtocolResponse) {
+	// 结构化解析事件参数：子串搜索会命中嵌套层级里的同名字段
+	// （例如 authChallenge 内部的 requestId），取到错误的请求 ID。
+	params := cdp_json_object(evt.params)
+	request_id := cdp_json_str(params, 'requestId')
+	if request_id == '' { return }
+	cfg := fetch_config_snapshot(mut sess)
+	challenge := cdp_json_object_field(params, 'authChallenge')
+	origin := cdp_json_str(challenge, 'origin')
+	challenge_source := cdp_json_str(challenge, 'source')
+	// 代理认证不能使用站点凭据，即使代理地址与目标 origin 相同。
+	if cfg.auth.active && challenge_source == 'Server'
+		&& auth_origin_matches(origin, cfg.auth.origin) {
+		sess.send_command('Fetch.continueWithAuth', '{"requestId":${json_str(request_id)},"authChallengeResponse":{"response":"ProvideCredentials","username":${json_str(cfg.auth.username)},"password":${json_str(cfg.auth.password)}}}') or {}
+	} else {
+		sess.send_command('Fetch.continueWithAuth', '{"requestId":${json_str(request_id)},"authChallengeResponse":{"response":"Default"}}') or {}
+	}
+}
+
+fn auth_origin_matches(challenge_origin string, target_origin string) bool {
+	target := normalize_auth_origin(target_origin)
+	return target != '' && normalize_auth_origin(challenge_origin) == target
+}
+
+fn normalize_auth_origin(raw string) string {
+	text := raw.trim_space()
+	sep := text.index('://') or { return '' }
+	scheme := text[..sep].to_lower()
+	if scheme !in ['http', 'https'] { return '' }
+	rest := text[sep + 3..]
+	mut end := rest.len
+	for i, ch in rest {
+		if ch in [`/`, `?`, `#`] {
+			end = i
+			break
+		}
+	}
+	mut host := rest[..end].to_lower()
+	if host == '' || host.contains('@') || host.contains('\\') || host.contains(' ') { return '' }
+	if (scheme == 'http' && host.ends_with(':80')) || (scheme == 'https' && host.ends_with(':443')) {
+		host = host.all_before_last(':')
+	}
+	return '${scheme}://${host}'
+}
+
+fn current_page_origin(mut sess CdpSession) !string {
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str('String(location.origin || "")')},"returnByValue":true}')!
+	origin := normalize_auth_origin(evaluate_result_value(resp.result)!)
+	if origin == '' { return error('cannot determine target origin for credentials') }
+	return origin
+}
+
 // cmd_network 网络请求管理
 // 支持 action：
 //   - requests：列出网络请求（支持 filter/mime/status/domain/type 过滤）
@@ -3280,53 +3693,16 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			url := cdp_extract_str(params, 'url')
 			abort := cdp_extract_str(params, 'abort') == 'true'
 			body := cdp_extract_str(params, 'body')
-			// 如果已存在 route，先停掉旧 goroutine 并清理订阅
-			if sess.has_route {
-				sess.route_stop_ch <- true
-				sess.unsubscribe('Fetch.requestPaused', sess.route_ch)
-				sess.has_route = false
-			}
-			// 启用 Fetch 拦截
-			sess.send_command('Fetch.enable', '{"patterns":[{"urlPattern":${json_str(url)}}]}') or {
+			previous := fetch_config_snapshot(mut sess).route
+			fetch_config_set_route(mut sess, url, abort, body)
+			ensure_fetch_interceptor(mut sess, true)
+			sess.send_command('Fetch.enable', fetch_enable_params(mut sess)) or {
+				fetch_config_update(mut sess, fn [previous] (mut cfg FetchSessionConfig) {
+					cfg.route = previous
+				})
 				return 'ERROR:${err}'
 			}
-			// 订阅 Fetch.requestPaused 事件并处理
-			ch := sess.subscribe('Fetch.requestPaused')
-			stop_ch := chan bool{cap: 1}
-			sess.route_ch = ch
-			sess.route_stop_ch = stop_ch
 			sess.has_route = true
-			spawn fn [mut sess, ch, stop_ch, abort, body] () {
-				for {
-					select {
-						evt := <-ch {
-							request_id := cdp_extract_str(evt.params, 'requestId')
-							if request_id == '' {
-								continue
-							}
-							if abort {
-								sess.send_command('Fetch.failRequest', '{"requestId":${json_str(request_id)},"errorReason":"Aborted"}') or {}
-							} else if body != '' {
-								sess.send_command('Fetch.fulfillRequest', '{"requestId":${json_str(request_id)},"responseCode":200,"body":${json_str(base64.encode_str(body))}}') or {}
-							} else {
-								sess.send_command('Fetch.continueRequest', '{"requestId":${json_str(request_id)}}') or {}
-							}
-						}
-						_ := <-stop_ch {
-							break
-						}
-						// 30 秒兜底：防止客户端没 stop / 'unroute' 也直接断了连接
-						// 导致 goroutine 永远挂着 (#11)。
-						30 * time.second {
-							break
-						}
-					}
-				}
-				// 自清理：goroutine 退出时从 event_subs 注销 channel，避免
-				// event_subs 留下死引用。session 状态由 stop_route() /
-				// 下一次 'route' 调用负责重置 has_route。
-				sess.unsubscribe('Fetch.requestPaused', ch)
-			}()
 			return 'null'
 		}
 		'hook' {
@@ -3361,9 +3737,26 @@ fn cmd_network(mut sess CdpSession, params string) string {
 			}
 		}
 		'unroute' {
-			// 复用 helper 停止 route goroutine 并清理订阅
-			sess.stop_route()
-			sess.send_command('Fetch.disable', '{}') or { return 'ERROR:${err}' }
+			previous := fetch_config_snapshot(mut sess).route
+			fetch_config_clear_route(mut sess)
+			method := if fetch_config_snapshot(mut sess).auth.active {
+				'Fetch.enable'
+			} else {
+				'Fetch.disable'
+			}
+			fetch_params := if method == 'Fetch.enable' {
+				fetch_enable_params(mut sess)
+			} else {
+				'{}'
+			}
+			sess.send_command(method, fetch_params) or {
+				fetch_config_update(mut sess, fn [previous] (mut cfg FetchSessionConfig) {
+					cfg.route = previous
+				})
+				return 'ERROR:${err}'
+			}
+			// 保留消费者至 session 关闭，继续处理在途事件和认证挑战。
+			sess.has_route = false
 			return 'null'
 		}
 		'inspect' {
@@ -3464,8 +3857,7 @@ fn network_hook_config_js(filter string, capture_body bool, capture_response boo
 }
 
 fn network_hook_activate_js(filter string, capture_body bool, capture_response bool, clear bool, max_body_len int, script_id string) string {
-	return '${network_hook_bootstrap_js()}; ${network_hook_config_js(filter, capture_body,
-		capture_response, clear, max_body_len, script_id)}'
+	return '${network_hook_bootstrap_js()}; ${network_hook_config_js(filter, capture_body, capture_response, clear, max_body_len, script_id)}'
 }
 
 fn network_hook_stop_js() string {
@@ -3844,8 +4236,7 @@ fn hook_templates_json_from_session(mut sess CdpSession, filter string, limit in
 fn hook_record_signature(raw string) string {
 	method := hook_extract_string(raw, 'method', 'GET')
 	url := cdp_extract_str(raw, 'url')
-	return '${method} ${hook_normalize_signature_url(url)} ${hook_request_body_signature(cdp_extract_str(raw,
-		'requestBody'))}'
+	return '${method} ${hook_normalize_signature_url(url)} ${hook_request_body_signature(cdp_extract_str(raw, 'requestBody'))}'
 }
 
 fn hook_record_cursor_hint(raw string) string {
@@ -4124,9 +4515,19 @@ fn clear_network_hook_records(mut sess CdpSession) {
 	sess.hook_state.last_synced_index = 0
 	sess.hook_state.last_pushed_count = 0
 	sess.hook_state.record_count = 0
+	// 记录被清空，累计字节与已计数条数必须一起归零，
+	// 否则后续的 push / poll 会按旧字节数继续淘汰。
+	sess.hook_state.record_bytes = 0
+	sess.hook_state.record_bytes_tracked = 0
 	sess.hook_mu.unlock()
 }
 
+// append_polled_hook_records 把轮询同步回来的 hook 记录并入会话。
+// 与 push 路径（handle_hook_binding_push）保持一致的上限约束：
+//   - 单条 payload 超限直接丢弃；
+//   - 累计字节计入 hook_state；
+//   - 条数 / 字节超限时环形淘汰最旧的记录。
+// 否则页面可以靠轮询路径把 daemon 内存撑爆（push 路径有淘汰，poll 路径没有）。
 fn append_polled_hook_records(mut sess CdpSession, items []string, last_synced_index int) int {
 	if items.len == 0 {
 		return 0
@@ -4134,9 +4535,18 @@ fn append_polled_hook_records(mut sess CdpSession, items []string, last_synced_i
 	mut added := 0
 	sess.hook_mu.@lock()
 	defer { sess.hook_mu.unlock() }
+	// 外部路径（轮询同步 / push / clear）也会改记录集合，条数对不上时重新统计累计字节
+	if sess.hook_records.len != sess.hook_state.record_bytes_tracked {
+		sess.hook_state.record_bytes = hook_records_total_bytes(sess.hook_records)
+		sess.hook_state.record_bytes_tracked = sess.hook_records.len
+	}
 	for item in items {
 		record_id := cdp_extract_str(item, 'recordId')
 		if record_id == '' {
+			continue
+		}
+		// 单条 payload 上限：一条超长记录就能撑爆 daemon 内存
+		if item.len > sess.hook_payload_limit {
 			continue
 		}
 		if record_id in sess.hook_records {
@@ -4147,8 +4557,12 @@ fn append_polled_hook_records(mut sess CdpSession, items []string, last_synced_i
 			raw_json:  item
 		}
 		sess.hook_record_order << record_id
+		sess.hook_state.record_bytes += item.len
+		sess.hook_state.record_bytes_tracked++
 		added++
 	}
+	// 与 push 路径一致：条数 / 字节超限时环形淘汰最旧的记录
+	sess.evict_hook_records()
 	sess.hook_state.last_synced_index = last_synced_index + items.len
 	sess.hook_state.record_count = sess.hook_record_order.len
 	return added
@@ -4236,6 +4650,22 @@ fn network_hook_bootstrap_js() string {
 		'    }',
 		'    return String(body);',
 		'  }',
+		// 请求体只在 captureBody 打开时才采集：关闭时记空值，
+		// 打开时按 maxBodyLen 截断，避免大 body 把内存和记录撑爆。
+		'  function captureRequestBody(value) {',
+		'    if (!cfg.captureBody) { return ""; }',
+		'    try { return truncateBodyBytes(normalizeBody(value)); } catch (e) { return ""; }',
+		'  }',
+		'  function bodyByteLimit() { return Math.min(cfg.maxBodyLen > 0 ? cfg.maxBodyLen : 4000, 1048576); }',
+		'  function truncateBodyBytes(value) {',
+		'    var text = String(value == null ? "" : value), limit = bodyByteLimit(), bytes = 0, end = 0;',
+		'    for (var ch of text) {',
+		'      var cp = ch.codePointAt(0), size = cp <= 127 ? 1 : cp <= 2047 ? 2 : cp <= 65535 ? 3 : 4;',
+		'      if (bytes + size > limit) { break; }',
+		'      bytes += size; end += ch.length;',
+		'    }',
+		'    return text.slice(0, end);',
+		'  }',
 		'  function shouldCapture(method, url) {',
 		'    var filter = String(cfg.filter || "");',
 		'    if (!filter) { return true; }',
@@ -4307,7 +4737,7 @@ fn network_hook_bootstrap_js() string {
 		'        url = input.url;',
 		'        method = input.method || method;',
 		'        headers = toPlainHeaders(input.headers);',
-		'        body = normalizeBody(input.body);',
+		'        if (cfg.captureBody) { body = captureRequestBody(input.body); }',
 		'        mode = input.mode || mode;',
 		'        credentials = input.credentials || credentials;',
 		'        cache = input.cache || cache;',
@@ -4324,7 +4754,7 @@ fn network_hook_bootstrap_js() string {
 		'          var initHeaders = toPlainHeaders(init.headers);',
 		'          Object.keys(initHeaders).forEach(function(key) { headers[key] = initHeaders[key]; });',
 		'        }',
-		'        if (init.body !== undefined) { body = normalizeBody(init.body); }',
+		'        if (cfg.captureBody && init.body !== undefined) { body = captureRequestBody(init.body); }',
 		'        if (init.mode) { mode = init.mode; }',
 		'        if (init.credentials) { credentials = init.credentials; }',
 		'        if (init.cache) { cache = init.cache; }',
@@ -4362,7 +4792,7 @@ fn network_hook_bootstrap_js() string {
 		'      requestPriority: meta.priority,',
 		'      signature: [String(meta.method || "GET"), String(meta.url || ""), String(meta.body || "").slice(0, 120)].join(" "),',
 		'      responseBody: responseBody ? truncateText(responseBody, responseBodyLimit) : "",',
-		'      responseHeaders: typeof response.headers === "object" && response.headers ? toPlainHeaders(response.headers) : {},',
+		'      responseHeaders: response && typeof response.headers === "object" && response.headers ? toPlainHeaders(response.headers) : {},',
 		'      errorText: error ? truncateText(error, 2000) : ""',
 		'    });',
 		'  }',
@@ -4406,20 +4836,41 @@ fn network_hook_bootstrap_js() string {
 		'      errorText: errorText ? truncateText(errorText, 2000) : ""',
 		'    });',
 		'  }',
-		'  function captureFetchResponse(meta, response, onDone, onError) {',
-		'    if (!cfg.captureResponse || !response || typeof response.clone !== "function") {',
-		'      onDone("");',
-		'      return;',
+		// 响应体抓取必须与页面请求解耦：流式响应（SSE 等）永远读不完，
+		// 如果等 clone().text() 结束才把 Response 交回页面，页面的 fetch 会一直挂住。
+		// 这里改成：clone 出来的流在后台按字节上限 + 超时读取，读完再补一条记录。
+		'  function captureFetchResponse(meta, response) {',
+		'    var finished = false, reader, timer, limit = bodyByteLimit();',
+		'    function cancel() {',
+		'      try { if (reader) { Promise.resolve(reader.cancel()).catch(function() {}); } } catch (e) {}',
 		'    }',
+		'    function finish(text) {',
+		'      if (finished) { return; }',
+		'      finished = true; clearTimeout(timer);',
+		'      try { captureFetchResult(meta, response, null, truncateBodyBytes(text)); } catch (e) {}',
+		'    }',
+		'    if (!cfg.captureResponse || !response || typeof response.clone !== "function") { finish(""); return; }',
 		'    try {',
-		'      response.clone().text().then(function(text) {',
-		'        onDone(String(text == null ? "" : text));',
-		'      }, function() {',
-		'        onDone("");',
-		'      });',
-		'    } catch (err) {',
-		'      onError(err);',
-		'    }',
+		'      var stream = response.clone().body;',
+		'      if (!stream || typeof stream.getReader !== "function") { finish(""); return; }',
+		'      reader = stream.getReader();',
+		'      var decoder = new TextDecoder("utf-8"), text = "", total = 0;',
+		'      timer = setTimeout(function() { cancel(); finish(text); }, 5000);',
+		'      function pump() {',
+		'        Promise.resolve().then(function() { return reader.read(); }).then(function(part) {',
+		'          if (finished) { return; }',
+		'          if (part.done) { finish(text + decoder.decode()); return; }',
+		'          if (part.value) {',
+		'            var bytes = part.value.subarray(0, limit - total);',
+		'            total += bytes.byteLength;',
+		'            text += decoder.decode(bytes, { stream: true });',
+		'            if (total >= limit) { cancel(); finish(text); return; }',
+		'          }',
+		'          pump();',
+		'        }).catch(function() { cancel(); finish(""); });',
+		'      }',
+		'      pump();',
+		'    } catch (err) { cancel(); finish(""); }',
 		'  }',
 		'  var originalFetch = window.fetch;',
 		'  if (typeof originalFetch === "function" && !originalFetch.__vBrowserHookWrapped) {',
@@ -4428,20 +4879,18 @@ fn network_hook_bootstrap_js() string {
 		'      var meta = captureFetchRequest(input, init);',
 		'      if (!shouldCapture(meta.method, meta.url)) { return originalFetch.apply(this, arguments); }',
 		'      try {',
-		'        return originalFetch.apply(this, arguments).then(function(response) {',
-		'          return new Promise(function(resolve) {',
-		'            captureFetchResponse(meta, response, function(responseBody) {',
-		'              captureFetchResult(meta, response, null, responseBody);',
-		'              resolve(response);',
-		'            }, function() {',
-		'              captureFetchResult(meta, response, null, "");',
-		'              resolve(response);',
-		'            });',
-		'          });',
+		'        var pending = originalFetch.apply(this, arguments);',
+		// 立刻把原始 Response 交回页面，抓取在后台异步进行
+		'        var tracked = pending.then(function(response) {',
+		'          try { captureFetchResponse(meta, response); } catch (e) {}',
+		'          return response;',
 		'        }, function(error) {',
 		'          captureFetchResult(meta, null, error, "");',
 		'          throw error;',
 		'        });',
+		// 派生 promise 的 rejection 已经处理过，避免变成未捕获异常
+		'        tracked.catch(function() {});',
+		'        return pending;',
 		'      } catch (error) {',
 		'        captureFetchResult(meta, null, error, "");',
 		'        throw error;',
@@ -4469,7 +4918,7 @@ fn network_hook_bootstrap_js() string {
 		'    XHR.prototype.send = function(body) {',
 		'      var xhr = this;',
 		'      var meta = xhr.__vBrowserHookMeta || { method: "GET", url: "", headers: {}, body: "" };',
-		'      meta.body = normalizeBody(body);',
+		'      meta.body = captureRequestBody(body);',
 		'      if (cfg.active && shouldCapture(meta.method, meta.url)) {',
 		'        var finalized = false;',
 		'        var finalize = function(errorText) {',
@@ -4527,7 +4976,7 @@ fn build_network_replay_js(method string, url string, body string, headers strin
 		'    var text = "";',
 		'    try { text = await response.text(); } catch (err) { text = ""; }',
 		'    if (!response.ok) {',
-			'      return JSON.stringify({ ok: false, replayKind: "dom-fallback", reason: "http-status", method: ' +
+		'      return JSON.stringify({ ok: false, replayKind: "dom-fallback", reason: "http-status", method: ' +
 			method_js + ', url: ' + url_js +
 			', status: response.status, statusText: response.statusText, responseUrl: response.url || ' +
 			url_js +
@@ -4538,7 +4987,7 @@ fn build_network_replay_js(method string, url string, body string, headers strin
 			', status: response.status, statusText: response.statusText, responseUrl: response.url || ' +
 			url_js + ', requestHeaders: headers, body: text.slice(0, 4000) });',
 		'  } catch (error) {',
-			'    return JSON.stringify({ ok: false, replayKind: "dom-fallback", reason: String(error && error.message ? error.message : error), method: ' +
+		'    return JSON.stringify({ ok: false, replayKind: "dom-fallback", reason: String(error && error.message ? error.message : error), method: ' +
 			method_js + ', url: ' + url_js + ', status: 0, statusText: "", responseUrl: ' + url_js +
 			', requestHeaders: headers, responseBody: "", fallback: captureDomFallback(String(error && error.message ? error.message : error), 0) });',
 		'  }',
@@ -5245,10 +5694,14 @@ fn cmd_set(mut sess CdpSession, params string) string {
 		'credentials' {
 			user := cdp_extract_str(params, 'username')
 			pass := cdp_extract_str(params, 'password')
-			// Credentials via Network.setExtraHTTPHeaders with Authorization header
-			encoded := base64.encode_str('${user}:${pass}')
-			headers := '{"Authorization":"Basic ${encoded}"}'
-			sess.send_command('Network.setExtraHTTPHeaders', '{"headers":${headers}}') or {
+			origin := current_page_origin(mut sess) or { return 'ERROR:${err}' }
+			previous := fetch_config_snapshot(mut sess).auth
+			fetch_config_set_auth(mut sess, user, pass, origin)
+			ensure_fetch_interceptor(mut sess, false)
+			sess.send_command('Fetch.enable', fetch_enable_params(mut sess)) or {
+				fetch_config_update(mut sess, fn [previous] (mut cfg FetchSessionConfig) {
+					cfg.auth = previous
+				})
 				return 'ERROR:${err}'
 			}
 			return 'null'

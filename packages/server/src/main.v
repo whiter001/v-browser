@@ -20,9 +20,12 @@
 module main
 
 import os
+import os.filelock
+import io
 import net
 import net.urllib
 import time
+import math
 import x.json2 as json
 import strconv
 
@@ -68,15 +71,7 @@ fn main() {
 					return
 				}
 				'restart' {
-					handle_server_stop(json_output, true, false) or {
-						print_error(err.msg(), json_output)
-						exit(1)
-					}
-					start_server_daemon() or {
-						print_error('failed to restart server: ${err}', json_output)
-						exit(1)
-					}
-					wait_for_server_ready() or {
+					restart_server_daemon() or {
 						print_error('failed to restart server: ${err}', json_output)
 						exit(1)
 					}
@@ -102,7 +97,10 @@ fn main() {
 	}
 
 	// 所有其他子命令转为 IPC 请求转发给 server
-	method, params := parse_cli_to_ipc(cmd, rest, raw_output)
+	method, params := parse_cli_to_ipc_checked(cmd, rest, raw_output) or {
+		print_error(err.msg(), json_output)
+		exit(1)
+	}
 	result := run_cli_command(method, params) or {
 		print_error(err.msg(), json_output)
 		exit(1)
@@ -130,8 +128,13 @@ fn main() {
 }
 
 fn handle_connect_command(args []string, json_output bool) {
-	tab_id := extract_flag_value(args, '--tab-id').int()
-	window_id := extract_flag_value(args, '--window-id').int()
+	_, checked := parse_cli_to_ipc_checked('connect', args, false) or {
+		print_error(err.msg(), json_output)
+		exit(1)
+	}
+	ids := json.decode[map[string]json.Any](checked) or { panic(err) }
+	tab_id := (ids['tabId'] or { json.Any(0) }).int()
+	window_id := (ids['windowId'] or { json.Any(0) }).int()
 	target_url := extract_connect_target_url(args)
 	extension_id := resolve_extension_id(args)
 	status_before := send_ipc('status', '{}') or {
@@ -262,12 +265,17 @@ fn is_attach_conflict_error(err_msg string) bool {
 
 // 确保后台 server 已启动；如果 IPC 不可达则先拉起守护进程。
 fn ensure_server_running() ! {
+	lck := acquire_lifecycle_lock(lifecycle_lock_timeout_seconds * time.second)!
+	defer {
+		release_lifecycle_lock(lck)
+	}
+	// 锁内重新检查：并发的另一个 CLI 可能已经把 server 拉起来了。
 	if can_reach_ipc_server() {
 		if server_runtime_version_matches() {
 			return
 		}
 		eprintln('[v-browser] Detected stale server version; restarting...')
-		restart_server_daemon()!
+		restart_server_daemon_locked()!
 		return
 	}
 	start_server_daemon()!
@@ -353,7 +361,16 @@ fn start_server_detached_windows(executable string) ! {
 
 // 停止旧 server 并重新拉起当前版本的 daemon。
 fn restart_server_daemon() ! {
-	_ := handle_server_stop(false, true, false) or {
+	lck := acquire_lifecycle_lock(lifecycle_lock_timeout_seconds * time.second)!
+	defer {
+		release_lifecycle_lock(lck)
+	}
+	restart_server_daemon_locked()!
+}
+
+// 已在持有生命周期锁的前提下执行重启。
+fn restart_server_daemon_locked() ! {
+	_ := stop_server_locked(false, true, false) or {
 		return error('failed to stop stale v-browser server: ${err.msg()}')
 	}
 	start_server_daemon()!
@@ -378,7 +395,17 @@ fn background_server_diagnostics_hint() string {
 
 // ─── 停止服务 ────────────────────────────────────────────────
 // 尝试用 IPC、PID 和端口三种方式停止 server。
+// 整个过程由生命周期锁保护，避免并发的 start/stop/restart 互相踩踏。
 fn handle_server_stop(json_output bool, allow_missing bool, emit_output bool) !bool {
+	lck := acquire_lifecycle_lock(lifecycle_lock_timeout_seconds * time.second)!
+	defer {
+		release_lifecycle_lock(lck)
+	}
+	return stop_server_locked(json_output, allow_missing, emit_output)
+}
+
+// 已在持有生命周期锁的前提下执行停止。
+fn stop_server_locked(json_output bool, allow_missing bool, emit_output bool) !bool {
 	pid := read_server_pid()
 	mut found_running_server := pid > 0 && is_process_running(pid)
 	mut stop_mode := ''
@@ -410,12 +437,17 @@ fn handle_server_stop(json_output bool, allow_missing bool, emit_output bool) !b
 		stop_mode = 'pid termination failed'
 	}
 
-	if kill_server_by_ports() && wait_for_server_shutdown(0, 5 * time.second) {
+	// 端口兜底：只能终止确认为 v-browser 的进程，别人的进程一律不碰。
+	killed, port_conflicts := kill_server_by_ports()
+	if killed && wait_for_server_shutdown(0, 5 * time.second) {
 		cleanup_server_runtime_state()
 		if emit_output {
 			report_server_stop('server killed', json_output)
 		}
 		return true
+	}
+	if port_conflicts.len > 0 {
+		return error('port conflict: ${port_conflicts.join('; ')}')
 	}
 
 	if !found_running_server {
@@ -501,23 +533,71 @@ fn terminate_process(pid int) bool {
 }
 
 // 通过监听端口反查并终止残留的 server 进程。
-fn kill_server_by_ports() bool {
+// 只终止可执行文件确认为 v-browser 的进程；无法确认身份时返回端口冲突，
+// 绝不误杀占用同一端口的客户端进程。
+fn kill_server_by_ports() (bool, []string) {
 	$if windows {
-		return false
+		return false, []string{}
 	} $else {
-		result := os.execute('lsof -ti:${configured_relay_port()} -ti:${configured_ipc_port()} 2>/dev/null | sort -u')
-		if result.exit_code != 0 || result.output.trim_space() == '' {
-			return false
-		}
 		mut killed := false
-		for line in result.output.split_into_lines() {
-			pid := line.trim_space().int()
-			if terminate_process(pid) {
-				killed = true
+		mut conflicts := []string{}
+		for port in [configured_relay_port(), configured_ipc_port()] {
+			for pid in listening_pids_on_port(port) {
+				if is_v_browser_server_process(pid) {
+					if terminate_process(pid) {
+						killed = true
+					}
+				} else {
+					conflicts << 'port ${port} is held by pid ${pid}, which is not a v-browser process'
+				}
 			}
 		}
-		return killed
+		return killed, conflicts
 	}
+}
+
+// 列出在指定端口处于 LISTEN 状态的进程 pid。
+// 只看 LISTEN，避免把连上来的客户端也列进去。
+fn listening_pids_on_port(port int) []int {
+	if port <= 0 {
+		return []int{}
+	}
+	result := os.execute('lsof -nP -t -iTCP:${port} -sTCP:LISTEN 2>/dev/null')
+	if result.exit_code != 0 {
+		return []int{}
+	}
+	mut pids := []int{}
+	for line in result.output.split_into_lines() {
+		pid := line.trim_space().int()
+		if pid > 0 && !(pid in pids) {
+			pids << pid
+		}
+	}
+	return pids
+}
+
+// 确认 pid 对应的可执行文件是 v-browser，避免误杀占用同一端口的其它程序。
+fn is_v_browser_server_process(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	executable := process_executable_path(pid)
+	if executable == '' {
+		return false
+	}
+	name := os.file_name(executable)
+	// 同一路径允许测试/自定义构建名；不能仅凭 v-browser 前缀认定身份。
+	return name == 'v-browser' || name == 'v-browser.exe'
+		|| os.real_path(executable) == os.real_path(os.executable())
+}
+
+// 读取进程可执行文件路径：ps 在 Linux/macOS 上都能拿到可执行文件名或全路径。
+fn process_executable_path(pid int) string {
+	result := os.execute('ps -p ${pid} -o comm= 2>/dev/null')
+	if result.exit_code != 0 {
+		return ''
+	}
+	return result.output.trim_space()
 }
 
 // 等待 server 的进程和监听端口都退出。
@@ -550,19 +630,57 @@ fn is_port_listening(port int) bool {
 // ─── 启动服务 ────────────────────────────────────────────────
 // 后台拉起 server：已在运行则直接返回，版本过旧则先停再拉，命令本身立即退出，
 // 不占用调用方 shell（Windows 用分离进程，Unix 用 pueue，无 pueue 时回退 nohup）。
+// 整个过程由生命周期锁保护：并发的 `server bg` 不会各自拉起一个 server，
+// 导致 pid 文件与真正监听端口的进程对不上。
 fn handle_server_start(json_output bool) ! {
+	lck := acquire_lifecycle_lock(lifecycle_lock_timeout_seconds * time.second)!
+	defer {
+		release_lifecycle_lock(lck)
+	}
+	// 锁内重新检查状态：等锁期间可能已经有别的进程把 server 拉起来了。
 	if can_reach_ipc_server() {
 		if server_runtime_version_matches() {
 			report_server_start('server already running', json_output)
 			return
 		}
-		restart_server_daemon()!
+		restart_server_daemon_locked()!
 		report_server_start('server started in background', json_output)
 		return
 	}
 	start_server_daemon()!
 	wait_for_server_ready()!
 	report_server_start('server started in background', json_output)
+}
+
+// ─── 生命周期锁 ──────────────────────────────────────────────
+const lifecycle_lock_timeout_seconds = 30
+
+fn lifecycle_lock_path() string {
+	return os.join_path(v_browser_home_dir(), '.v-browser', 'server.lifecycle.lock')
+}
+
+fn acquire_lifecycle_lock(timeout time.Duration) !filelock.FileLock {
+	path := lifecycle_lock_path()
+	os.mkdir_all(os.dir(path)) or {
+		// 首次并发启动时，另一个 CLI 可能刚好创建了状态目录。
+		if !os.is_dir(os.dir(path)) {
+			return err
+		}
+	}
+	// 保留同一个 inode，不能在释放后删文件，否则等待者可能锁住旧文件。
+	mut file := os.open_append(path)!
+	file.close()
+	mut lck := filelock.new_file(path, mode: .exclusive)
+	if !lck.wait_acquire(timeout) {
+		return error('timed out waiting for the v-browser server lock (${path})')
+	}
+	// 内核在进程退出（包括崩溃）时释放锁，无需有竞争风险的 stale 目录删除。
+	return lck
+}
+
+fn release_lifecycle_lock(lck filelock.FileLock) {
+	mut owned := lck
+	owned.release()
 }
 
 // 按 JSON 或普通文本输出 server 后台启动结果。
@@ -816,12 +934,56 @@ const boolean_switch_names = [
 	'click',
 	'screenshot',
 	'abort',
-	'stable',
+	// 注意：'stable' 不在此列 —— `wait --stable <selector>` 的选择器是它的值，
+	// 必须被消费掉，否则选择器会掉进位置参数，退化成普通选择器等待。
 	'compact',
 	'persistent',
 	'clear',
 	'exact',
 ]
+
+// 数值型选项名：取值必须是数字，允许负值（例如 --lat -33.8）。
+const numeric_option_names = [
+	'px',
+	'x',
+	'y',
+	'dx',
+	'dy',
+	'lat',
+	'lng',
+	'lon',
+	'width',
+	'height',
+	'scale',
+	'timeout',
+	'verify-timeout',
+	'verifyTimeout',
+	'maxNodes',
+	'max-nodes',
+	'ms',
+	'limit',
+	'index',
+	'depth',
+	'max-body-len',
+	'maxBodyLen',
+	'threshold',
+	'tab-id',
+	'tabId',
+	'window-id',
+	'windowId',
+	'id',
+	'quality',
+	'maxLabels',
+]
+
+// 判断某个选项在当前命令下是否按数值处理。
+fn is_numeric_option(cmd string, key string) bool {
+	if key in numeric_option_names {
+		return true
+	}
+	// -d/-t 只在 diff 里表示 depth/threshold，其它命令里含义不同。
+	return cmd == 'diff' && (key == 'd' || key == 't')
+}
 
 // 判断某个选项名是否属于布尔开关。
 fn is_boolean_switch(name string) bool {
@@ -829,60 +991,224 @@ fn is_boolean_switch(name string) bool {
 }
 
 // 决定选项要不要吃掉后一个参数。布尔开关只接受显式的 true/false，
-// 这样位置参数不会被开关意外吞掉。
-fn should_consume_flag_value(key string, next string, has_next bool) bool {
-	if !has_next || next.starts_with('-') {
+// 这样位置参数不会被开关意外吞掉；数值型选项额外允许负数，
+// 否则 --lat -33.8 里的负号会被当成一个新选项。
+fn should_consume_flag_value(cmd string, key string, next string, has_next bool) bool {
+	if !has_next {
 		return false
 	}
 	if is_boolean_switch(key) {
 		return next == 'true' || next == 'false'
 	}
+	if next.starts_with('-') {
+		// 只有数值型选项才消费以 '-' 开头的值，避免把 --foo -1 里的 -1 误当成选项。
+		return is_numeric_option(cmd, key) && looks_like_number(next)
+	}
 	return true
 }
 
+// 判断字符串是否是合法数字字面量（用于识别负数参数）。
+fn looks_like_number(raw string) bool {
+	cli_parse_float(raw) or { return false }
+	return true
+}
+
+// 严格解析十进制整数：只接受可选正负号与数字，拒绝空串、非数字与溢出。
+fn cli_parse_int(raw string) !int {
+	s := raw.trim_space()
+	if s == '' {
+		return error('value is empty')
+	}
+	mut start := 0
+	if s[0] == `+` || s[0] == `-` {
+		start = 1
+	}
+	if start >= s.len {
+		return error('not a valid integer')
+	}
+	for i in start .. s.len {
+		if s[i] < `0` || s[i] > `9` {
+			return error('not a valid integer')
+		}
+	}
+	return strconv.atoi(s) or { return error('integer out of range') }
+}
+
+// 严格解析十进制小数：拒绝 inf/nan/指数等 strconv 会接受的非数字形式。
+fn cli_parse_float(raw string) !f64 {
+	s := raw.trim_space()
+	if s == '' {
+		return error('value is empty')
+	}
+	mut start := 0
+	if s[0] == `+` || s[0] == `-` {
+		start = 1
+	}
+	mut int_digits := 0
+	mut frac_digits := 0
+	mut has_dot := false
+	for i in start .. s.len {
+		c := s[i]
+		if c >= `0` && c <= `9` {
+			if has_dot {
+				frac_digits++
+			} else {
+				int_digits++
+			}
+			continue
+		}
+		if c == `.` && !has_dot {
+			has_dot = true
+			continue
+		}
+		return error('not a valid number')
+	}
+	if int_digits == 0 || (has_dot && frac_digits == 0) {
+		return error('not a valid number')
+	}
+	value := strconv.atof64(s) or { return error('number out of range') }
+	if math.is_nan(value) || math.is_inf(value, 0) {
+		return error('number out of range')
+	}
+	return value
+}
+
+// 严格解析布尔值：只接受 true / false。
+fn cli_parse_bool(raw string) !bool {
+	s := raw.trim_space()
+	if s == 'true' {
+		return true
+	}
+	if s == 'false' {
+		return false
+	}
+	return error('not a valid boolean')
+}
+
+// 解析整数型参数并检查取值范围。
+fn cli_int_arg(raw string, name string, min int, max int) !int {
+	value := cli_parse_int(raw) or { return error('invalid value for ${name}: ${raw}') }
+	if value < min || value > max {
+		return error('value for ${name} is out of range: ${raw}')
+	}
+	return value
+}
+
+// 解析浮点型参数并检查取值范围。
+fn cli_float_arg(raw string, name string, min f64, max f64) !f64 {
+	value := cli_parse_float(raw) or { return error('invalid value for ${name}: ${raw}') }
+	if value < min || value > max {
+		return error('value for ${name} is out of range: ${raw}')
+	}
+	return value
+}
+
+// 解析布尔型参数，返回 "true"/"false" 文本。
+fn cli_bool_text(raw string, name string) !string {
+	value := cli_parse_bool(raw) or {
+		return error('invalid value for ${name}: ${raw} (expected true or false)')
+	}
+	return if value { 'true' } else { 'false' }
+}
+
+// 数值文本：整数值的浮点数按整数输出，避免 0.0 这类文本影响服务端解析。
+fn cli_number_text(value f64) string {
+	if math.abs(value) < 1e15 && math.trunc(value) == value {
+		return i64(value).str()
+	}
+	return value.str()
+}
+
+// 解析 JSON 对象参数：先解析再重新编码，禁止原始字符串直接进入行协议。
+fn cli_json_object_arg(raw string, name string) !string {
+	trimmed := raw.trim_space()
+	if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+		return error('invalid value for ${name}: expected a JSON object')
+	}
+	parsed := json.decode[map[string]json.Any](trimmed) or {
+		return error('invalid value for ${name}: expected a JSON object')
+	}
+	return json.encode(parsed)
+}
+
 // 将 CLI 命令翻译成 IPC method/params。
+// 兼容入口：参数非法时返回空的 method 与错误说明，调用方需自行判断。
 fn parse_cli_to_ipc(cmd string, args []string, raw_output bool) (string, string) {
-	return parse_cli_to_ipc_with_readers(cmd, args, raw_output, default_eval_stdin_reader,
-		default_eval_file_reader)
+	return parse_cli_to_ipc_checked(cmd, args, raw_output) or { return '', err.msg() }
 }
 
 // 带可注入输入源的 CLI 转 IPC 版本，便于测试 eval 读取逻辑。
 fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, stdin_reader EvalStdinReader, file_reader EvalFileReader) (string, string) {
+	return parse_cli_to_ipc_checked_with_readers(cmd, args, raw_output, stdin_reader,
+		file_reader) or { return '', err.msg() }
+}
+
+// 将 CLI 命令翻译成 IPC method/params，参数非法时返回错误。
+fn parse_cli_to_ipc_checked(cmd string, args []string, raw_output bool) !(string, string) {
+	return parse_cli_to_ipc_checked_with_readers(cmd, args, raw_output,
+		default_eval_stdin_reader, default_eval_file_reader)
+}
+
+// 带可注入输入源的 CLI 转 IPC 版本，参数非法时返回错误。
+fn parse_cli_to_ipc_checked_with_readers(cmd string, args []string, raw_output bool, stdin_reader EvalStdinReader, file_reader EvalFileReader) !(string, string) {
 	// 解析标志位
 	mut flags := map[string]string{}
 	mut positionals := []string{}
 	mut i := 0
 	for i < args.len {
 		arg := args[i]
-		if arg.starts_with('--') {
-			key := arg[2..]
-			if should_consume_flag_value(key, if i + 1 < args.len {
+		if arg == '--' {
+			positionals << args[i + 1..]
+			break
+		}
+		if arg.starts_with('--') || (arg.starts_with('-') && arg.len == 2 && !looks_like_number(arg)) {
+			option := if arg.starts_with('--') { arg[2..] } else { arg[1..] }
+			key := option.all_before('=')
+			mut value := 'true'
+			if option.contains('=') {
+				value = option.all_after('=')
+				i++
+			} else if is_numeric_option(cmd, key) {
+				if i + 1 >= args.len {
+					return error('missing value for --${key}')
+				}
+				value = args[i + 1]
+				i += 2
+			} else if should_consume_flag_value(cmd, key, if i + 1 < args.len {
 				args[i + 1]
 			} else {
 				''
 			}, i + 1 < args.len) {
-				flags[key] = args[i + 1]
+				value = args[i + 1]
 				i += 2
 			} else {
-				flags[key] = 'true'
 				i++
 			}
-		} else if arg.starts_with('-') && arg.len == 2 {
-			key := arg[1..]
-			if should_consume_flag_value(key, if i + 1 < args.len {
-				args[i + 1]
-			} else {
-				''
-			}, i + 1 < args.len) {
-				flags[key] = args[i + 1]
-				i += 2
-			} else {
-				flags[key] = 'true'
-				i++
+			if is_numeric_option(cmd, key) {
+				if key in ['x', 'y', 'dx', 'dy', 'lat', 'lng', 'lon', 'scale', 'threshold'] || (cmd == 'diff' && key == 't') {
+					cli_parse_float(value) or { return error('invalid value for --${key}: ${value}') }
+				} else {
+					cli_parse_int(value) or { return error('invalid value for --${key}: ${value}') }
+				}
 			}
+			if is_boolean_switch(key) {
+				value = cli_bool_text(value, '--${key}')!
+			}
+			flags[key] = value
 		} else {
 			positionals << arg
 			i++
+		}
+	}
+
+	// --stable 是取值型选项：稳定等待必须给出选择器。
+	// 裸写 --stable 时通用解析会把值置成 'true'，直接发出去等于把字符串
+	// "true" 当成选择器，服务端只会等一个不存在的元素直到超时。
+	// 这里在进入命令分派前直接报错，避免发出语义错误的请求。
+	if cmd == 'wait' && 'stable' in flags {
+		stable_value := flags['stable'] or { '' }
+		if stable_value == '' || stable_value == 'true' || stable_value == 'false' {
+			return error('wait --stable requires a selector, e.g. v-browser wait --stable "#result"')
 		}
 	}
 
@@ -910,12 +1236,13 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 		'connect' {
 			tab_id := flags['tab-id'] or { '' }
 			window_id := flags['window-id'] or { '' }
-			if tab_id != '' {
-				return 'connect', '{"tabId":${tab_id},"windowId":${if window_id != '' {
-					window_id
-				} else {
-					'0'
-				}}}'
+			if tab_id != '' || window_id != '' {
+				tab := cli_int_arg(if tab_id == '' { '0' } else { tab_id }, '--tab-id', 0, 2147483647)!
+				mut win := 0
+				if window_id != '' {
+					win = cli_int_arg(window_id, '--window-id', 0, 2147483647)!
+				}
+				return 'connect', '{"tabId":${tab},"windowId":${win}}'
 			}
 			return 'connect', '{}'
 		}
@@ -927,7 +1254,7 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			path := flags['path'] or {
 				if positionals.len > 0 { positionals[0] } else { '' }
 			}
-			full := flags['full'] or { 'false' }
+			full := cli_bool_text(flags['full'] or { 'false' }, '--full')!
 			fmt := flags['format'] or { 'png' }
 			return 'screenshot', '{"path":${json_str(path)},"full":${json_str(full)},"format":${json_str(fmt)}}'
 		}
@@ -942,10 +1269,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 		'snapshot', 'snap', 'ax' {
 			raw := if raw_output { 'true' } else { 'false' }
 			// extra 是新版开关；interactive 作为旧参数保留兼容。
-			extra := flags['extra'] or { flags['interactive'] or { 'false' } }
-			interactive := flags['interactive'] or { 'false' }
+			extra := cli_bool_text(flags['extra'] or { flags['interactive'] or { 'false' } },
+				'--extra')!
+			interactive := cli_bool_text(flags['interactive'] or { 'false' }, '--interactive')!
 			// maxNodes 限制最终输出的引用总数，AX Tree 和补全共享同一预算。
-			max_nodes := flags['maxNodes'] or { '0' }
+			max_nodes := cli_int_arg(flags['maxNodes'] or { '0' }, '--maxNodes', 0, 1000000)!
 			// selector 限制快照范围到指定元素子树。
 			sel_filter := flags['selector'] or { flags['sel'] or { '' } }
 			if sel_filter != '' {
@@ -1004,8 +1332,10 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 					if positionals.len > 1 { positionals[1] } else { '' }
 				}
 			}
-			verify := if flags.keys().contains('verify') { 'true' } else { 'false' }
-			verify_timeout := flags['verify-timeout'] or { flags['verifyTimeout'] or { '1500' } }
+			verify := cli_bool_text(flags['verify'] or { 'false' }, '--verify')!
+			verify_timeout := cli_int_arg(flags['verify-timeout'] or {
+				flags['verifyTimeout'] or { '1500' }
+			}, '--verify-timeout', 0, 600000)!
 			return 'fill', '{"selector":${json_str(sel)},"text":${json_str(text)},"verify":${json_str(verify)},"verifyTimeout":${verify_timeout}}'
 		}
 		'type' {
@@ -1015,8 +1345,10 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			text := flags['text'] or {
 				if positionals.len > 1 { positionals[1] } else { '' }
 			}
-			verify := if flags.keys().contains('verify') { 'true' } else { 'false' }
-			verify_timeout := flags['verify-timeout'] or { flags['verifyTimeout'] or { '1500' } }
+			verify := cli_bool_text(flags['verify'] or { 'false' }, '--verify')!
+			verify_timeout := cli_int_arg(flags['verify-timeout'] or {
+				flags['verifyTimeout'] or { '1500' }
+			}, '--verify-timeout', 0, 600000)!
 			return 'type', '{"selector":${json_str(sel)},"text":${json_str(text)},"verify":${json_str(verify)},"verifyTimeout":${verify_timeout}}'
 		}
 		'keyboard' {
@@ -1062,7 +1394,7 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 					if positionals.len > 0 { positionals[0] } else { 'down' }
 				}
 			}
-			px := flags['px'] or { '300' }
+			px := cli_int_arg(flags['px'] or { '300' }, '--px', -1000000, 1000000)!
 			sel := flags['selector'] or { '' }
 			return 'scroll', '{"direction":${json_str(dir)},"px":${px},"selector":${json_str(sel)}}'
 		}
@@ -1086,9 +1418,12 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			files := flags['files'] or {
 				if positionals.len > 1 { positionals[1..].join(',') } else { '' }
 			}
-			verify := if flags.keys().contains('verify') { 'true' } else { 'false' }
-			verify_timeout := flags['verify-timeout'] or { flags['verifyTimeout'] or { '1500' } }
-			wait_preview := if flags.keys().contains('wait-preview') { 'true' } else { 'false' }
+			verify := cli_bool_text(flags['verify'] or { 'false' }, '--verify')!
+			verify_timeout := cli_int_arg(flags['verify-timeout'] or {
+				flags['verifyTimeout'] or { '1500' }
+			}, '--verify-timeout', 0, 600000)!
+			wait_preview := cli_bool_text(flags['wait-preview'] or { 'false' },
+				'--wait-preview')!
 			preview_selector := flags['preview-selector'] or { flags['previewSelector'] or { '' } }
 			return 'upload', '{"selector":${json_str(sel)},"files":${json_str(files)},"verify":${json_str(verify)},"verifyTimeout":${verify_timeout},"waitPreview":${json_str(wait_preview)},"previewSelector":${json_str(preview_selector)}}'
 		}
@@ -1137,15 +1472,24 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 		'wait' {
 			download_path := flags['download'] or { flags['d'] or { '' } }
 			if download_path != '' || 'download' in flags || 'd' in flags {
-				timeout := flags['timeout'] or { '30000' }
+				timeout := cli_int_arg(flags['timeout'] or { '30000' }, '--timeout', 0, 3600000)!
 				resolved_download_path := if download_path == 'true' { '' } else { download_path }
 				return 'wait', '{"download":${json_str(resolved_download_path)},"timeout":${timeout}}'
 			}
+			// --stable 必须排在位置参数之前：`wait --stable '#btn'` 的选择器
+			// 会被通用 flag 解析收进 flags['stable']，若先处理位置参数就会
+			// 退化成普通选择器等待，丢掉「等待内容稳定」的语义。
+			if 'stable' in flags {
+				stable := flags['stable'] or { '' }
+				timeout := cli_int_arg(flags['timeout'] or { '30000' }, '--timeout', 0, 3600000)!
+				return 'wait', '{"stable":${json_str(stable)},"timeout":${timeout}}'
+			}
 			if positionals.len > 0 {
 				arg := positionals[0]
-				// 纯数字 → ms
-				if arg.int() > 0 {
-					return 'wait', '{"ms":${arg}}'
+				// 数字开头的等待时长不能在解析失败时退化成选择器。
+				if arg.len > 0 && (arg[0].is_digit() || arg[0] == `-` || arg[0] == `+`) {
+					ms := cli_int_arg(arg, 'ms', 0, 3600000)!
+					return 'wait', '{"ms":${ms}}'
 				}
 				// 选择器
 				return 'wait', '{"selector":${json_str(arg)}}'
@@ -1162,11 +1506,7 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			if fn_e := flags['fn'] {
 				return 'wait', '{"fn":${json_str(fn_e)}}'
 			}
-			if stable := flags['stable'] {
-				timeout := flags['timeout'] or { '30000' }
-				return 'wait', '{"stable":${json_str(stable)},"timeout":${timeout}}'
-			}
-			return 'wait', '{"ms":"1000"}'
+			return 'wait', '{"ms":1000}'
 		}
 		// ── find（语义定位器）──
 		'find' {
@@ -1197,8 +1537,8 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			}
 			mut query := flags[loc_key] or { '' }
 			mut index := flags['index'] or { '' }
-			debug_mode := if flags.keys().contains('debug') { 'true' } else { 'false' }
-			list_mode := if flags.keys().contains('list') { 'true' } else { 'false' }
+			debug_mode := cli_bool_text(flags['debug'] or { 'false' }, '--debug')!
+			list_mode := cli_bool_text(flags['list'] or { 'false' }, '--list')!
 			mut action_pos := 1
 			if query == '' && positionals.len > 1 {
 				match loc_key {
@@ -1217,7 +1557,7 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 					else {}
 				}
 			}
-			action := if flags.keys().contains('click') {
+			action := if cli_parse_bool(flags['click'] or { 'false' })! {
 				'click'
 			} else if flags.keys().contains('fill') {
 				'fill'
@@ -1241,7 +1581,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			value := flags['value'] or {
 				if positionals.len > action_pos + 1 { positionals[action_pos + 1] } else { '' }
 			}
-			exact := if flags.keys().contains('exact') { 'true' } else { 'false' }
+			exact := cli_bool_text(flags['exact'] or { 'false' }, '--exact')!
+			// index 保持字符串形态（服务端按字符串读取），但必须是合法整数。
+			if index != '' {
+				index = cli_int_arg(index, '--index', -1, 1000000)!.str()
+			}
 			name_filter := flags['name'] or { '' }
 			return 'find', '{"locator":${json_str(loc_key)},"query":${json_str(query)},"action":${json_str(action)},"value":${json_str(value)},"exact":${json_str(exact)},"name":${json_str(name_filter)},"index":${json_str(index)},"debug":${json_str(debug_mode)},"list":${json_str(list_mode)}}'
 		}
@@ -1249,7 +1593,7 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 		'eval', 'js', 'execute', 'run' {
 			expr, as_b64, read_error := resolve_eval_input(flags, positionals, stdin_reader,
 				file_reader)
-			await_p := flags['await'] or { 'false' }
+			await_p := cli_bool_text(flags['await'] or { 'false' }, '--await')!
 			return 'eval', '{"expression":${json_str(expr)},"awaitPromise":${json_str(await_p)},"base64":${json_str(if as_b64 {
 				'true'
 			} else {
@@ -1275,15 +1619,15 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 						}
 					}
 					window_id := flags['window-id'] or { '' }
-					return 'tab', '{"action":"switch","tabId":${if tab_id != '' {
-						tab_id
-					} else {
-						'0'
-					}},"windowId":${if window_id != '' {
-						window_id
-					} else {
-						'0'
-					}}}'
+					mut tab := 0
+					if tab_id != '' {
+						tab = cli_int_arg(tab_id, '--tab-id', 0, 2147483647)!
+					}
+					mut win := 0
+					if window_id != '' {
+						win = cli_int_arg(window_id, '--window-id', 0, 2147483647)!
+					}
+					return 'tab', '{"action":"switch","tabId":${tab},"windowId":${win}}'
 				}
 				'close' {
 					tid := flags['id'] or {
@@ -1291,11 +1635,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 							if positionals.len > 1 { positionals[1] } else { '' }
 						}
 					}
-					return 'tab', '{"action":"close","tabId":${if tid != '' {
-						tid
-					} else {
-						'0'
-					}}}'
+					mut tab := 0
+					if tid != '' {
+						tab = cli_int_arg(tid, '--tab-id', 0, 2147483647)!
+					}
+					return 'tab', '{"action":"close","tabId":${tab}}'
 				}
 				else {
 					return 'tab', '{"action":"list"}'
@@ -1316,16 +1660,16 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			action := flags['action'] or {
 				if positionals.len > 0 { positionals[0] } else { '' }
 			}
-			x := flags['x'] or {
+			x := cli_float_arg(flags['x'] or {
 				if positionals.len > 1 { positionals[1] } else { '0' }
-			}
-			y := flags['y'] or {
+			}, '--x', -100000, 100000)!
+			y := cli_float_arg(flags['y'] or {
 				if positionals.len > 2 { positionals[2] } else { '0' }
-			}
+			}, '--y', -100000, 100000)!
 			btn := flags['button'] or { 'left' }
-			dx := flags['dx'] or { '0' }
-			dy := flags['dy'] or { '0' }
-			return 'mouse', '{"action":${json_str(action)},"x":${x},"y":${y},"button":${json_str(btn)},"dx":${dx},"dy":${dy}}'
+			dx := cli_float_arg(flags['dx'] or { '0' }, '--dx', -100000, 100000)!
+			dy := cli_float_arg(flags['dy'] or { '0' }, '--dy', -100000, 100000)!
+			return 'mouse', '{"action":${json_str(action)},"x":${cli_number_text(x)},"y":${cli_number_text(y)},"button":${json_str(btn)},"dx":${cli_number_text(dx)},"dy":${cli_number_text(dy)}}'
 		}
 		// ── cookies ──
 		'cookies', 'cookie' {
@@ -1361,7 +1705,7 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 				if positionals.len > 0 { positionals[0] } else { 'requests' }
 			}
 			url := flags['url'] or { '' }
-			abort := flags['abort'] or { 'false' }
+			abort := cli_bool_text(flags['abort'] or { 'false' }, '--abort')!
 			body := flags['body'] or { '' }
 			filter := flags['filter'] or { '' }
 			mut limit := flags['limit'] or { '' }
@@ -1374,21 +1718,28 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			method_override := flags['method'] or { '' }
 			url_override := flags['override-url'] or { flags['url-override'] or { '' } }
 			body_override := flags['override-body'] or { flags['body-override'] or { '' } }
-			headers_override := flags['override-headers'] or { flags['headers-override'] or { '' } }
-			dry_run := flags['dry-run'] or { flags['dryRun'] or { 'false' } }
-			capture_body := flags['capture-body'] or { flags['captureBody'] or { 'false' } }
-			capture_response := flags['capture-response'] or {
+			// headers 允许 JSON：必须先解析再重新编码，禁止原始字符串进入行协议。
+			headers_override := cli_json_object_arg(flags['override-headers'] or {
+				flags['headers-override'] or { '{}' }
+			}, '--override-headers')!
+			dry_run := cli_bool_text(flags['dry-run'] or { flags['dryRun'] or { 'false' } },
+				'--dry-run')!
+			capture_body := cli_bool_text(flags['capture-body'] or {
+				flags['captureBody'] or { 'false' }
+			}, '--capture-body')!
+			capture_response := cli_bool_text(flags['capture-response'] or {
 				flags['captureResponse'] or { 'false' }
-			}
-			persistent := flags['persistent'] or { 'true' }
-			clear := flags['clear'] or { 'true' }
+			}, '--capture-response')!
+			persistent := cli_bool_text(flags['persistent'] or { 'true' }, '--persistent')!
+			clear := cli_bool_text(flags['clear'] or { 'true' }, '--clear')!
 			script_id := flags['script-id'] or { flags['scriptId'] or { '' } }
 			mut max_body_len := flags['max-body-len'] or { flags['maxBodyLen'] or { '' } }
 			mime := flags['mime'] or { '' }
 			status_filter := flags['status'] or { '' }
 			domain := flags['domain'] or { '' }
 			rtype := flags['type'] or { '' }
-			all_frames := flags['all-frames'] or { flags['allFrames'] or { 'false' } }
+			all_frames := cli_bool_text(flags['all-frames'] or { flags['allFrames'] or { 'false' } },
+				'--all-frames')!
 			// 支持 network body/headers <requestId> 语法
 			if action == 'body' && request_id == '' && positionals.len > 1 {
 				request_id = positionals[1]
@@ -1435,6 +1786,13 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			}
 			if action == 'inspect' && limit == '' && positionals.len > 1 {
 				limit = positionals[1]
+			}
+			// limit / maxBodyLen 保持字符串形态（服务端按字符串读取），但必须是合法整数。
+			if limit != '' {
+				limit = cli_int_arg(limit, '--limit', 0, 1000000)!.str()
+			}
+			if max_body_len != '' {
+				max_body_len = cli_int_arg(max_body_len, '--max-body-len', 0, 100000000)!.str()
 			}
 			return 'network', '{"action":${json_str(action)},"subaction":${json_str(subaction)},"url":${json_str(url)},"abort":${json_str(abort)},"body":${json_str(body)},"filter":${json_str(filter)},"limit":${json_str(limit)},"requestId":${json_str(request_id)},"recordId":${json_str(record_id)},"method":${json_str(method_override)},"overrideUrl":${json_str(url_override)},"overrideBody":${json_str(body_override)},"overrideHeaders":${json_str(headers_override)},"dryRun":${json_str(dry_run)},"captureBody":${json_str(capture_body)},"captureResponse":${json_str(capture_response)},"persistent":${json_str(persistent)},"clear":${json_str(clear)},"scriptId":${json_str(script_id)},"maxBodyLen":${json_str(max_body_len)},"mime":${json_str(mime)},"status":${json_str(status_filter)},"domain":${json_str(domain)},"type":${json_str(rtype)},"allFrames":${json_str(all_frames)},"path":${json_str(path)}}'
 		}
@@ -1494,16 +1852,16 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			}
 			match prop {
 				'viewport' {
-					w := flags['width'] or {
+					w := cli_int_arg(flags['width'] or {
 						if positionals.len > 1 { positionals[1] } else { '1280' }
-					}
-					h := flags['height'] or {
+					}, '--width', 1, 100000)!
+					h := cli_int_arg(flags['height'] or {
 						if positionals.len > 2 { positionals[2] } else { '800' }
-					}
-					scale := flags['scale'] or {
+					}, '--height', 1, 100000)!
+					scale := cli_float_arg(flags['scale'] or {
 						if positionals.len > 3 { positionals[3] } else { '1' }
-					}
-					return 'set', '{"property":"viewport","width":${w},"height":${h},"scale":${scale}}'
+					}, '--scale', 0.01, 100)!
+					return 'set', '{"property":"viewport","width":${w},"height":${h},"scale":${cli_number_text(scale)}}'
 				}
 				'device' {
 					value := flags['value'] or {
@@ -1512,22 +1870,23 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 					return 'set', '{"property":"device","value":${json_str(value)}}'
 				}
 				'geo', 'geolocation' {
-					lat := flags['lat'] or {
+					lat := cli_float_arg(flags['lat'] or {
 						if positionals.len > 1 { positionals[1] } else { '0' }
-					}
-					lng := flags['lng'] or {
+					}, '--lat', -90, 90)!
+					lng := cli_float_arg(flags['lng'] or {
 						flags['lon'] or {
 							if positionals.len > 2 { positionals[2] } else { '0' }
 						}
-					}
-					return 'set', '{"property":"geo","lat":${lat},"lng":${lng}}'
+					}, '--lng', -180, 180)!
+					return 'set', '{"property":"geo","lat":${cli_number_text(lat)},"lng":${cli_number_text(lng)}}'
 				}
 				'offline' {
 					value := flags['value'] or { 'on' }
 					return 'set', '{"property":"offline","value":${json_str(value)}}'
 				}
 				'headers' {
-					headers := flags['headers'] or { '{}' }
+					// headers 允许 JSON：先解析再重新编码，禁止原始字符串进入行协议。
+					headers := cli_json_object_arg(flags['headers'] or { '{}' }, '--headers')!
 					return 'set', '{"property":"headers","headers":${headers}}'
 				}
 				'credentials' {
@@ -1555,10 +1914,11 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 						if positionals.len > 1 { positionals[1] } else { '' }
 					}
 					output := flags['output'] or { flags['o'] or { '' } }
-					threshold := flags['threshold'] or { flags['t'] or { '0.1' } }
+					threshold := cli_float_arg(flags['threshold'] or { flags['t'] or { '0.1' } },
+						'--threshold', 0, 1)!
 					selector := flags['selector'] or { flags['s'] or { '' } }
-					full := flags['full'] or { 'false' }
-					return 'diff', '{"type":"screenshot","baseline":${json_str(baseline)},"output":${json_str(output)},"threshold":${threshold},"selector":${json_str(selector)},"full":${json_str(full)}}'
+					full := cli_bool_text(flags['full'] or { 'false' }, '--full')!
+					return 'diff', '{"type":"screenshot","baseline":${json_str(baseline)},"output":${json_str(output)},"threshold":${cli_number_text(threshold)},"selector":${json_str(selector)},"full":${json_str(full)}}'
 				}
 				'url' {
 					url1 := flags['url1'] or {
@@ -1567,12 +1927,14 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 					url2 := flags['url2'] or {
 						if positionals.len > 2 { positionals[2] } else { '' }
 					}
-					screenshot := flags['screenshot'] or { 'false' }
-					full := flags['full'] or { 'false' }
+					screenshot := cli_bool_text(flags['screenshot'] or { 'false' },
+						'--screenshot')!
+					full := cli_bool_text(flags['full'] or { 'false' }, '--full')!
 					wait_until := flags['wait-until'] or { 'load' }
 					selector := flags['selector'] or { flags['s'] or { '' } }
-					compact := flags['compact'] or { 'false' }
-					max_depth := flags['depth'] or { flags['d'] or { '0' } }
+					compact := cli_bool_text(flags['compact'] or { 'false' }, '--compact')!
+					max_depth := cli_int_arg(flags['depth'] or { flags['d'] or { '0' } },
+						'--depth', 0, 10000)!
 					return 'diff', '{"type":"url","url1":${json_str(url1)},"url2":${json_str(url2)},"screenshot":${json_str(screenshot)},"full":${json_str(full)},"waitUntil":${json_str(wait_until)},"selector":${json_str(selector)},"compact":${json_str(compact)},"maxDepth":${max_depth}}'
 				}
 				else {
@@ -1580,8 +1942,9 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 						if positionals.len > 1 { positionals[1] } else { '' }
 					}
 					selector := flags['selector'] or { flags['s'] or { '' } }
-					compact := flags['compact'] or { 'false' }
-					max_depth := flags['depth'] or { flags['d'] or { '0' } }
+					compact := cli_bool_text(flags['compact'] or { 'false' }, '--compact')!
+					max_depth := cli_int_arg(flags['depth'] or { flags['d'] or { '0' } },
+						'--depth', 0, 10000)!
 					return 'diff', '{"type":${json_str(dtype)},"baseline":${json_str(baseline)},"selector":${json_str(selector)},"compact":${json_str(compact)},"maxDepth":${max_depth}}'
 				}
 			}
@@ -1630,7 +1993,8 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 			// 构造最简 params：把所有 positionals 和 flags 塞进去
 			mut p := '{"_cmd":${json_str(cmd)}'
 			for k, v in flags {
-				p += ',"${k}":${json_str(v)}'
+				// 选项名同样来自外部输入，必须转义后再拼进 JSON。
+				p += ',${json_str(k)}:${json_str(v)}'
 			}
 			for j, pos in positionals {
 				p += ',"arg${j}":${json_str(pos)}'
@@ -1642,6 +2006,60 @@ fn parse_cli_to_ipc_with_readers(cmd string, args []string, raw_output bool, std
 }
 
 // ─── IPC 客户端 ──────────────────────────────────────────────
+// 响应读取的总超时与大小上限：避免 CLI 永久挂死或被超大响应撑爆内存。
+// 没有显式等待时长的命令沿用默认 deadline。
+const ipc_default_response_deadline = 60 * time.second
+
+// 命令声明了等待时长时，在其基础上追加的余量（服务端收尾 / 编码耗时）。
+const ipc_deadline_margin = 30 * time.second
+
+// deadline 上限：防止异常参数把 CLI 挂死。
+const ipc_max_response_deadline = 2 * time.hour
+
+const ipc_max_response_bytes = 16 * 1024 * 1024
+
+// ipc_response_deadline_for_params 按请求参数推导 IPC 响应 deadline。
+// 服务端的 wait / wait --download 会睡满请求里的时长，固定 60s 会把
+// `wait 90000`、`wait --download --timeout 300000` 这类合法用法掐断，
+// 所以按请求声明的等待时长 + 余量计算；没有等待时长时沿用默认 60s。
+fn ipc_response_deadline_for_params(params string) time.Duration {
+	obj := cdp_json_object(params)
+	mut requested_ms := 0
+	for key in ['timeout', 'ms', 'verifyTimeout'] {
+		ms := ipc_param_duration_ms(obj, key)
+		if ms > requested_ms {
+			requested_ms = ms
+		}
+	}
+	if requested_ms <= 0 {
+		return ipc_default_response_deadline
+	}
+	deadline := time.Duration(requested_ms) * time.millisecond + ipc_deadline_margin
+	// 请求时长比默认等待还短时沿用默认值，不因为一个小的 verify-timeout
+	// 把整体 deadline 收窄。
+	if deadline < ipc_default_response_deadline {
+		return ipc_default_response_deadline
+	}
+	if deadline > ipc_max_response_deadline {
+		return ipc_max_response_deadline
+	}
+	return deadline
+}
+
+// ipc_param_duration_ms 读取参数里的毫秒数：数字或数字字符串都接受，
+// 缺失 / 非法一律按 0（不参与 deadline 推导）处理。
+fn ipc_param_duration_ms(obj map[string]json.Any, key string) int {
+	ms, ok := cdp_json_int_ok(obj, key)
+	if ok {
+		return ms
+	}
+	text := cdp_json_str(obj, key)
+	if text == '' {
+		return 0
+	}
+	return cli_parse_int(text) or { 0 }
+}
+
 fn send_ipc(method string, params string) !string {
 	return send_ipc_internal(method, params, true)
 }
@@ -1670,7 +2088,10 @@ fn send_ipc_internal(method string, params string, auto_start bool) !string {
 		return error('cannot connect to v-browser server on port ${port}: ${err}')
 	}
 	defer { conn.close() or {} }
-	conn.set_read_timeout(180 * time.second)
+	// deadline 按请求参数推导：长等待命令不能被固定的 60s 掐断。
+	deadline := ipc_response_deadline_for_params(params)
+	// 单次读超时与总超时保持一致：整体等待不会超过本次 deadline。
+	conn.set_read_timeout(deadline)
 
 	// 发送请求
 	req := IpcRequest{
@@ -1680,21 +2101,55 @@ fn send_ipc_internal(method string, params string, auto_start bool) !string {
 	}
 	conn.write_string(ipc_encode_request(req)) or { return error('send failed: ${err}') }
 
-	// 读取响应
+	return read_ipc_response(mut conn, req.id, deadline, ipc_max_response_bytes)
+}
+
+fn read_ipc_response(mut conn net.TcpConn, request_id int, timeout time.Duration, max_bytes int) !string {
 	mut buf := []u8{len: 65536}
-	mut raw := ''
+	mut raw := []u8{}
+	deadline := time.now().add(timeout)
+	conn.set_read_deadline(deadline)
 	for {
-		n := conn.read(mut buf) or { break }
-		if n == 0 {
-			break
+		remaining := deadline - time.now()
+		if remaining <= 0 {
+			return error('timed out waiting for the v-browser server response')
 		}
-		raw += buf[..n].bytestr()
-		if raw.contains('\n') {
+		// 每轮收紧阻塞 recv 的超时，慢速分片不能重新获得完整等待时间。
+		conn.set_read_timeout(remaining)
+		n := conn.read(mut buf) or {
+			if err is io.Eof {
+				return error('v-browser server closed the connection before sending a complete response')
+			}
+			return error('read failed: ${err}')
+		}
+		if n == 0 {
+			return error('v-browser server closed the connection before sending a complete response')
+		}
+		if time.now() >= deadline {
+			return error('timed out waiting for the v-browser server response')
+		}
+		mut frame_end := n
+		mut complete := false
+		for j in 0 .. n {
+			if buf[j] == `\n` {
+				frame_end = j + 1
+				complete = true
+				break
+			}
+		}
+		if raw.len + frame_end > max_bytes {
+			return error('v-browser server response exceeds the ${max_bytes} byte limit')
+		}
+		raw << buf[..frame_end]
+		if complete {
 			break
 		}
 	}
 
-	resp := ipc_decode_response(raw.trim_space()) or { return error('parse response: ${err}') }
+	resp := ipc_decode_response(raw.bytestr().trim_space()) or { return error('parse response: ${err}') }
+	if resp.id != request_id {
+		return error('unexpected response id ${resp.id} (expected ${request_id})')
+	}
 	if resp.err != '' {
 		return error(resp.err)
 	}

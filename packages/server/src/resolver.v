@@ -3,19 +3,30 @@
 //        + backend_node_id 用于 DOM 操作
 module main
 
+import x.json2
+
 struct ResolvedElement {
 	x               f64
 	y               f64
 	width           f64
 	height          f64
 	backend_node_id int
-	object_id       string // Runtime RemoteObjectId
 }
 
 struct DomNodeRef {
 	backend_node_id int
-	object_id       string
 }
+
+// Rect 元素在视口中的矩形信息
+struct Rect {
+	x      f64
+	y      f64
+	width  f64
+	height f64
+}
+
+// 取边界框的页面函数：非 Element 节点返回标记对象，避免把异常当成 0 坐标成功。
+const rect_query_function = 'function(){if(!this||this.nodeType!==1){return {__vbrowserNotElement:true,nodeType:(this&&this.nodeType||-1)};}var r=this.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};}'
 
 // resolve_selector 统一解析选择器，返回元素信息
 fn resolve_selector(mut sess CdpSession, sel string) !ResolvedElement {
@@ -54,6 +65,11 @@ fn resolve_css(mut sess CdpSession, sel string) !ResolvedElement {
 	eval_resp := sess.send_command('Runtime.evaluate', '{"expression":${js_str(js)},"returnByValue":true}') or {
 		return error('Runtime.evaluate failed: ${err}')
 	}
+	// 页面脚本抛异常时不能当成「元素不存在」，必须显式报错。
+	exc := cdp_exception_detail(eval_resp.result)
+	if exc != '' {
+		return error('Runtime.evaluate raised an exception: ${exc}')
+	}
 
 	result_obj := cdp_extract_obj_key(eval_resp.result, '"result":')
 	value_obj := cdp_extract_obj_key(result_obj, '"value":')
@@ -61,20 +77,16 @@ fn resolve_css(mut sess CdpSession, sel string) !ResolvedElement {
 		return error('element not found: ${sel}')
 	}
 
-	x := cdp_extract_float(value_obj, 'x')
-	y := cdp_extract_float(value_obj, 'y')
-	w := cdp_extract_float(value_obj, 'width')
-	h := cdp_extract_float(value_obj, 'height')
+	rect := parse_rect_value(value_obj) or { return err }
 
 	node_ref := get_dom_node_ref(mut sess, sel) or { DomNodeRef{} }
 
 	return ResolvedElement{
-		x:               x + w / 2
-		y:               y + h / 2
-		width:           w
-		height:          h
+		x:               rect.x + rect.width / 2
+		y:               rect.y + rect.height / 2
+		width:           rect.width
+		height:          rect.height
 		backend_node_id: node_ref.backend_node_id
-		object_id:       node_ref.object_id
 	}
 }
 
@@ -88,23 +100,30 @@ fn get_box_by_backend_node_id(mut sess CdpSession, bnid int) !ResolvedElement {
 	if object_id == '' {
 		return error('could not resolve backendNodeId ${bnid}')
 	}
+	// 远端对象只服务于本次边界框查询，退出时（含错误路径）立即释放，避免渲染进程堆积对象。
+	defer { release_remote_object(mut sess, object_id) }
+
 	// 通过 Runtime 获取 boundingClientRect
-	call_resp := sess.send_command('Runtime.callFunctionOn', '{"objectId":${json_str(object_id)},"functionDeclaration":"function(){return this.getBoundingClientRect()}","returnByValue":true}') or {
+	call_resp := sess.send_command('Runtime.callFunctionOn', '{"objectId":${json_str(object_id)},"functionDeclaration":${json_str(rect_query_function)},"returnByValue":true}') or {
 		return error('callFunctionOn failed: ${err}')
+	}
+	// 先看异常详情：节点失效或不是 Element 都会在这里抛出，不能当成 0 坐标成功。
+	exc := cdp_exception_detail(call_resp.result)
+	if exc != '' {
+		return error('callFunctionOn raised an exception: ${exc}')
 	}
 	result_obj := cdp_extract_obj_key(call_resp.result, '"result":')
 	value_obj := cdp_extract_obj_key(result_obj, '"value":')
-	x := cdp_extract_float(value_obj, 'x')
-	y := cdp_extract_float(value_obj, 'y')
-	w := cdp_extract_float(value_obj, 'width')
-	h := cdp_extract_float(value_obj, 'height')
+	if value_obj.contains('"__vbrowserNotElement"') {
+		return error('backendNodeId ${bnid} is not an Element node')
+	}
+	rect := parse_rect_value(value_obj) or { return err }
 	return ResolvedElement{
-		x:               x + w / 2
-		y:               y + h / 2
-		width:           w
-		height:          h
+		x:               rect.x + rect.width / 2
+		y:               rect.y + rect.height / 2
+		width:           rect.width
+		height:          rect.height
 		backend_node_id: bnid
-		object_id:       object_id
 	}
 }
 
@@ -117,25 +136,82 @@ fn get_dom_node_ref(mut sess CdpSession, sel string) !DomNodeRef {
 	if object_id == '' {
 		return error('element not found: ${sel}')
 	}
+	// 远端对象只用来换取 backendNodeId，取到后立即释放（含错误路径）。
+	defer { release_remote_object(mut sess, object_id) }
+	exc := cdp_exception_detail(resolve_resp.result)
+	if exc != '' {
+		return error('Runtime.evaluate raised an exception: ${exc}')
+	}
 	node_resp := sess.send_command('DOM.requestNode', '{"objectId":${json_str(object_id)}}') or {
-		return DomNodeRef{
-			object_id: object_id
-		}
+		return DomNodeRef{}
 	}
 	nid := cdp_extract_int(node_resp.result, '"nodeId":')
 	if nid == 0 {
-		return DomNodeRef{
-			object_id: object_id
-		}
+		return DomNodeRef{}
 	}
 	desc_resp := sess.send_command('DOM.describeNode', '{"nodeId":${nid},"depth":0}') or {
-		return DomNodeRef{
-			object_id: object_id
-		}
+		return DomNodeRef{}
 	}
 	return DomNodeRef{
 		backend_node_id: cdp_extract_int(desc_resp.result, '"backendNodeId":')
-		object_id:       object_id
+	}
+}
+
+// release_remote_object 释放 Runtime 远端对象；会话已断开时忽略失败。
+fn release_remote_object(mut sess CdpSession, object_id string) {
+	if object_id == '' {
+		return
+	}
+	sess.send_command('Runtime.releaseObject', '{"objectId":${json_str(object_id)}}') or { return }
+}
+
+// cdp_exception_detail 从 CDP 响应里提取异常详情文本；没有异常时返回空串。
+fn cdp_exception_detail(result string) string {
+	exc := cdp_extract_obj_key(result, '"exceptionDetails":')
+	if exc == '' || exc == 'null' {
+		return ''
+	}
+	desc := cdp_extract_str(exc, 'description')
+	if desc != '' {
+		return desc
+	}
+	text := cdp_extract_str(exc, 'text')
+	if text != '' {
+		return text
+	}
+	return exc
+}
+
+// parse_rect_value 解析边界框对象：必须是含 x/y/width/height 数字字段的 JSON 对象。
+fn parse_rect_value(value_obj string) !Rect {
+	trimmed := value_obj.trim_space()
+	if !trimmed.starts_with('{') {
+		return error('unexpected bounding box payload: ${trimmed}')
+	}
+	obj := json2.decode[map[string]json2.Any](trimmed) or {
+		return error('invalid bounding box payload: ${trimmed}')
+	}
+	x := rect_number(obj, 'x') or { return err }
+	y := rect_number(obj, 'y') or { return err }
+	width := rect_number(obj, 'width') or { return err }
+	height := rect_number(obj, 'height') or { return err }
+	return Rect{
+		x:      x
+		y:      y
+		width:  width
+		height: height
+	}
+}
+
+// rect_number 读取矩形对象里的数值字段；字段缺失或不是数字时返回错误，避免默认成 0 坐标。
+fn rect_number(obj map[string]json2.Any, key string) !f64 {
+	v := obj[key] or { return error('bounding box is missing "${key}"') }
+	match v {
+		f64 { return v }
+		f32 { return f64(v) }
+		i64, int, i32, i16, i8 { return f64(v) }
+		u64, u32, u16, u8 { return f64(v) }
+		else { return error('bounding box field "${key}" is not a number') }
 	}
 }
 

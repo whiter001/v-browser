@@ -1,5 +1,7 @@
 module main
 
+import x.json2
+
 // hex_char_to_int 将十六进制字符转换为整数
 fn hex_char_to_int(c u8) int {
 	if c >= `0` && c <= `9` {
@@ -75,7 +77,7 @@ fn cli_error_message(result string) string {
 
 // 尽量把原始字符串保持为 JSON 字面量，否则按普通字符串转义。
 fn json_value_or_string(value string) string {
-	trimmed := value.trim_space()
+	trimmed := value.trim(' \t\r\n')
 	if trimmed == '' {
 		return 'null'
 	}
@@ -85,19 +87,131 @@ fn json_value_or_string(value string) string {
 	return json_str(value)
 }
 
-// 判断字符串是否已经是可直接输出的 JSON 字面量。
+// 判断字符串是否恰好是一个完整的 JSON 值，可以原样拼进结果对象。
+// json2 只保证「首个值」合法，尾随内容（如 `0,"ok":false`）会被忽略，
+// 所以先用结构扫描定位值的结束位置，要求它覆盖整个输入，再交给 json2 严格校验语法。
 fn is_json_literal(value string) bool {
-	if value.len == 0 {
+	trimmed := value.trim(' \t\r\n')
+	if trimmed.len == 0 {
 		return false
 	}
-	if value.starts_with('{') || value.starts_with('[') || value.starts_with('"') {
-		return true
+	end := json_value_end(trimmed)
+	if end != trimmed.len {
+		return false
 	}
-	if value == 'true' || value == 'false' || value == 'null' || value == 'undefined' {
-		return true
+	_ := json2.decode[json2.Any](trimmed, strict: true) or { return false }
+	return true
+}
+
+// 返回 s 中第一个 JSON 值的结束位置（不含）；结构不完整或不是合法起始时返回 -1。
+fn json_value_end(s string) int {
+	mut i := 0
+	for i < s.len && (s[i] == ` ` || s[i] == `\t` || s[i] == `\n` || s[i] == `\r`) {
+		i++
 	}
-	first := value[0]
-	return (first >= `0` && first <= `9`) || first == `-`
+	if i >= s.len {
+		return -1
+	}
+	if s[i] == `"` {
+		return json_string_end(s, i)
+	}
+	if s[i] == `{` || s[i] == `[` {
+		return json_container_end(s, i)
+	}
+	for lit in ['true', 'false', 'null'] {
+		if s.len >= i + lit.len && s[i..i + lit.len] == lit {
+			return i + lit.len
+		}
+	}
+	return json_number_end(s, i)
+}
+
+// 结束位置在收尾引号之后；补足 json2 对字符串内裸控制字符的校验。
+fn json_string_end(s string, i int) int {
+	mut j := i + 1
+	for j < s.len {
+		if s[j] < 0x20 {
+			return -1
+		}
+		if s[j] == `\\` {
+			if j + 1 >= s.len || s[j + 1] < 0x20 {
+				return -1
+			}
+			j += 2
+			continue
+		}
+		if s[j] == `"` {
+			return j + 1
+		}
+		j++
+	}
+	return -1
+}
+
+fn json_container_end(s string, i int) int {
+	mut depth := 0
+	mut j := i
+	for j < s.len {
+		c := s[j]
+		if c == `"` {
+			j = json_string_end(s, j)
+			if j < 0 {
+				return -1
+			}
+			continue
+		} else if c == `{` || c == `[` {
+			depth++
+		} else if c == `}` || c == `]` {
+			depth--
+			if depth == 0 {
+				return j + 1
+			}
+		}
+		j++
+	}
+	return -1
+}
+
+// 返回数字值的结束位置；不是数字起始时返回 -1。
+fn json_number_end(s string, i int) int {
+	mut j := i
+	if j < s.len && (s[j] == `-` || s[j] == `+`) {
+		j++
+	}
+	mut digits := 0
+	for j < s.len && s[j] >= `0` && s[j] <= `9` {
+		j++
+		digits++
+	}
+	if digits == 0 {
+		return -1
+	}
+	if j < s.len && s[j] == `.` {
+		j++
+		mut frac := 0
+		for j < s.len && s[j] >= `0` && s[j] <= `9` {
+			j++
+			frac++
+		}
+		if frac == 0 {
+			return -1
+		}
+	}
+	if j < s.len && (s[j] == `e` || s[j] == `E`) {
+		j++
+		if j < s.len && (s[j] == `-` || s[j] == `+`) {
+			j++
+		}
+		mut exp := 0
+		for j < s.len && s[j] >= `0` && s[j] <= `9` {
+			j++
+			exp++
+		}
+		if exp == 0 {
+			return -1
+		}
+	}
+	return j
 }
 
 // 把常见错误消息归类成稳定的错误码。
@@ -105,6 +219,10 @@ fn error_code(message string) string {
 	msg := message.to_lower()
 	if msg.contains('unknown command') {
 		return 'UNKNOWN_COMMAND'
+	}
+	// 具体匹配必须排在通用 `invalid ` 之前，否则 AUTH_FAILED 永远不可达。
+	if msg.contains('invalid token') {
+		return 'AUTH_FAILED'
 	}
 	if msg.contains('missing ') || msg.contains('requires ') || msg.contains('invalid ') {
 		return 'INVALID_ARGUMENT'
@@ -121,9 +239,6 @@ fn error_code(message string) string {
 	}
 	if msg.contains('no extension connected') || msg.contains('no tab is connected') {
 		return 'NOT_CONNECTED'
-	}
-	if msg.contains('invalid token') {
-		return 'AUTH_FAILED'
 	}
 	if msg.contains('timeout') || msg.contains('timed out') {
 		return 'TIMEOUT'

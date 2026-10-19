@@ -1660,6 +1660,7 @@ fn test_network_hook_status_json_includes_all_frames() {
 
 fn test_handle_hook_binding_push_does_not_advance_poll_index() {
 	mut sess := new_cdp_session(noop_send)
+	sess.hook_state.active = true
 	sess.hook_state.last_synced_index = 4
 	sess.handle_hook_binding_push('{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"}')
 	assert sess.hook_state.last_synced_index == 4
@@ -1670,6 +1671,7 @@ fn test_handle_hook_binding_push_does_not_advance_poll_index() {
 
 fn test_sync_network_hook_records_dedupes_pushed_records() {
 	mut sess := new_cdp_session(noop_send)
+	sess.hook_state.active = true
 	sess.handle_hook_binding_push('{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"}')
 	items :=
 		split_json_array_objects('[{"recordId":"push-1","method":"GET","url":"https://api.example.com/push"},{"recordId":"poll-2","method":"POST","url":"https://api.example.com/poll"}]')

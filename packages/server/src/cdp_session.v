@@ -24,6 +24,27 @@ struct EventSub {
 	ch chan ProtocolResponse
 }
 
+// EventDispatch 描述一个事件订阅的内部分发状态。
+// 每个订阅独占一条分发线程 + 一个有界队列：
+//   - 投递方（WebSocket 读线程）只做非阻塞入队，绝不阻塞；
+//   - 分发线程负责把事件转交给订阅方 channel；
+//   - 队列满时普通事件丢弃并计数，route 关键事件走失败处理；
+//   - unsubscribe / close 会停掉分发线程，解除在途阻塞。
+@[heap]
+struct EventDispatch {
+mut:
+	method   string
+	ch       chan ProtocolResponse // 订阅方读取的 channel
+	queue    chan ProtocolResponse // 分发队列（有界）
+	stop_ch  chan bool             // 停止信号（容量 1）
+	critical bool                  // route 类关键事件：溢出时不能静默丢弃
+	dropped  int                   // 该订阅被丢弃的事件数
+	overflow bool                  // 是否已经发生过队列溢出
+	stopped  bool
+	done_ch  chan bool = chan bool{cap: 1}
+	mu       sync.Mutex
+}
+
 struct NetworkWatchState {
 mut:
 	active            bool
@@ -36,20 +57,22 @@ mut:
 
 struct HookState {
 mut:
-	active            bool
-	injected          bool
-	script_id         string
-	script_version    int
-	filter            string
-	capture_body      bool
-	capture_response  bool
-	max_body_len      int
-	all_frames        bool
-	activate_js       string
-	last_injected_at  string
-	last_synced_index int
-	last_pushed_count int
-	record_count      int
+	active               bool
+	injected             bool
+	script_id            string
+	script_version       int
+	filter               string
+	capture_body         bool
+	capture_response     bool
+	max_body_len         int
+	all_frames           bool
+	activate_js          string
+	last_injected_at     string
+	last_synced_index    int
+	last_pushed_count    int
+	record_count         int
+	record_bytes         int // 累计记录字节数（受上限约束）
+	record_bytes_tracked int // 已计入 record_bytes 的记录条数（用于发现外部增删）
 }
 
 // NetworkFilter 用于细粒度过滤网络请求记录
@@ -195,6 +218,8 @@ mut:
 	pending_mu             sync.Mutex
 	send_fn                ?fn (string) ! // 向扩展 WS 发送 JSON 文本
 	event_subs             map[string][]chan ProtocolResponse
+	event_dispatchers      map[string][]&EventDispatch // 与 event_subs 一一对应的分发器
+	event_dropped          int                         // 累计丢弃的事件数（event_mu 保护）
 	event_mu               sync.Mutex
 	closed                 bool
 	axref                  AxRefStore // @eN 引用映射（snapshot 命令填充）
@@ -209,14 +234,18 @@ mut:
 	hook_state             HookState
 	hook_records           map[string]HookRecord
 	hook_record_order      []string
-	hook_mu                sync.Mutex
-	runtime_contexts       map[int]RuntimeExecutionContext
-	runtime_mu             sync.Mutex
-	current_tab_id         int
-	tab_contexts           map[int]TabContext
-	tab_contexts_mu        sync.Mutex
-	page_enabled           bool
-	page_mu                sync.Mutex
+	// hook 记录上限（每会话）：条数 / 累计字节 / 单条 payload
+	hook_record_limit  int = hook_max_records
+	hook_byte_limit    int = hook_max_total_bytes
+	hook_payload_limit int = hook_max_record_bytes
+	hook_mu            sync.Mutex
+	runtime_contexts   map[int]RuntimeExecutionContext
+	runtime_mu         sync.Mutex
+	current_tab_id     int
+	tab_contexts       map[int]TabContext
+	tab_contexts_mu    sync.Mutex
+	page_enabled       bool
+	page_mu            sync.Mutex
 	// 运行时缓存（debug 命令使用）
 	console_msgs  []string
 	page_errors   []string
@@ -236,6 +265,7 @@ fn new_cdp_session(send_fn fn (string) !) &CdpSession {
 		send_fn:           send_fn
 		pending:           map[int]chan ProtocolResponse{}
 		event_subs:        map[string][]chan ProtocolResponse{}
+		event_dispatchers: map[string][]&EventDispatch{}
 		network_requests:  map[string]TrackedNetworkRequest{}
 		runtime_contexts:  map[int]RuntimeExecutionContext{}
 		hook_records:      map[string]HookRecord{}
@@ -438,7 +468,10 @@ fn (mut s CdpSession) attach_to_tab() !string {
 		}
 		return error(err_msg)
 	}
-	s.activate_tab_context_from_result(resp.result) or {}
+	s.activate_tab_context_from_result(resp.result) or {
+		// 初始化失败不能吞掉：attach 成功但会话没就绪时，调用方必须知道
+		return error(err.msg())
+	}
 	return resp.result
 }
 
@@ -454,7 +487,10 @@ fn (mut s CdpSession) attach_to_tab_by_url(target_url string) !string {
 		resp2 := s.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}') or {
 			return error(err.msg())
 		}
-		s.activate_tab_context_from_result(resp2.result) or {}
+		s.activate_tab_context_from_result(resp2.result) or {
+			// 目标已切换但初始化失败 / 初始化失败，都要如实上报
+			return error(err.msg())
+		}
 		return resp2.result
 	}
 	tab_id, window_id := s.find_best_tab_for_url(target_url)!
@@ -464,7 +500,9 @@ fn (mut s CdpSession) attach_to_tab_by_url(target_url string) !string {
 	resp := s.send_bridge_command('switchToTab', '{"tabId":${tab_id},"windowId":${window_id}}') or {
 		return error(err.msg())
 	}
-	s.activate_tab_context_from_result(resp.result) or {}
+	s.activate_tab_context_from_result(resp.result) or {
+		return error(err.msg())
+	}
 	return resp.result
 }
 
@@ -582,12 +620,17 @@ fn split_json_array_objects(raw string) []string {
 	return items
 }
 
+// activate_tab_context_from_result 激活目标 tab 的上下文。
+// 初始化失败必须把错误抛给调用方（attach / switch 靠它判断目标是否真的就绪），
+// 错误信息里区分「目标已切换」和「会话初始化失败」两种情况。
 fn (mut s CdpSession) activate_tab_context_from_result(result string) ! {
 	tab_id := cdp_extract_int(result, '"tabId":')
 	if tab_id <= 0 {
 		return
 	}
+	mut switched := false
 	if s.current_tab_id > 0 && s.current_tab_id != tab_id {
+		switched = true
 		s.save_current_tab_context()
 		// 切 tab 时旧 tab 还未回的 CDP 命令再回来就会投递到新 tab 的等待者
 		// 上，可能在错误的 page / network 上下文里执行；这里统一 reject 掉
@@ -607,20 +650,48 @@ fn (mut s CdpSession) activate_tab_context_from_result(result string) ! {
 	s.network_mu.@lock()
 	s.network_enabled = false
 	s.network_mu.unlock()
-	s.enable_page_events()!
-	s.enable_network_tracking()!
-	s.restore_runtime_hook_state()!
-	if s.network_watch.active {
+	s.enable_page_events() or {
+		return error(activation_failure_text(switched, tab_id, err.msg()))
+	}
+	s.enable_network_tracking() or {
+		return error(activation_failure_text(switched, tab_id, err.msg()))
+	}
+	s.restore_runtime_hook_state() or {
+		return error(activation_failure_text(switched, tab_id, err.msg()))
+	}
+	s.network_watch_mu.@lock()
+	watch_active := s.network_watch.active
+	s.network_watch_mu.unlock()
+	if watch_active {
 		sync_network_watch_existing_requests(mut s)
 	}
 }
 
+// activation_failure_text 组装 tab 激活失败的错误信息。
+// switched=true 表示目标已经切到新 tab、只是后续初始化没成功；
+// 否则是当前 tab 的会话初始化失败 —— 两者对调用方的处理方式不同。
+fn activation_failure_text(switched bool, tab_id int, reason string) string {
+	if switched {
+		return 'target switched to tab ${tab_id}, but session initialization failed: ${reason}'
+	}
+	return 'session initialization failed for tab ${tab_id}: ${reason}'
+}
+
 // clear_event_subs 清空所有事件订阅 channel。在 tab 切换时调用，避免旧 tab
 // 的事件投递到新 tab 等待者 (#10)。
+// 同时停掉所有分发线程：否则在途分发还可能往旧订阅的 channel 里塞事件。
 fn (mut s CdpSession) clear_event_subs() {
 	s.event_mu.@lock()
+	mut all := []&EventDispatch{}
+	for _, dispatchers in s.event_dispatchers {
+		all << dispatchers
+	}
 	s.event_subs = map[string][]chan ProtocolResponse{}
+	s.event_dispatchers = map[string][]&EventDispatch{}
 	s.event_mu.unlock()
+	for d in all {
+		d.stop()
+	}
 }
 
 fn (mut s CdpSession) restore_runtime_hook_state() ! {
@@ -672,32 +743,14 @@ fn (mut s CdpSession) save_current_tab_context() {
 	network_request_order := s.network_request_order.clone()
 	auto_body_cache := s.auto_body_cache
 	s.network_mu.unlock()
-	mut network_watch := NetworkWatchState{
-		active:            s.network_watch.active
-		target_dir:        s.network_watch.target_dir
-		filter:            s.network_watch.filter
-		candidate_urls:    clone_bool_map(s.network_watch.candidate_urls)
-		saved_request_ids: clone_bool_map(s.network_watch.saved_request_ids)
-		next_index:        s.network_watch.next_index
-	}
-	mut hook_state := HookState{
-		active:            s.hook_state.active
-		injected:          s.hook_state.injected
-		script_id:         s.hook_state.script_id
-		filter:            s.hook_state.filter
-		capture_body:      s.hook_state.capture_body
-		capture_response:  s.hook_state.capture_response
-		last_injected_at:  s.hook_state.last_injected_at
-		last_synced_index: s.hook_state.last_synced_index
-		last_pushed_count: s.hook_state.last_pushed_count
-		record_count:      s.hook_state.record_count
-		script_version:    s.hook_state.script_version
-		max_body_len:      s.hook_state.max_body_len
-		all_frames:        s.hook_state.all_frames
-		activate_js:       s.hook_state.activate_js
-	}
-	mut hook_records := map[string]HookRecord{}
+	// network_watch / hook_state 必须在各自的锁内克隆：
+	// 否则快照会和 body worker、消息回调并发读写同一份状态，快照内部不一致
+	s.network_watch_mu.@lock()
+	network_watch := clone_network_watch_state(s.network_watch)
+	s.network_watch_mu.unlock()
 	s.hook_mu.@lock()
+	hook_state := clone_hook_state(s.hook_state)
+	mut hook_records := map[string]HookRecord{}
 	for key, value in s.hook_records {
 		hook_records[key] = value
 	}
@@ -807,8 +860,15 @@ fn (mut s CdpSession) on_message(raw string) {
 	if resp.method != '' {
 		// 内置缓存（console / errors）
 		if resp.method == 'forwardCDPEvent' {
-			inner_method := cdp_extract_str(resp.params, 'method')
-			inner_params := cdp_extract_obj(resp.params, 'params')
+			// 每层只访问直接字段，避免嵌套同名字段和字段顺序影响解析。
+			outer := cdp_json_object(resp.params)
+			inner_method := cdp_json_str(outer, 'method')
+			params_value := outer['params'] or { return }
+			if params_value !is map[string]json.Any || inner_method == '' {
+				return
+			}
+			inner_params_map := cdp_json_object_field(outer, 'params')
+			inner_params := json.Any(inner_params_map).str()
 			if inner_method == 'Runtime.consoleAPICalled' {
 				s.append_console_message(inner_params)
 			} else if inner_method == 'Runtime.exceptionThrown' {
@@ -817,27 +877,26 @@ fn (mut s CdpSession) on_message(raw string) {
 				|| inner_method == 'Page.javascriptDialogClosed' {
 				s.append_dialog_event('{"method":${json_str(inner_method)},"params":${inner_params}}')
 			} else if inner_method.starts_with('Network.') {
-				track_network_event(mut s, inner_method, inner_params)
+				track_network_event(mut s, inner_method, inner_params_map)
 				if inner_method == 'Network.loadingFinished' {
-					request_id := cdp_extract_str(inner_params, 'requestId')
+					request_id := cdp_json_str(inner_params_map, 'requestId')
 					if request_id != '' {
 						// #23: 投递给固定 worker 池，不再每条事件 spawn 协程
 						s.queue_loading_finished(request_id)
 					}
 				}
 			} else if inner_method == 'Runtime.bindingCalled' {
-				name := cdp_extract_str(inner_params, 'name')
+				name := cdp_json_str(inner_params_map, 'name')
 				if name == '__vBrowserHookPush' {
-					payload := cdp_extract_str(inner_params, 'payload')
+					payload := cdp_json_str(inner_params_map, 'payload')
 					s.handle_hook_binding_push(payload)
 				}
 			} else if inner_method == 'Runtime.executionContextCreated' {
-				ctx_obj := cdp_extract_obj(inner_params, 'context')
-				ctx_id := cdp_extract_int(ctx_obj, '"id":')
-				aux_data := cdp_extract_obj(ctx_obj, 'auxData')
-				is_default := cdp_extract_bool(aux_data, 'isDefault')
-					|| cdp_extract_str(aux_data, 'isDefault') == 'true'
-				frame_id := cdp_extract_str(aux_data, 'frameId')
+				ctx_obj := cdp_json_object_field(inner_params_map, 'context')
+				ctx_id := cdp_json_int(ctx_obj, 'id')
+				aux_data := cdp_json_object_field(ctx_obj, 'auxData')
+				is_default := cdp_json_bool(aux_data, 'isDefault')
+				frame_id := cdp_json_str(aux_data, 'frameId')
 				if ctx_id > 0 {
 					s.runtime_mu.@lock()
 					s.runtime_contexts[ctx_id] = RuntimeExecutionContext{
@@ -862,7 +921,7 @@ fn (mut s CdpSession) on_message(raw string) {
 					}
 				}
 			} else if inner_method == 'Runtime.executionContextDestroyed' {
-				ctx_id := cdp_extract_int(inner_params, '"executionContextId":')
+				ctx_id := cdp_json_int(inner_params_map, 'executionContextId')
 				if ctx_id > 0 {
 					s.runtime_mu.@lock()
 					s.runtime_contexts.delete(ctx_id)
@@ -883,48 +942,266 @@ fn (mut s CdpSession) on_message(raw string) {
 	}
 }
 
+// dispatch_event 把事件投递给所有订阅者。
+//
+// 关键约束：这里绝不能阻塞。on_message 跑在 WebSocket 读线程上，同时负责
+// 分发 CDP 响应 —— 一旦在这里卡住，所有 CDP 命令都等不到回包，整个 session
+// 死锁到超时，unsubscribe / clear_event_subs / close 也都解不开。
+//
+// 因此每个订阅都有独立的有界队列 + 独立分发线程，投递方只做非阻塞入队：
+//   - 队列没满 → 入队，由分发线程转交给订阅方；
+//   - 队列满 → 普通事件丢弃并计数告警；
+//   - 队列满且是关键事件（Fetch.requestPaused）→ 对被拦截的请求做失败处理，
+//     并停掉这个订阅，绝不无限阻塞。
 fn (mut s CdpSession) dispatch_event(method string, evt ProtocolResponse) {
-	// 必须「先出锁、再发送」：channel cap=32 在 buffer 满时 send 会阻塞
-	// （Fetch.requestPaused 之类的关键事件不能静默丢弃）。如果持锁发送，
-	// 订阅方读得慢导致阻塞时，unsubscribe() / clear_event_subs() 就拿不到锁，
-	// 永远无法消费掉积压事件把阻塞解开 —— 随后所有 CDP 响应也无法分发，
-	// 整个 session 卡死到请求超时。所以锁内只拷贝订阅列表，锁外再发。
 	s.event_mu.@lock()
-	subs := s.event_subs[method].clone()
+	mut dispatchers := (s.event_dispatchers[method] or { []&EventDispatch{} }).clone()
 	s.event_mu.unlock()
-	for sub in subs {
-		sub <- evt
+	for i in 0 .. dispatchers.len {
+		mut d := dispatchers[i]
+		if d.enqueue(evt) {
+			continue
+		}
+		if d.critical {
+			s.handle_critical_event_overflow(d, evt)
+		} else {
+			s.event_mu.@lock()
+			s.event_dropped++
+			dropped := s.event_dropped
+			s.event_mu.unlock()
+			if dropped % event_dropped_warn_every == 1 {
+				eprintln('[cdp] event ${method} queue overflow, dropped ${dropped} events in total')
+			}
+		}
 	}
 }
 
-// subscribe 订阅 CDP 事件（内层 method，如 "Page.loadEventFired"）
+// is_critical_event_method 判断事件是否属于「不能静默丢弃」的关键事件。
+// Fetch.requestPaused 丢弃后被拦截的请求会一直挂着，页面直接卡死。
+fn is_critical_event_method(method string) bool {
+	return method in ['Fetch.requestPaused', 'Fetch.authRequired']
+}
+
+// handle_critical_event_overflow 处理 route 关键事件（Fetch.requestPaused）溢出。
+// 被拦截的请求如果既不 fulfill 也不 fail 就会一直挂着，页面直接卡死，
+// 所以这里显式失败该请求，并停掉这个订阅，避免事件无限堆积。
+fn (mut s CdpSession) handle_critical_event_overflow(d &EventDispatch, evt ProtocolResponse) {
+	if !d.mark_overflow() {
+		return
+	}
+	request_id := cdp_json_str(cdp_json_object(evt.params), 'requestId')
+	s.remove_event_dispatch(d.method, d)
+	s.event_mu.@lock()
+	s.event_dropped++
+	s.event_mu.unlock()
+	eprintln('[cdp] critical event ${d.method} queue overflow; disabling Fetch interception')
+	// 不能在读线程等 CDP 响应。关闭 Fetch 同时释放队列中及后续暂停的请求，
+	// 否则仅失败溢出的那一条仍会让已积压的请求永久挂起。
+	spawn fn [mut s, request_id, d] () {
+		if request_id != '' {
+			method := if d.method == 'Fetch.authRequired' {
+				'Fetch.continueWithAuth'
+			} else {
+				'Fetch.failRequest'
+			}
+			params := if d.method == 'Fetch.authRequired' {
+				'{"requestId":${json_str(request_id)},"authChallengeResponse":{"response":"CancelAuth"}}'
+			} else {
+				'{"requestId":${json_str(request_id)},"errorReason":"Aborted"}'
+			}
+			s.send_command(method, params) or {
+				eprintln('[cdp] failed to abort paused request ${request_id}: ${err.msg()}')
+			}
+		}
+		s.send_command('Fetch.disable', '{}') or {
+			eprintln('[cdp] failed to disable overflowing Fetch interception: ${err.msg()}')
+		}
+	}()
+}
+
+// remove_event_dispatch 从订阅表里移除分发器（订阅被关闭时调用）。
+fn (mut s CdpSession) remove_event_dispatch(method string, target &EventDispatch) {
+	s.event_mu.@lock()
+	if method in s.event_dispatchers {
+		mut dispatchers := s.event_dispatchers[method] or { []&EventDispatch{} }
+		for i, d in dispatchers {
+			if d.ch == target.ch {
+				dispatchers.delete(i)
+				s.event_dispatchers[method] = dispatchers
+				mut subs := s.event_subs[method] or { []chan ProtocolResponse{} }
+				if i < subs.len {
+					subs.delete(i)
+					s.event_subs[method] = subs
+				}
+				break
+			}
+		}
+	}
+	s.event_mu.unlock()
+	target.stop()
+}
+
+// subscribe 订阅 CDP 事件（内层 method，如 "Page.loadEventFired"）。
+// 每个订阅独占一条分发线程 + 一个有界队列：投递方只做非阻塞入队，
+// 订阅方消费慢也不会阻塞 WebSocket 读线程。
 fn (mut s CdpSession) subscribe(method string) chan ProtocolResponse {
 	ch := chan ProtocolResponse{cap: 32}
+	mut d := &EventDispatch{
+		method:   method
+		ch:       ch
+		queue:    chan ProtocolResponse{cap: event_queue_capacity}
+		stop_ch:  chan bool{cap: 1}
+		critical: is_critical_event_method(method)
+	}
+	d.mu.init()
 	s.event_mu.@lock()
-	defer { s.event_mu.unlock() }
+	s.pending_mu.@lock()
+	closed := s.closed
+	s.pending_mu.unlock()
+	if closed {
+		s.event_mu.unlock()
+		return ch
+	}
 	if method !in s.event_subs {
 		s.event_subs[method] = []chan ProtocolResponse{}
+		s.event_dispatchers[method] = []&EventDispatch{}
 	}
 	s.event_subs[method] << ch
+	mut dispatchers := s.event_dispatchers[method] or { []&EventDispatch{} }
+	dispatchers << d
+	s.event_dispatchers[method] = dispatchers
+	s.event_mu.unlock()
+	spawn fn [mut d] () {
+		d.run()
+	}()
 	return ch
 }
 
 // unsubscribe 取消订阅。
 // #40: 改用下标遍历 + delete 替代全量 filter+copy，O(n) → O(1) ~ O(n) 单次匹配。
 // 注意：V 里 map value 的 mutation 需要赋值回 map，否则只改了局部副本。
+// 同时停掉分发线程：订阅方不再消费时，在途分发也必须能立刻结束。
 fn (mut s CdpSession) unsubscribe(method string, ch chan ProtocolResponse) {
+	mut target := &EventDispatch{}
+	mut found := false
 	s.event_mu.@lock()
-	defer { s.event_mu.unlock() }
 	if method in s.event_subs {
-		mut subs := s.event_subs[method]
+		mut subs := s.event_subs[method] or { []chan ProtocolResponse{} }
+		mut dispatchers := s.event_dispatchers[method] or { []&EventDispatch{} }
 		for i, c in subs {
 			if c == ch {
 				subs.delete(i)
 				s.event_subs[method] = subs
+				if i < dispatchers.len {
+					target = dispatchers[i]
+					dispatchers.delete(i)
+					s.event_dispatchers[method] = dispatchers
+				}
+				found = true
 				break
 			}
 		}
 	}
+	s.event_mu.unlock()
+	if found {
+		target.stop()
+	}
+}
+
+// stop_all_event_dispatchers 停掉所有事件分发线程（close 时调用），
+// 保证在途分发不会一直挂着。
+fn (mut s CdpSession) stop_all_event_dispatchers() {
+	s.clear_event_subs()
+}
+
+// enqueue 把事件放进有界队列。队列满（或订阅已停）时返回 false，
+// 由调用方决定丢弃还是做失败处理 —— 这里绝不阻塞。
+fn (mut d EventDispatch) enqueue(evt ProtocolResponse) bool {
+	d.mu.@lock()
+	defer { d.mu.unlock() }
+	if d.stopped {
+		return false
+	}
+	mut queued := false
+	select {
+		d.queue <- evt {
+			queued = true
+		}
+		else {
+		}
+	}
+	return queued
+}
+
+// forward 把事件转交给订阅方 channel。
+// 订阅方长时间不消费时不能永久卡住（否则 unsubscribe / close 无法终止分发），
+// 所以每轮最多等 event_forward_wait，stop 有信号时立即退出。
+fn (mut d EventDispatch) forward(evt ProtocolResponse) bool {
+	for {
+		select {
+			d.ch <- evt {
+				return true
+			}
+			<-d.stop_ch {
+				return false
+			}
+			event_forward_wait {
+				// 订阅方还没腾出位置，继续等下一轮
+			}
+		}
+	}
+}
+
+// run 分发线程主循环：从队列取事件转交给订阅方。
+fn (mut d EventDispatch) run() {
+	defer { d.done_ch <- true }
+	for {
+		d.mu.@lock()
+		stopped := d.stopped
+		d.mu.unlock()
+		if stopped {
+			return
+		}
+		select {
+			evt := <-d.queue {
+				if !d.forward(evt) {
+					return
+				}
+			}
+			<-d.stop_ch {
+				return
+			}
+		}
+	}
+}
+
+// stop 停掉分发线程：置 stopped 标志并唤醒阻塞中的分发循环。
+fn (mut d EventDispatch) stop() {
+	d.mu.@lock()
+	if d.stopped {
+		d.mu.unlock()
+		return
+	}
+	d.stopped = true
+	d.mu.unlock()
+	select {
+		d.stop_ch <- true {
+		}
+		else {
+		}
+	}
+}
+
+// mark_overflow 记录一次队列溢出。
+fn (mut d EventDispatch) mark_overflow() bool {
+	d.mu.@lock()
+	defer { d.mu.unlock() }
+	if d.stopped || d.overflow {
+		return false
+	}
+	d.overflow = true
+	d.dropped++
+	return true
 }
 
 fn (mut s CdpSession) page_state_snapshot() PageStateSnapshot {
@@ -1022,6 +1299,8 @@ fn (mut s CdpSession) close() {
 	s.reject_pending_reqs('cdp session closed')
 	// 同时停掉 network route 的后台 goroutine，避免客户端断连后永久挂起
 	s.stop_route()
+	// 停掉所有事件分发线程：解除在途分发，订阅方不消费也不会挂住读线程
+	s.stop_all_event_dispatchers()
 }
 
 // reject_pending_reqs 拒绝所有 pending 中的 CDP 命令，按 reason 写入错误并清空 map。
@@ -1044,7 +1323,12 @@ fn (mut s CdpSession) reject_pending_reqs(reason string) {
 // 在客户端断连 / server 异常退出后永久挂起 (#11)。
 fn (mut s CdpSession) stop_route() {
 	if s.has_route {
-		s.route_stop_ch <- true
+		select {
+			s.route_stop_ch <- true {
+			}
+			else {
+			}
+		}
 		s.unsubscribe('Fetch.requestPaused', s.route_ch)
 		s.has_route = false
 	}
@@ -1205,20 +1489,22 @@ fn clone_bool_map(src map[string]bool) map[string]bool {
 
 fn clone_hook_state(src HookState) HookState {
 	return HookState{
-		active:            src.active
-		injected:          src.injected
-		script_id:         src.script_id
-		script_version:    src.script_version
-		filter:            src.filter
-		capture_body:      src.capture_body
-		capture_response:  src.capture_response
-		max_body_len:      src.max_body_len
-		last_injected_at:  src.last_injected_at
-		last_synced_index: src.last_synced_index
-		last_pushed_count: src.last_pushed_count
-		record_count:      src.record_count
-		all_frames:        src.all_frames
-		activate_js:       src.activate_js
+		active:               src.active
+		injected:             src.injected
+		script_id:            src.script_id
+		script_version:       src.script_version
+		filter:               src.filter
+		capture_body:         src.capture_body
+		capture_response:     src.capture_response
+		max_body_len:         src.max_body_len
+		last_injected_at:     src.last_injected_at
+		last_synced_index:    src.last_synced_index
+		last_pushed_count:    src.last_pushed_count
+		record_count:         src.record_count
+		record_bytes:         src.record_bytes
+		record_bytes_tracked: src.record_bytes_tracked
+		all_frames:           src.all_frames
+		activate_js:          src.activate_js
 	}
 }
 
@@ -1259,12 +1545,15 @@ fn (mut s CdpSession) network_request_entries_snapshot() []TrackedNetworkRequest
 	return entries
 }
 
-fn track_network_event(mut s CdpSession, method string, params string) {
-	request_id := cdp_extract_str(params, 'requestId')
+// track_network_event 处理 Network.* 事件。
+// params 已经是解析好的 JSON 对象：字段必须按层级取，全局子串搜索会命中
+// 嵌套层级里的同名字段（例如 request.headers.method）。
+fn track_network_event(mut s CdpSession, method string, params map[string]json.Any) {
+	request_id := cdp_json_str(params, 'requestId')
 	if request_id == '' {
 		return
 	}
-	// 锁外解析 — 所有 cdp_extract_* 调用在此完成
+	// 锁外解析 — 所有字段提取在此完成
 	mut parsed_url := ''
 	mut parsed_method := ''
 	mut parsed_resource_type := ''
@@ -1279,50 +1568,50 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 	mut has_status := false
 	mut has_extra_status := false
 	mut has_extra_headers := false
+	mut is_redirect := false
 	match method {
 		'Network.requestWillBeSent' {
-			request_obj := cdp_extract_obj(params, 'request')
-			parsed_url = cdp_extract_str(request_obj, 'url')
-			parsed_method = cdp_extract_str(request_obj, 'method')
-			parsed_resource_type = cdp_extract_str(params, 'type')
-			headers_obj := cdp_extract_obj(request_obj, 'headers')
-			if headers_obj != '' {
-				parsed_request_headers = headers_obj
+			request_obj := cdp_json_object_field(params, 'request')
+			parsed_url = cdp_json_str(request_obj, 'url')
+			parsed_method = cdp_json_str(request_obj, 'method')
+			parsed_resource_type = cdp_json_str(params, 'type')
+			headers_obj := cdp_json_object_field(request_obj, 'headers')
+			if headers_obj.len > 0 {
+				parsed_request_headers = json.Any(headers_obj).str()
 			}
-			post_data := cdp_extract_str(request_obj, 'postData')
-			if post_data != '' {
-				parsed_request_body = post_data
-			}
+			parsed_request_body = cdp_json_str(request_obj, 'postData')
+			// redirectResponse 存在 = 这是重定向后的新一跳（requestId 会被复用）
+			is_redirect = 'redirectResponse' in params
 		}
 		'Network.responseReceived' {
-			response_obj := cdp_extract_obj(params, 'response')
-			status_val := cdp_extract_obj_key(response_obj, '"status":')
-			if status_val != '' {
-				parsed_status = status_val.int()
+			response_obj := cdp_json_object_field(params, 'response')
+			status_val, status_ok := cdp_json_int_ok(response_obj, 'status')
+			if status_ok {
+				parsed_status = status_val
 				has_status = true
 			}
-			parsed_status_text = cdp_extract_str(response_obj, 'statusText')
-			headers_obj := cdp_extract_obj(response_obj, 'headers')
-			if headers_obj != '' {
-				parsed_response_headers = headers_obj
+			parsed_status_text = cdp_json_str(response_obj, 'statusText')
+			headers_obj := cdp_json_object_field(response_obj, 'headers')
+			if headers_obj.len > 0 {
+				parsed_response_headers = json.Any(headers_obj).str()
 			}
-			parsed_response_url = cdp_extract_str(response_obj, 'url')
-			parsed_response_resource_type = cdp_extract_str(params, 'type')
+			parsed_response_url = cdp_json_str(response_obj, 'url')
+			parsed_response_resource_type = cdp_json_str(params, 'type')
 		}
 		'Network.responseReceivedExtraInfo' {
-			status_val := cdp_extract_obj_key(params, '"statusCode":')
-			if status_val != '' {
-				parsed_status = status_val.int()
+			status_val, status_ok := cdp_json_int_ok(params, 'statusCode')
+			if status_ok {
+				parsed_status = status_val
 				has_extra_status = true
 			}
-			headers_obj := cdp_extract_obj(params, 'headers')
-			if headers_obj != '' {
-				parsed_response_headers = headers_obj
+			headers_obj := cdp_json_object_field(params, 'headers')
+			if headers_obj.len > 0 {
+				parsed_response_headers = json.Any(headers_obj).str()
 				has_extra_headers = true
 			}
 		}
 		'Network.loadingFailed' {
-			parsed_error_text = cdp_extract_str(params, 'errorText')
+			parsed_error_text = cdp_json_str(params, 'errorText')
 		}
 		else {}
 	}
@@ -1337,14 +1626,28 @@ fn track_network_event(mut s CdpSession, method string, params string) {
 	}
 	match method {
 		'Network.requestWillBeSent' {
+			// 上一跳是否已经产生过响应（重定向或 requestId 被复用）
+			had_response := is_redirect || entry.url != '' || entry.method != '' || entry.finished
+			// 新一跳开始：请求字段整体覆盖（POST→302→GET 时新的一跳没有 body，
+			// 旧 body 必须清掉，否则会串到下一跳）
 			entry.url = parsed_url
 			entry.method = parsed_method
 			entry.resource_type = parsed_resource_type
-			if parsed_request_headers != '' {
-				entry.request_headers = parsed_request_headers
-			}
-			if parsed_request_body != '' {
-				entry.request_body = parsed_request_body
+			entry.request_headers = parsed_request_headers
+			entry.request_body = parsed_request_body
+			entry.finished = false
+			entry.error_text = ''
+			// 旧响应头 / 旧状态 / 旧 ExtraInfo 标志必须清空
+			if had_response {
+				entry.status = 0
+				entry.status_text = ''
+				entry.status_from_extra = false
+				entry.response_headers = ''
+				entry.response_headers_complete = false
+				entry.response_body = ''
+				entry.response_body_raw = ''
+				entry.response_body_base64 = false
+				entry.response_body_cached = false
 			}
 		}
 		'Network.responseReceived' {
@@ -1549,24 +1852,92 @@ fn (mut s CdpSession) queue_loading_finished(request_id string) {
 	}
 }
 
-// handle_hook_binding_push 处理 Runtime.bindingCalled 推送的 hook 记录，无需轮询
+// handle_hook_binding_push 处理 Runtime.bindingCalled 推送的 hook 记录，无需轮询。
+//
+// 页面可以随意推送记录，这里必须限制规模，否则 daemon 内存会被页面撑爆：
+//   - 单条 payload 上限：超长记录直接丢弃；
+//   - 每会话记录条数上限 + 累计字节上限：超限环形淘汰最旧的记录；
+//   - 非活动状态（hook 已停止 / 会话已关闭）拒绝接收。
 fn (mut s CdpSession) handle_hook_binding_push(payload string) {
-	record_id := cdp_extract_str(payload, 'recordId')
+	// 单条 payload 上限：一条超长记录就能撑爆 daemon 内存
+	if payload.len > s.hook_payload_limit {
+		return
+	}
+	record := cdp_json_object(payload)
+	record_id := cdp_json_str(record, 'recordId')
 	if record_id == '' {
 		return
 	}
 	s.hook_mu.@lock()
 	defer { s.hook_mu.unlock() }
+	// 非活动状态拒绝接收：hook 已停止但页面脚本还在跑时不再收数据
+	if !s.hook_state.active {
+		return
+	}
+	s.pending_mu.@lock()
+	closed := s.closed
+	s.pending_mu.unlock()
+	if closed {
+		return
+	}
 	if record_id in s.hook_records {
 		return
+	}
+	// 外部路径（轮询同步 / clear）也会改记录集合，条数对不上时重新统计累计字节
+	if s.hook_records.len != s.hook_state.record_bytes_tracked {
+		s.hook_state.record_bytes = hook_records_total_bytes(s.hook_records)
+		s.hook_state.record_bytes_tracked = s.hook_records.len
 	}
 	s.hook_records[record_id] = HookRecord{
 		record_id: record_id
 		raw_json:  payload
 	}
 	s.hook_record_order << record_id
+	s.hook_state.record_bytes += payload.len
+	s.hook_state.record_bytes_tracked++
 	s.hook_state.last_pushed_count++
+	// 超限就环形淘汰最旧的记录
+	s.evict_hook_records()
 	s.hook_state.record_count = s.hook_record_order.len
+}
+
+// evict_hook_records 按条数 / 字节上限环形淘汰最旧的 hook 记录。
+// map 和 hook_record_order 必须同步清理，否则顺序里会留下空洞。
+fn (mut s CdpSession) evict_hook_records() {
+	for s.hook_record_order.len > s.hook_record_limit {
+		s.evict_oldest_hook_record()
+	}
+	for s.hook_state.record_bytes > s.hook_byte_limit && s.hook_record_order.len > 0 {
+		s.evict_oldest_hook_record()
+	}
+}
+
+// evict_oldest_hook_record 淘汰最旧的一条 hook 记录。
+fn (mut s CdpSession) evict_oldest_hook_record() {
+	if s.hook_record_order.len == 0 {
+		return
+	}
+	oldest := s.hook_record_order[0]
+	s.hook_record_order = s.hook_record_order[1..]
+	if record := s.hook_records[oldest] {
+		s.hook_state.record_bytes -= record.raw_json.len
+	}
+	s.hook_records.delete(oldest)
+	if s.hook_state.record_bytes < 0 {
+		s.hook_state.record_bytes = 0
+	}
+	if s.hook_state.record_bytes_tracked > 0 {
+		s.hook_state.record_bytes_tracked--
+	}
+}
+
+// hook_records_total_bytes 统计所有 hook 记录占用的字节数（重新统计时用）。
+fn hook_records_total_bytes(records map[string]HookRecord) int {
+	mut total := 0
+	for _, record in records {
+		total += record.raw_json.len
+	}
+	return total
 }
 
 // ─── 超时常量 ───────────────────────────────────────────────
@@ -1576,7 +1947,81 @@ const cdp_attach_timeout = 60 * time.second
 // loadingFinished worker 池大小 (#23)
 const body_worker_count = 4
 
+// ─── 事件分发常量 ───────────────────────────────────────────
+// 每个事件订阅的分发队列容量（突发时最多缓存这么多事件）
+const event_queue_capacity = 256
+// 分发线程等待订阅方腾出位置的最长时间
+const event_forward_wait = 50 * time.millisecond
+// 累计丢弃事件的告警间隔
+const event_dropped_warn_every = 100
+
+// ─── hook 记录上限常量 ──────────────────────────────────────
+// 每个会话最多保留的 hook 记录条数
+const hook_max_records = 10000
+// 每个会话 hook 记录的累计字节上限（64 MiB）
+const hook_max_total_bytes = 64 * 1024 * 1024
+// 单条 hook 记录 payload 上限（1 MiB）
+const hook_max_record_bytes = 1024 * 1024
+
 // ─── JSON 解析帮助函数 ──────────────────────────────────────
+
+// cdp_json_object 解析 JSON 对象文本；解析失败或不是对象时返回空 map。
+fn cdp_json_object(text string) map[string]json.Any {
+	trimmed := text.trim_space()
+	if trimmed == '' {
+		return map[string]json.Any{}
+	}
+	return json.decode[map[string]json.Any](trimmed) or { map[string]json.Any{} }
+}
+
+// cdp_json_str 取对象里的字符串字段；字段缺失或类型不符返回 ''。
+// （处理浏览器事件的路径必须走这里：子串搜索会命中嵌套层级里的同名字段）
+fn cdp_json_str(obj map[string]json.Any, key string) string {
+	value := obj[key] or { return '' }
+	if value is string {
+		return value
+	}
+	return ''
+}
+
+// cdp_json_int 取对象里的整数字段；字段缺失或类型不符返回 0。
+fn cdp_json_int(obj map[string]json.Any, key string) int {
+	value, _ := cdp_json_int_ok(obj, key)
+	return value
+}
+
+// cdp_json_int_ok 取整数字段并同时返回是否合法
+//（用于区分「没有这个字段」和「字段值是 0」）。
+fn cdp_json_int_ok(obj map[string]json.Any, key string) (int, bool) {
+	value := obj[key] or { return 0, false }
+	if value is int {
+		return value, true
+	}
+	if value is i64 {
+		return int(value), true
+	}
+	if value is f64 {
+		return int(value), true
+	}
+	return 0, false
+}
+
+fn cdp_json_bool(obj map[string]json.Any, key string) bool {
+	value := obj[key] or { return false }
+	if value is bool {
+		return value
+	}
+	return false
+}
+
+// cdp_json_object_field 取对象里的子对象；字段缺失或类型不符返回空 map。
+fn cdp_json_object_field(obj map[string]json.Any, key string) map[string]json.Any {
+	value := obj[key] or { return map[string]json.Any{} }
+	if value is map[string]json.Any {
+		return value
+	}
+	return map[string]json.Any{}
+}
 
 // cdp_parse_message 解析扩展 WebSocket 消息。
 // 用 json.decode 一次解析成 map[string]json.Any，再用 map 查字段，避免
@@ -1590,12 +2035,13 @@ fn cdp_parse_message(raw string) ProtocolResponse {
 		}
 	}
 	// 顶层字段：map[key] 返回 Option<Any>，absent 时用 default
-	id_val := parsed['id'] or { json.Any(0) }
-	method_val := parsed['method'] or { json.Any('') }
+	id_val := cdp_json_int(parsed, 'id')
+	method_val := cdp_json_str(parsed, 'method')
 	// result / params 是 JSON 值（object/array/string），下游仍按 JSON
 	// 字符串消费（cdp_extract_*），所以再序列化成字符串。
 	result_str := parsed['result'] or { json.Any('') }.str()
-	params_str := parsed['params'] or { json.Any('') }.str()
+	params_val := parsed['params'] or { json.Any('') }
+	params_str := if params_val is map[string]json.Any { json.Any(params_val).str() } else { '' }
 	// error 字段特殊处理：CDP 可能返回 string 或 {code, message} 对象
 	mut err_str := ''
 	err_any := parsed['error'] or { json.Any('') }
@@ -1612,8 +2058,8 @@ fn cdp_parse_message(raw string) ProtocolResponse {
 		}
 	}
 	return ProtocolResponse{
-		id:     id_val.int()
-		method: method_val.str()
+		id:     id_val
+		method: method_val
 		result: result_str
 		err:    err_str
 		params: params_str
