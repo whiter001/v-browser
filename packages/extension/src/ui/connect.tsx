@@ -14,14 +14,15 @@
  * limitations under the License.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button, TabItem } from "./tabItem";
 import {
   AuthTokenSection,
+  decideAuthToken,
   getOrCreateAuthToken,
   getStoredAuthToken,
-  seedAuthToken,
+  persistAuthToken,
 } from "./authToken";
 
 import type { TabInfo } from "./tabItem";
@@ -35,6 +36,110 @@ type Status =
 
 const SUPPORTED_PROTOCOL_VERSION = 1;
 
+// 连接流程闸门：用户拒绝（或页面关闭）之后，
+// 所有在途的异步流程都必须立即作废：
+// 不能再落盘凭据，也不能再发起授权连接。
+export class ConnectionFlow {
+  private _flowId = 0;
+  private _cancelled = false;
+
+  // 开始一个新流程，返回流程 id。
+  begin(): number {
+    this._flowId += 1;
+    return this._flowId;
+  }
+
+  // 取消当前流程：所有在途流程立即作废。
+  cancel(): void {
+    this._cancelled = true;
+    this._flowId += 1;
+  }
+
+  // 当前流程 id（用于没有显式流程 id 的入口）。
+  currentFlowId(): number {
+    return this._flowId;
+  }
+
+  // 复查某个流程是否仍然有效（每个 await 之后都要调用）。
+  isActive(flowId: number): boolean {
+    return !this._cancelled && this._flowId === flowId;
+  }
+}
+
+// 授权流程：relay 校验通过之前不落盘凭据，校验之后才允许继续授权连接。
+// 每一步之前都复查流程状态：用户在握手中拒绝时，后续动作一律不再执行。
+export async function runApprovalFlow(options: {
+  flow: ConnectionFlow;
+  flowId: number;
+  connectToRelay: () => Promise<boolean>;
+  persistToken: () => void;
+  authorize: () => Promise<void>;
+}): Promise<boolean> {
+  const connected = await options.connectToRelay();
+  if (!connected) return false;
+  if (!options.flow.isActive(options.flowId)) return false;
+  options.persistToken();
+  if (!options.flow.isActive(options.flowId)) return false;
+  await options.authorize();
+  return options.flow.isActive(options.flowId);
+}
+
+// 加载标签页列表：失败是终止性失败，必须走 reject，
+// 否则后台的 pending 连接会一直存活。
+export async function loadTabsForConnect(options: {
+  flow: ConnectionFlow;
+  flowId: number;
+  sendMessage: (message: any) => Promise<any>;
+  onTabs: (tabs: TabInfo[]) => void;
+  onReject: (message: string) => void;
+}): Promise<boolean> {
+  try {
+    const response = await options.sendMessage({ type: "getTabs" });
+    if (!options.flow.isActive(options.flowId)) return false;
+    if (response?.success) {
+      options.onTabs(response.tabs ?? []);
+      return true;
+    }
+    options.onReject("Failed to load tabs: " + (response?.error || "unknown error"));
+    return false;
+  } catch {
+    if (!options.flow.isActive(options.flowId)) return false;
+    options.onReject("Failed to load tabs.");
+    return false;
+  }
+}
+
+// 授权连接：失败同样是终止性失败，必须走 reject。
+export async function connectTabForConnect(options: {
+  flow: ConnectionFlow;
+  flowId: number;
+  sendMessage: (message: any) => Promise<any>;
+  request: {
+    type: "connectToTab";
+    mcpRelayUrl: string;
+    tabId?: number;
+    windowId?: number;
+  };
+  onConnected: () => void;
+  onReject: (message: string) => void;
+}): Promise<boolean> {
+  try {
+    const response = await options.sendMessage(options.request);
+    // 连接期间用户可能已经拒绝：这时不改状态。
+    if (!options.flow.isActive(options.flowId)) return false;
+    if (response?.success) {
+      options.onConnected();
+      return true;
+    }
+    options.onReject(response?.error || "Failed to connect to the MCP relay.");
+    return false;
+  } catch {
+    if (!options.flow.isActive(options.flowId)) return false;
+    options.onReject("Failed to connect to the MCP relay.");
+    return false;
+  }
+}
+
 // 连接页主界面：负责接收 relay 地址、展示 tab 列表并完成连接。
 const ConnectApp: React.FC = () => {
   const [tabs, setTabs] = useState<TabInfo[]>([]);
@@ -43,11 +148,20 @@ const ConnectApp: React.FC = () => {
   const [showTabList, setShowTabList] = useState(true);
   const [clientInfo, setClientInfo] = useState("unknown");
   const [mcpRelayUrl, setMcpRelayUrl] = useState("");
+  const [rawRelayUrl, setRawRelayUrl] = useState("");
   const [newTab, setNewTab] = useState<boolean>(false);
+  // URL 带来的凭据与本地不一致时，必须先由用户显式确认。
+  const [pendingApproval, setPendingApproval] = useState<{
+    token: string;
+    reason: "first-pairing" | "credential-change";
+  } | null>(null);
+  // 流程闸门：拒绝之后，所有在途的 await 都会在恢复时发现流程已作废。
+  const flow = useMemo(() => new ConnectionFlow(), []);
 
   // 页面加载后根据 URL 参数完成连接流程。
   useEffect(() => {
     const runAsync = async () => {
+      const flowId = flow.begin();
       const params = new URLSearchParams(window.location.search);
       const relayUrl = params.get("mcpRelayUrl");
 
@@ -104,94 +218,167 @@ const ConnectApp: React.FC = () => {
 
       const urlToken = params.get("token")?.trim() || "";
       const storedToken = getStoredAuthToken();
-      let expectedToken = storedToken;
-      if (urlToken && urlToken !== storedToken) {
-        expectedToken = seedAuthToken(urlToken);
-      } else if (!storedToken) {
-        expectedToken = getOrCreateAuthToken();
-      }
+      const approval = decideAuthToken(urlToken, storedToken);
+      // 未经确认的新凭据不落盘：只有 relay 校验通过之后才允许持久化。
+      const expectedToken = approval.token || getOrCreateAuthToken();
       const relayUrlWithToken = appendTokenToRelayUrl(relayUrl, expectedToken);
+      setRawRelayUrl(relayUrl);
       setMcpRelayUrl(relayUrlWithToken);
 
-      if (urlToken) {
-        await connectToMCPRelay(relayUrlWithToken);
-        await handleConnectToTab(undefined, relayUrlWithToken, clientInfoValue);
+      if (approval.kind === "confirm") {
+        // 首次配对或凭据变更：必须由用户显式确认后才能继续。
+        setPendingApproval({ token: approval.token, reason: approval.reason });
+        setStatus({
+          type: "connecting",
+          message:
+            approval.reason === "credential-change"
+              ? `🎭 Playwright MCP ("${clientInfoValue}") wants to replace the local authentication token. Confirm to continue.`
+              : `🎭 Playwright MCP ("${clientInfoValue}") wants to pair with a new authentication token. Confirm to continue.`,
+        });
         return;
       }
 
-      await connectToMCPRelay(relayUrlWithToken);
+      const connected = await connectToMCPRelay(relayUrlWithToken, flowId);
+      if (!connected) return;
+      // 握手期间用户可能已经拒绝：后续动作一律不再执行。
+      if (!flow.isActive(flowId)) return;
+
+      if (urlToken) {
+        await handleConnectToTab(undefined, relayUrlWithToken, clientInfoValue, flowId);
+        return;
+      }
 
       // If this is a browser_navigate command, hide the tab list and show simple allow/reject
       if (params.get("newTab") === "true") {
         setNewTab(true);
         setShowTabList(false);
       } else {
-        await loadTabs();
+        await loadTabs(flowId);
       }
     };
     void runAsync();
   }, []);
 
   // 统一处理用户拒绝或流程失败时的错误状态。
-  const handleReject = useCallback((message: string) => {
-    setShowButtons(false);
-    setShowTabList(false);
-    setStatus({ type: "error", message });
-  }, []);
+  const handleReject = useCallback(
+    (message: string) => {
+      // 取消当前流程：握手中的连接和后续的授权动作都会作废。
+      flow.cancel();
+      setShowButtons(false);
+      setShowTabList(false);
+      setStatus({ type: "error", message });
+      // 显式让后台销毁尚未授权的 pending 连接，避免未授权连接继续存活。
+      try {
+        void chrome.runtime.sendMessage({ type: "cancelPendingConnection" }).catch(() => {});
+      } catch {
+        // 后台不可用时忽略：连接本来就没建立起来。
+      }
+    },
+    [flow],
+  );
 
   // 连接到本地 relay，为后续 tab 附加建立通道。
+  // 返回明确的成败，失败时调用方必须立即退出后续流程。
   const connectToMCPRelay = useCallback(
-    async (mcpRelayUrl: string) => {
-      const response = await chrome.runtime.sendMessage({ type: "connectToMCPRelay", mcpRelayUrl });
-      if (!response.success) handleReject(response.error);
+    async (relayUrl: string, flowId: number): Promise<boolean> => {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          type: "connectToMCPRelay",
+          mcpRelayUrl: relayUrl,
+        });
+        // 握手期间用户可能已经拒绝：这时不改状态，直接退出。
+        if (!flow.isActive(flowId)) return false;
+        if (!response?.success) {
+          handleReject(response?.error || "Failed to connect to the MCP relay.");
+          return false;
+        }
+        return true;
+      } catch {
+        if (!flow.isActive(flowId)) return false;
+        handleReject("Failed to connect to the MCP relay.");
+        return false;
+      }
     },
-    [handleReject],
+    [flow, handleReject],
   );
 
   // 加载当前窗口中可连接的标签页列表。
-  const loadTabs = useCallback(async () => {
-    const response = await chrome.runtime.sendMessage({ type: "getTabs" });
-    if (response.success) setTabs(response.tabs);
-    else setStatus({ type: "error", message: "Failed to load tabs: " + response.error });
-  }, []);
+  const loadTabs = useCallback(
+    async (flowId: number) => {
+      await loadTabsForConnect({
+        flow,
+        flowId,
+        sendMessage: (message) => chrome.runtime.sendMessage(message),
+        onTabs: (loaded) => setTabs(loaded),
+        // 终止性失败统一走 handleReject：pending 连接必须一起销毁。
+        onReject: handleReject,
+      });
+    },
+    [flow, handleReject],
+  );
 
   // 让用户选择的标签页与 relay 建立关联。
   const handleConnectToTab = useCallback(
-    async (tab?: TabInfo, relayUrlOverride?: string, clientInfoOverride?: string) => {
+    async (
+      tab?: TabInfo,
+      relayUrlOverride?: string,
+      clientInfoOverride?: string,
+      flowId?: number,
+    ) => {
       setShowButtons(false);
       setShowTabList(false);
 
       const currentClientInfo = clientInfoOverride || clientInfo;
+      // 没带流程 id 时按当前流程处理（用户直接点某个标签页的 Connect）。
+      const activeFlowId = flowId ?? flow.currentFlowId();
 
-      try {
-        const relayUrl = relayUrlOverride || mcpRelayUrl;
-        const response = await chrome.runtime.sendMessage({
+      await connectTabForConnect({
+        flow,
+        flowId: activeFlowId,
+        sendMessage: (message) => chrome.runtime.sendMessage(message),
+        request: {
           type: "connectToTab",
-          mcpRelayUrl: relayUrl,
+          mcpRelayUrl: relayUrlOverride || mcpRelayUrl,
           tabId: tab?.id,
           windowId: tab?.windowId,
-        });
-
-        if (response?.success) {
+        },
+        onConnected: () => {
           setStatus({ type: "connected", message: `MCP client "${currentClientInfo}" connected.` });
           // Close the tab immediately
           console.log("[Extension] Requesting background to close current tab");
           chrome.runtime.sendMessage({ type: "closeTabFromConnect" });
-        } else {
-          setStatus({
-            type: "error",
-            message: response?.error || `MCP client "${currentClientInfo}" failed to connect.`,
-          });
-        }
-      } catch (e) {
-        setStatus({
-          type: "error",
-          message: `MCP client "${currentClientInfo}" failed to connect: ${e}`,
-        });
-      }
+        },
+        // 终止性失败统一走 handleReject：pending 连接必须一起销毁。
+        onReject: handleReject,
+      });
     },
-    [clientInfo, mcpRelayUrl],
+    [clientInfo, mcpRelayUrl, flow, handleReject],
   );
+
+  // 用户确认新的认证凭据后才继续连接；relay 校验通过前不持久化新凭据。
+  const approvePendingToken = useCallback(async () => {
+    if (!pendingApproval) return;
+    const token = pendingApproval.token;
+    setPendingApproval(null);
+    const relayUrlWithToken = appendTokenToRelayUrl(rawRelayUrl, token);
+    // 授权走独立的流程代次：握手中被拒绝时不会落盘凭据，也不会再授权连接。
+    const flowId = flow.begin();
+    await runApprovalFlow({
+      flow,
+      flowId,
+      connectToRelay: () => connectToMCPRelay(relayUrlWithToken, flowId),
+      // relay 已经校验过这个凭据，这时才可以落盘。
+      persistToken: () => persistAuthToken(token),
+      authorize: () => handleConnectToTab(undefined, relayUrlWithToken, clientInfo, flowId),
+    });
+  }, [
+    pendingApproval,
+    rawRelayUrl,
+    clientInfo,
+    flow,
+    connectToMCPRelay,
+    handleConnectToTab,
+  ]);
 
   // 监听后台发来的超时通知，及时关闭连接流程。
   useEffect(() => {
@@ -212,7 +399,19 @@ const ConnectApp: React.FC = () => {
             <StatusBanner status={status} />
             {showButtons && (
               <div className="button-container">
-                {newTab ? (
+                {pendingApproval ? (
+                  <>
+                    <Button variant="primary" onClick={() => void approvePendingToken()}>
+                      Allow
+                    </Button>
+                    <Button
+                      variant="reject"
+                      onClick={() => handleReject("Connection rejected. This tab can be closed.")}
+                    >
+                      Reject
+                    </Button>
+                  </>
+                ) : newTab ? (
                   <>
                     <Button variant="primary" onClick={() => handleConnectToTab()}>
                       Allow
@@ -292,10 +491,13 @@ const StatusBanner: React.FC<{ status: Status }> = ({ status }) => {
 };
 
 // Initialize the React app
-const container = document.getElementById("root");
-if (container) {
-  const root = createRoot(container);
-  root.render(<ConnectApp />);
+// 测试环境（node）里没有 document，这里必须先判断再挂载。
+if (typeof document !== "undefined") {
+  const container = document.getElementById("root");
+  if (container) {
+    const root = createRoot(container);
+    root.render(<ConnectApp />);
+  }
 }
 
 function appendTokenToRelayUrl(relayUrl: string, token: string): string {
