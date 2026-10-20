@@ -36,26 +36,62 @@ fn resolve_selector(mut sess CdpSession, sel string) !ResolvedElement {
 	return resolve_css(mut sess, sel)
 }
 
-// resolve_axref 通过 @eN 引用查元素坐标
+// resolve_axref 通过 @eN 引用查元素坐标。
+// 有 backendNodeId 时禁止按旧 selector 重新定位，避免 DOM 变化后误操作替代节点。
 fn resolve_axref(mut sess CdpSession, ref string) !ResolvedElement {
 	r := axref_get(&sess.axref, ref) or {
 		return error('unknown ref ${ref}: run `v-browser snapshot` first')
 	}
+	if r.backend_node_id > 0 {
+		return get_box_by_backend_node_id(mut sess, r.backend_node_id) or {
+			return error('stale-reference ${ref}: ${err}')
+		}
+	}
 	if r.selector != '' {
-		return resolve_css(mut sess, r.selector)
+		return resolve_axref_selector(mut sess, ref, r.selector)
 	}
 	if r.has_coords {
 		return ResolvedElement{
 			x:               r.x
 			y:               r.y
-			backend_node_id: r.backend_node_id
+			backend_node_id: 0
 		}
 	}
-	// 通过 backendNodeId 查边界框
-	if r.backend_node_id == 0 {
-		return error('ref ${ref} cannot be resolved')
+	return error('stale-reference ${ref}: ref cannot be resolved')
+}
+
+// resolve_axref_selector 是无 backendNodeId 的兼容路径；selector 必须唯一命中。
+fn resolve_axref_selector(mut sess CdpSession, ref string, selector string) !ResolvedElement {
+	query := if selector.starts_with('//') || selector.starts_with('(//') {
+		'var matches=[]; var xpathResult=doc.evaluate(${js_str(selector)}, doc, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null); for(var i=0;i<xpathResult.snapshotLength;i++) matches.push(xpathResult.snapshotItem(i));'
+	} else {
+		'var matches=Array.from(doc.querySelectorAll(${js_str(selector)}));'
 	}
-	return get_box_by_backend_node_id(mut sess, r.backend_node_id)
+	js := build_document_scope_js(mut sess, '${query} if(matches.length!==1) return {__vbrowserSelectorCount:matches.length}; var el=matches[0]; var r=el.getBoundingClientRect(); if(frame){var fr=frame.getBoundingClientRect(); return {x:fr.x+r.x,y:fr.y+r.y,width:r.width,height:r.height};} return r;')
+	resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(js)},"returnByValue":true}') or {
+		return error('stale-reference ${ref}: Runtime.evaluate failed: ${err}')
+	}
+	exc := cdp_exception_detail(resp.result)
+	if exc != '' {
+		return error('stale-reference ${ref}: selector failed: ${exc}')
+	}
+	result_obj := cdp_extract_obj_key(resp.result, '"result":')
+	value_obj := cdp_extract_obj_key(result_obj, '"value":')
+	if value_obj == '' || value_obj == 'null' {
+		return error('stale-reference ${ref}: selector no longer resolves')
+	}
+	if value_obj.contains('"__vbrowserSelectorCount"') {
+		return error('stale-reference ${ref}: selector must match exactly one element')
+	}
+	rect := parse_rect_value(value_obj) or {
+		return error('stale-reference ${ref}: ${err}')
+	}
+	return ResolvedElement{
+		x:      rect.x + rect.width / 2
+		y:      rect.y + rect.height / 2
+		width:  rect.width
+		height: rect.height
+	}
 }
 
 // resolve_css 通过 CSS 选择器查元素（支持 XPath: 以 //  开头）

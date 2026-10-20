@@ -12,6 +12,35 @@ pub const relay_port = 47978
 pub const ipc_port = 47979
 const v_browser_version = '0.1.0'
 
+// 等待扩展完成用户授权（用户在扩展连接页选定标签页）的总时限。
+// 比 CLI 默认 IPC deadline（60s）提前 10s 返回，确保 CLI 能读到错误提示。
+const attach_authorization_timeout = 50 * time.second
+
+// 服务端实际等待扩展授权的时长。
+const attach_authorization_wait = attach_authorization_timeout
+
+// 等待授权期间的重试间隔。
+const attach_authorization_poll_interval = 200 * time.millisecond
+
+// 扩展侧授权状态机：扩展连上 relay 后处于 pending，用户在扩展连接页选定标签页
+// 之后才进入 authorized。授权前所有会改动浏览器状态的命令都会被拒绝，
+// 扩展回传的错误消息形如：
+//   Command "switchToTab" is rejected: the connection is not authorized yet.
+//   The user must select a tab in the extension page first.
+// 扩展内部的错误码 E_NOT_AUTHORIZED 只写进诊断日志，协议上只回传 message，
+// 因此服务端只能按消息文本匹配。
+fn is_extension_not_authorized_error(msg string) bool {
+	lower := msg.to_lower()
+	return lower.contains('not authorized') || lower.contains('not been authorized')
+		|| lower.contains('not yet authorized') || lower.contains('e_not_authorized')
+}
+
+fn is_extension_disconnected_error(msg string) bool {
+	lower := msg.to_lower()
+	return lower.contains('cdp session is closed') || lower.contains('cdp session closed')
+		|| lower.contains('send failed')
+}
+
 // 读取 relay 端口；环境变量优先，其次是配置文件，最后回退默认值。
 fn configured_relay_port() int {
 	override := get_env_with_config('V_BROWSER_RELAY_PORT').trim_space().int()
@@ -144,6 +173,11 @@ mut:
 	ext_mu   sync.Mutex
 	token    string
 	running  bool
+	// 等待扩展完成用户授权的时长与重试间隔：默认按上面的常量，测试可以调小。
+	auth_wait_timeout  time.Duration = attach_authorization_wait
+	auth_poll_interval time.Duration = attach_authorization_poll_interval
+	// 是否已经打印过"等待扩展授权"的日志（避免每次重试都刷屏）。
+	auth_wait_logged bool
 }
 
 // 初始化 server 实例并加载连接 token。
@@ -465,7 +499,12 @@ fn shutdown_server_process() {
 }
 
 // attach_session 在扩展连接后发 attachToTab（被 `v-browser connect` 命令触发）
+// 扩展刚连上 relay 时通常还处于 pending（用户还没在扩展连接页选定标签页），
+// 此时 switchToTab / listTabs 会被扩展拒绝；这里不再把错误直接抛给 CLI，
+// 而是等待用户完成授权后重试。
 fn (mut s VBrowserServer) attach_session(params string) !string {
+	// 每次新的 connect 都重新允许打印一次授权等待日志。
+	s.auth_wait_logged = false
 	s.ext_mu.@lock()
 	mut conn_opt := s.ext_conn
 	s.ext_mu.unlock()
@@ -473,13 +512,152 @@ fn (mut s VBrowserServer) attach_session(params string) !string {
 	tab_id := cdp_extract_int(params, '"tabId":')
 	window_id := cdp_extract_int(params, '"windowId":')
 	target_url := cdp_extract_str(params, 'url')
+	deadline := time.now().add(s.auth_wait_timeout)
 	if tab_id > 0 {
-		resp := conn.session.send_bridge_command('switchToTab',
-			'{"tabId":${tab_id},"windowId":${window_id}}')!
+		resp := s.send_bridge_command_awaiting_authorization(conn, 'switchToTab',
+			'{"tabId":${tab_id},"windowId":${window_id}}', deadline) or { return err }
 		conn.session.activate_tab_context_from_result(resp.result) or {}
 		return resp.result
 	}
-	return conn.session.attach_to_tab_by_url(target_url)
+	// 没有指定 tabId：按 URL 选标签页（内部先 listTabs 再 switchToTab）。
+	// 授权前 listTabs / switchToTab 都会被拒绝，所以整段流程都放进授权等待循环。
+	return s.attach_by_url_awaiting_authorization(conn, target_url, deadline)
+}
+
+// send_bridge_command_awaiting_authorization 发送一条 relay 命令；
+// 扩展还没完成用户授权时等待一段时间后重试，直到授权成功、超时或连接中断。
+fn (mut s VBrowserServer) send_bridge_command_awaiting_authorization(conn &ExtensionConn, method string, params string, deadline time.Time) !ProtocolResponse {
+	for {
+		remaining := deadline - time.now()
+		if remaining <= 0 {
+			s.wait_for_extension_authorization(conn, deadline) or { return err }
+		}
+		mut not_authorized := false
+		resp := conn.session.send_bridge_command_to(method, params, remaining) or {
+			err_msg := err.msg()
+			if (err_msg == 'timeout' || err_msg.contains('timed out')) && !(time.now() < deadline) {
+				// 单次请求耗尽剩余时间时，也统一返回授权超时提示。
+				s.wait_for_extension_authorization(conn, deadline) or { return err }
+			}
+			if is_extension_disconnected_error(err_msg) && !s.is_active_conn(conn.client_ptr) {
+				return error('the extension disconnected while waiting for the connection to be authorized')
+			}
+			if !is_extension_not_authorized_error(err_msg) {
+				// 真正的连接失败：原样上报，不重试。
+				return error(err_msg)
+			}
+			not_authorized = true
+			ProtocolResponse{}
+		}
+		if !not_authorized {
+			return resp
+		}
+		s.wait_for_extension_authorization(conn, deadline) or { return err }
+	}
+}
+
+// attach_by_url_awaiting_authorization 按 URL 选标签页并 attach。
+// 授权前 listTabs / switchToTab 都会被扩展拒绝，因此整段流程在授权等待循环里重试。
+fn (mut s VBrowserServer) attach_by_url_awaiting_authorization(conn &ExtensionConn, target_url string, deadline time.Time) !string {
+	for {
+		mut not_authorized := false
+		result := s.attach_to_tab_by_url_with_deadline(conn, target_url, deadline) or {
+			err_msg := err.msg()
+			if !is_extension_not_authorized_error(err_msg) {
+				return error(err_msg)
+			}
+			not_authorized = true
+			''
+		}
+		if !not_authorized {
+			return result
+		}
+		s.wait_for_extension_authorization(conn, deadline) or { return err }
+	}
+}
+
+// attach_to_tab_by_url_with_deadline 实现按 URL 选择标签页的流程。
+// 每一条扩展请求都透传同一个总 deadline，避免单次 listTabs / switchToTab
+// 或 attachToTab 的默认超时把授权等待时间额外拉长。
+fn (mut s VBrowserServer) attach_to_tab_by_url_with_deadline(conn &ExtensionConn, target_url string, deadline time.Time) !string {
+	resp := s.send_bridge_command_awaiting_authorization(conn, 'listTabs', '{}', deadline) or {
+		return err
+	}
+	mut tab_id := 0
+	mut window_id := 0
+	if target_url.trim_space() == '' {
+		tab_id, window_id = find_best_tab_for_url_from_json(resp.result, '') or {
+			return s.attach_to_tab_with_deadline(conn, deadline)
+		}
+	} else {
+		tab_id, window_id = find_best_tab_for_url_from_json(resp.result, target_url)!
+	}
+	if tab_id <= 0 {
+		return s.attach_to_tab_with_deadline(conn, deadline)
+	}
+	resp2 := s.send_bridge_command_awaiting_authorization(conn, 'switchToTab',
+		'{"tabId":${tab_id},"windowId":${window_id}}', deadline) or { return err }
+	conn.session.activate_tab_context_from_result(resp2.result) or { return err }
+	return resp2.result
+}
+
+// attach_to_tab_with_deadline 是按 URL 找不到标签页时的 attachToTab 回退路径。
+// 回退请求同样不能使用原先固定的 60s 超时。
+fn (mut s VBrowserServer) attach_to_tab_with_deadline(conn &ExtensionConn, deadline time.Time) !string {
+	resp := s.send_bridge_command_awaiting_authorization(conn, 'attachToTab', '{}', deadline) or {
+		err_msg := err.msg()
+		if err_msg.contains('another debugger is already attached')
+			|| err_msg.contains('debugger is already attached to the tab') {
+			return error('Debugger conflict: another debugger is already attached to the tab. Close other CDP sessions (like Chrome DevTools) and run v-browser connect again.')
+		}
+		if err_msg.contains('no target tab available') || err_msg.contains('tab not found') {
+			return error('No available tab: no tab is currently accessible. Switch to a normal webpage tab and run v-browser connect again.')
+		}
+		return error(err_msg)
+	}
+	conn.session.activate_tab_context_from_result(resp.result) or { return err }
+	return resp.result
+}
+
+// wait_for_extension_authorization 等待用户在扩展连接页选定标签页。
+// 这里只负责"等一小段"就返回，让调用方重新发命令；
+// 但等待期间 server 停止、扩展断开、连接被新连接顶替都要立即放弃。
+fn (mut s VBrowserServer) wait_for_extension_authorization(conn &ExtensionConn, deadline time.Time) ! {
+	if !s.running {
+		return error('the v-browser server is shutting down; gave up waiting for the extension authorization')
+	}
+	// 扩展断开或连接被顶替：这条 session 已经废了，继续等也没有意义。
+	if !s.is_active_conn(conn.client_ptr) {
+		return error('the extension disconnected while waiting for the connection to be authorized')
+	}
+	// session 关闭通常意味着扩展已断开；在 sleep 前检查，避免继续重试已关闭的 session。
+	conn.session.pending_mu.@lock()
+	closed := conn.session.closed
+	conn.session.pending_mu.unlock()
+	if closed {
+		return error('the extension session closed while waiting for the connection to be authorized')
+	}
+	if !(time.now() < deadline) {
+		mut seconds := int(s.auth_wait_timeout / time.second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		return error('the extension did not authorize the connection within ${seconds}s. ' +
+			'Open the extension connect page in Chrome, select a tab there, then run v-browser connect again.')
+	}
+	if !s.auth_wait_logged {
+		s.auth_wait_logged = true
+		srv_log('Waiting for the extension to be authorized (user must select a tab in the extension page)...')
+	}
+	remaining := deadline - time.now()
+	mut interval := s.auth_poll_interval
+	if interval <= 0 {
+		interval = attach_authorization_poll_interval
+	}
+	if remaining < interval {
+		interval = remaining
+	}
+	time.sleep(interval)
 }
 
 // get_session 获取当前 session，无连接则报错

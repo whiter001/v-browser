@@ -1170,12 +1170,14 @@ fn new_integration_test_home(name string) string {
 }
 
 fn integration_ports(seed int) (int, int) {
-	base := 53000 + ((os.getpid() % 1000) * 6) + (seed * 2)
+	// 每次测试取独立的高位随机端口，避免并行运行时相互抢占监听端口。
+	stamp := time.now().unix_milli()
+	base := 50000 + int((stamp + i64(os.getpid()) + i64(seed * 2)) % 9998)
 	return base, base + 1
 }
 
 fn integration_env_prefix(home string, relay_port int, ipc_port int) string {
-	return 'env V_BROWSER_HOME=${shell_quote(home)} V_BROWSER_RELAY_PORT=${shell_quote('${relay_port}')} V_BROWSER_IPC_PORT=${shell_quote('${ipc_port}')}'
+	return 'env HOME=${shell_quote(home)} V_BROWSER_HOME=${shell_quote(home)} V_BROWSER_RELAY_PORT=${shell_quote('${relay_port}')} V_BROWSER_IPC_PORT=${shell_quote('${ipc_port}')}'
 }
 
 fn start_integration_server(bin_path string, home string, relay_port int, ipc_port int) !int {
@@ -1622,7 +1624,7 @@ fn test_network_hook_bootstrap_js_includes_binding_push() {
 
 fn test_network_hook_activate_js_includes_bootstrap_and_config() {
 	js := network_hook_activate_js('api', true, true, true, 0, 'hook-v1')
-	assert js.contains('SCRIPT_VERSION = 3')
+	assert js.contains('SCRIPT_VERSION = 4')
 	assert js.contains('__vBrowserHookConfig.active = true')
 	assert js.contains('__vBrowserHookConfig.maxBodyLen = 0')
 	assert js.contains('__vBrowserHookActive')
@@ -2983,4 +2985,578 @@ fn test_session_mutex_actually_excludes() {
 	sess.network_mu.@lock()
 	state.done = true
 	sess.network_mu.unlock()
+}
+
+// ─── 回归：扩展授权状态机（pending → authorized）─────────────────────────
+//
+// 扩展连上 relay 后处于 pending，用户在扩展连接页选定标签页之后才 authorized。
+// 授权前 switchToTab / listTabs 会被扩展拒绝，服务端必须等待授权完成后再重试，
+// 而不是把错误直接抛给 CLI（否则 `v-browser connect` 必然失败）。
+
+// 扩展在未授权时返回的错误消息：与 packages/extension/src/relayConnection.ts
+// 里 _assertAuthorized 抛出的消息逐字一致。
+const mock_extension_not_authorized_message = 'Command "switchToTab" is rejected: the connection is not authorized yet. The user must select a tab in the extension page first.'
+
+// mock 扩展状态：模拟扩展侧的授权状态机。
+// 注意：跨线程共享时只放标量字段——V 的 GC 不保证另一个线程写入的字符串
+// 对本线程立即可见，共享字符串可能读到野指针。
+@[heap]
+struct MockExtensionState {
+mut:
+	// 授权生效时间：该时间点之前到达的命令一律按 pending 拒绝。
+	authorized_at time.Time
+	// 显式置为 true 表示"用户已经在扩展页面选定了标签页"。
+	authorized bool
+	// 收到的命令总数 / switchToTab 次数。
+	commands     int
+	switch_calls int
+	// 模拟扩展断开：收到第一条命令后，服务端不再持有这条连接。
+	disconnect_after_first bool
+	disconnected           bool
+	// 模拟 server 停止。
+	stop_server_after_first bool
+	// 真正的连接失败（非授权问题）：设置后所有命令都返回该错误。
+	failure_message string
+}
+
+// mock 扩展当前是否还处于 pending（未授权）状态。
+fn mock_extension_is_pending(state &MockExtensionState) bool {
+	if state.authorized {
+		return false
+	}
+	return state.authorized_at.is_zero() || time.now() < state.authorized_at
+}
+
+// mock 扩展在授权之后按方法返回的结果。
+fn mock_extension_result(id int, method string) string {
+	if method == 'listTabs' {
+		return '{"id":${id},"result":[{"id":7,"windowId":3,"title":"Example","url":"https://example.com/","active":true}]}'
+	}
+	if method == 'switchToTab' {
+		return '{"id":${id},"result":{"tabId":7,"windowId":3}}'
+	}
+	return '{"id":${id},"result":{}}'
+}
+
+// 给 session 装上 mock 扩展：pending 期间按真实扩展的格式拒绝命令，
+// 授权之后按方法返回对应结果。
+fn attach_mock_extension_send(mut sess &CdpSession, mut state &MockExtensionState, mut server &VBrowserServer) {
+	// 注意：V 的闭包捕获 mut 形参时是按引用捕获的，形参所在的栈帧退出后
+	// 闭包里就是野指针（会直接段错误）。因此这里先把要捕获的指针复制到
+	// 局部变量，再让闭包捕获这些局部变量（局部变量是按值捕获的）。
+	mut sess_ref := sess
+	mut state_ref := state
+	mut server_ref := server
+	sess_ref.send_fn = fn [mut sess_ref, mut state_ref, mut server_ref] (data string) ! {
+		id := cdp_extract_int(data, '"id":')
+		method := cdp_extract_str(data, 'method')
+		state_ref.commands++
+		if method == 'switchToTab' {
+			state_ref.switch_calls++
+		}
+		if state_ref.disconnect_after_first && !state_ref.disconnected {
+			// 模拟扩展断开：服务端随即不再持有这条连接。
+			state_ref.disconnected = true
+			server_ref.ext_conn = none
+			// 断开时在途命令也会失败；这里按 pending 拒绝，让服务端进入等待分支，
+			// 由等待逻辑自己发现"连接已经没了"并立刻放弃。
+			sess_ref.on_message('{"id":${id},"error":${json_str(mock_extension_not_authorized_message)}}')
+			return
+		}
+		if state_ref.stop_server_after_first {
+			// 模拟 server 停止。
+			state_ref.stop_server_after_first = false
+			server_ref.running = false
+		}
+		if state_ref.failure_message != '' {
+			// 真正的连接失败：不是授权问题。
+			sess_ref.on_message('{"id":${id},"error":${json_str(state_ref.failure_message)}}')
+			return
+		}
+		if mock_extension_is_pending(state_ref) {
+			// pending：扩展拒绝所有会改动浏览器状态的命令。
+			sess_ref.on_message('{"id":${id},"error":${json_str(mock_extension_not_authorized_message)}}')
+			return
+		}
+		sess_ref.on_message(mock_extension_result(id, method))
+	}
+}
+
+// 构造一个只挂了 mock 扩展的 server。
+fn new_mock_extension_server(mut state &MockExtensionState) &VBrowserServer {
+	mut server := &VBrowserServer{}
+	server.running = true
+	server.auth_wait_timeout = 5 * time.second
+	server.auth_poll_interval = 20 * time.millisecond
+	mut sess := new_cdp_session(noop_send)
+	attach_mock_extension_send(mut sess, mut state, mut server)
+	server.ext_conn = &ExtensionConn{
+		session: sess
+	}
+	return server
+}
+
+fn test_is_extension_not_authorized_error_matches_extension_message() {
+	// 扩展真实返回的消息。
+	assert is_extension_not_authorized_error(mock_extension_not_authorized_message)
+	assert is_extension_not_authorized_error('Command "listTabs" is rejected: the connection is not authorized yet.')
+	// 错误码形式（扩展内部 RelayError.E_NOT_AUTHORIZED）。
+	assert is_extension_not_authorized_error('E_NOT_AUTHORIZED')
+	// 其它错误不能被误判成"还没授权"，否则会一直重试。
+	assert !is_extension_not_authorized_error('no target tab available')
+	assert !is_extension_not_authorized_error('cdp session is closed')
+	assert !is_extension_not_authorized_error('another debugger is already attached')
+}
+
+fn test_attach_session_waits_until_extension_is_authorized() {
+	// 扩展 200ms 后才完成授权：服务端必须等着，成功后重试成功。
+	mut state := &MockExtensionState{ authorized_at: time.now().add(200 * time.millisecond) }
+	mut server := new_mock_extension_server(mut state)
+	mut err_msg := ''
+	result := server.attach_session('{"tabId":7,"windowId":3}') or {
+		err_msg = err.msg()
+		''
+	}
+	assert err_msg == ''
+	assert result.contains('"tabId":7')
+	// pending 期间至少被拒绝过一次，说明服务端确实在等授权而不是直接失败。
+	assert state.switch_calls >= 2
+}
+
+fn test_attach_session_by_url_waits_until_extension_is_authorized() {
+	// 不带 tabId 的路径：内部先 listTabs 再 switchToTab，
+	// 授权前 listTabs 同样会被拒绝。
+	mut state := &MockExtensionState{ authorized_at: time.now().add(200 * time.millisecond) }
+	mut server := new_mock_extension_server(mut state)
+	mut err_msg := ''
+	result := server.attach_session('{"tabId":0,"windowId":0,"url":""}') or {
+		err_msg = err.msg()
+		''
+	}
+	assert err_msg == ''
+	assert result.contains('"tabId":7')
+	assert state.switch_calls >= 1
+}
+
+fn test_attach_authorization_timeout_leaves_cli_deadline_margin() {
+	// 服务端授权等待固定为 50s，为 CLI 默认 60s IPC deadline 留出 10s。
+	assert int(attach_authorization_timeout / time.second) == 50
+	assert int(attach_authorization_wait / time.second) == 50
+}
+
+fn test_attach_session_reports_authorization_timeout() {
+	// 扩展一直不授权：超时后必须给出"等待授权超时"的提示，
+	// 而不是笼统的连接失败。
+	mut state := &MockExtensionState{}
+	mut server := new_mock_extension_server(mut state)
+	server.auth_wait_timeout = 300 * time.millisecond
+	server.auth_poll_interval = 20 * time.millisecond
+	mut err_msg := ''
+	result := server.attach_session('{"tabId":7,"windowId":3}') or {
+		err_msg = err.msg()
+		''
+	}
+	assert result == ''
+	assert err_msg.contains('did not authorize the connection')
+	// 提示用户去扩展连接页确认。
+	assert err_msg.contains('extension connect page')
+	assert err_msg.contains('select a tab')
+}
+
+fn test_attach_session_resets_authorization_wait_log_for_next_connect() {
+	// 第一次 connect 等待超时后已经打印日志；下一次 connect 必须重新开始计数。
+	mut state := &MockExtensionState{}
+	mut server := new_mock_extension_server(mut state)
+	server.auth_wait_timeout = 100 * time.millisecond
+	server.auth_poll_interval = 20 * time.millisecond
+	server.attach_session('{"tabId":7,"windowId":3}') or {}
+	assert server.auth_wait_logged
+
+	state.authorized_at = time.now().add(-1 * time.second)
+	result := server.attach_session('{"tabId":7,"windowId":3}') or { panic(err) }
+	assert result.contains('"tabId":7')
+	assert !server.auth_wait_logged
+}
+
+fn test_attach_session_by_url_requests_share_remaining_deadline() {
+	// 分别挂起列表、切换、回退请求；显式 URL 与空 URL 两条路径都不能越过总时限。
+	for target_url in ['', 'https://example.com/'] {
+		for stalled_method in ['listTabs', 'switchToTab', 'attachToTab'] {
+			if target_url != '' && stalled_method == 'attachToTab' {
+				continue
+			}
+			mut sess := new_cdp_session(noop_send)
+			sent := chan string{cap: 16}
+			sess.send_fn = fn [mut sess, sent, stalled_method] (data string) ! {
+				id := cdp_extract_int(data, '"id":')
+				method := cdp_extract_str(data, 'method')
+				sent <- method
+				if method == stalled_method {
+					// 不回包，模拟扩展挂起。
+					return
+				}
+				if method == 'listTabs' {
+					// 列表响应先消耗大部分预算，下一条请求只能使用剩余时间。
+					time.sleep(400 * time.millisecond)
+					if stalled_method == 'attachToTab' {
+						sess.on_message('{"id":${id},"result":[]}')
+						return
+					}
+				}
+				sess.on_message(mock_extension_result(id, method))
+			}
+			mut server := &VBrowserServer{
+				running:           true
+				auth_wait_timeout: 600 * time.millisecond
+				ext_conn:          &ExtensionConn{ session: sess }
+			}
+			started := time.now()
+			mut err_msg := ''
+			result := server.attach_session('{"url":${json_str(target_url)}}') or {
+				err_msg = err.msg()
+				''
+			}
+			elapsed := time.now() - started
+			assert result == ''
+			assert err_msg.contains('did not authorize the connection within 1s.')
+			assert err_msg.contains('extension connect page')
+			mut methods := []string{}
+			for sent.len > 0 {
+				methods << <-sent
+			}
+			assert stalled_method in methods
+			assert elapsed >= 500 * time.millisecond
+			assert elapsed < 900 * time.millisecond
+			sess.pending_mu.@lock()
+			assert sess.pending.len == 0
+			sess.pending_mu.unlock()
+		}
+	}
+}
+
+fn test_attach_session_default_timeout_message_uses_50_seconds() {
+	// 直接推进到 deadline 之后，验证生产默认时限文案，不实际等待 50s。
+	mut state := &MockExtensionState{}
+	mut server := new_mock_extension_server(mut state)
+	server.auth_wait_timeout = VBrowserServer{}.auth_wait_timeout
+	assert server.auth_wait_timeout == 50 * time.second
+	conn := server.ext_conn or { panic('missing mock extension') }
+	mut err_msg := ''
+	server.wait_for_extension_authorization(conn, time.now().add(-1 * time.second)) or {
+		err_msg = err.msg()
+	}
+	assert err_msg == 'the extension did not authorize the connection within 50s. Open the extension connect page in Chrome, select a tab there, then run v-browser connect again.'
+}
+
+fn test_attach_session_gives_up_when_extension_disconnects() {
+	// 扩展在等待授权期间断开：立即放弃，不再空等。
+	mut state := &MockExtensionState{ disconnect_after_first: true }
+	mut server := new_mock_extension_server(mut state)
+	server.auth_wait_timeout = 5 * time.second
+	mut err_msg := ''
+	result := server.attach_session('{"tabId":7,"windowId":3}') or {
+		err_msg = err.msg()
+		''
+	}
+	assert result == ''
+	assert err_msg.contains('extension disconnected')
+	// 只尝试了一次：断开后不再重试。
+	assert state.switch_calls == 1
+}
+
+fn test_attach_session_gives_up_when_server_stops() {
+	// server 停止：立即放弃等待。
+	mut state := &MockExtensionState{ stop_server_after_first: true }
+	mut server := new_mock_extension_server(mut state)
+	server.auth_wait_timeout = 5 * time.second
+	mut err_msg := ''
+	result := server.attach_session('{"tabId":7,"windowId":3}') or {
+		err_msg = err.msg()
+		''
+	}
+	assert result == ''
+	assert err_msg.contains('shutting down')
+	assert state.switch_calls == 1
+}
+
+fn test_attach_session_reports_real_failure_without_retrying() {
+	// 真正的连接失败：原样上报，且不重试。
+	mut state := &MockExtensionState{
+		failure_message: 'Command "switchToTab" is rejected: no target tab available'
+	}
+	mut server := new_mock_extension_server(mut state)
+	mut err_msg := ''
+	result := server.attach_session('{"tabId":7,"windowId":3}') or {
+		err_msg = err.msg()
+		''
+	}
+	assert result == ''
+	assert err_msg.contains('no target tab available')
+	assert state.switch_calls == 1
+}
+
+// ─── 集成：真实 relay + mock 扩展（先 pending 拒绝，后授权成功）─────────
+//
+// 这里跑的是真实的 server 进程：mock 扩展通过 WebSocket 连上 relay，
+// server 收到 connect 请求时扩展还没授权，必须等"用户在扩展页面选了标签页"
+// 之后才能成功。
+
+// mock 扩展用最小 WebSocket 实现连 relay。
+// 这里手写握手与帧收发：V 的 websocket 客户端在多线程场景下不稳，
+// 而 mock 扩展只需要 text 帧，几十行足够。
+fn mock_ws_read_exact(mut sock net.TcpConn, mut buf []u8) bool {
+	mut read := 0
+	for read < buf.len {
+		n := sock.read(mut buf[read..]) or { return false }
+		if n == 0 {
+			return false
+		}
+		read += n
+	}
+	return true
+}
+
+// 完成 WebSocket 握手，返回连接。
+fn mock_ws_connect(port int, path string) !net.TcpConn {
+	mut sock := net.dial_tcp('127.0.0.1:${port}')!
+	sock.write_string('GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\n' +
+		'Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')!
+	mut buf := []u8{len: 1024}
+	mut acc := []u8{}
+	for {
+		n := sock.read(mut buf) or { return err }
+		if n == 0 {
+			return error('the relay closed the connection during the handshake')
+		}
+		acc << buf[..n]
+		if acc.len >= 4 && acc[acc.len - 4] == `\r` && acc[acc.len - 3] == `\n`
+			&& acc[acc.len - 2] == `\r` && acc[acc.len - 1] == `\n` {
+			break
+		}
+	}
+	if !acc[..acc.len - 4].bytestr().contains('101') {
+		return error('the relay refused the websocket handshake')
+	}
+	return sock
+}
+
+// 读取一个 WebSocket 帧，返回 (opcode, payload)。
+fn mock_ws_read_frame(mut sock net.TcpConn) !(int, string) {
+	mut header := []u8{len: 2}
+	if !mock_ws_read_exact(mut sock, mut header) {
+		return error('the relay closed the connection')
+	}
+	opcode := int(header[0] & 0x0f)
+	masked := (header[1] & 0x80) != 0
+	mut length := int(header[1] & 0x7f)
+	if length == 126 {
+		mut ext := []u8{len: 2}
+		if !mock_ws_read_exact(mut sock, mut ext) {
+			return error('the relay closed the connection')
+		}
+		length = (int(ext[0]) << 8) | int(ext[1])
+	} else if length == 127 {
+		mut ext := []u8{len: 8}
+		if !mock_ws_read_exact(mut sock, mut ext) {
+			return error('the relay closed the connection')
+		}
+		length = 0
+		for b in ext {
+			length = (length << 8) | int(b)
+		}
+	}
+	mut mask := []u8{len: 0}
+	if masked {
+		mask = []u8{len: 4}
+		if !mock_ws_read_exact(mut sock, mut mask) {
+			return error('the relay closed the connection')
+		}
+	}
+	mut payload := []u8{len: length}
+	if length > 0 && !mock_ws_read_exact(mut sock, mut payload) {
+		return error('the relay closed the connection')
+	}
+	if masked {
+		for i in 0 .. payload.len {
+			payload[i] ^= mask[i % 4]
+		}
+	}
+	return opcode, payload.bytestr()
+}
+
+// 发送一个 text 帧（客户端发往服务端的帧必须带掩码）。
+fn mock_ws_write_text(mut sock net.TcpConn, text string) ! {
+	payload := text.bytes()
+	mut frame := []u8{}
+	frame << u8(0x81) // FIN + text
+	mut mask := []u8{cap: 4}
+	mask << u8(0x12)
+	mask << u8(0x34)
+	mask << u8(0x56)
+	mask << u8(0x78)
+	if payload.len < 126 {
+		frame << u8(0x80 | payload.len)
+	} else if payload.len <= 0xffff {
+		frame << u8(0x80 | 126)
+		frame << u8((payload.len >> 8) & 0xff)
+		frame << u8(payload.len & 0xff)
+	} else {
+		return error('the mock extension payload is too long')
+	}
+	frame << mask[0]
+	frame << mask[1]
+	frame << mask[2]
+	frame << mask[3]
+	for i in 0 .. payload.len {
+		frame << (payload[i] ^ mask[i % 4])
+	}
+	sock.write(frame)!
+}
+
+// mock 扩展客户端：连上 relay，按扩展的协议回包。
+// 第一条命令按 pending 拒绝（模拟用户还没在扩展页面选标签页），
+// 之后视为用户已完成选择。收到的 switchToTab 次数通过 cmd_ch 汇报。
+fn run_mock_extension(relay_port int, token string, cmd_ch chan int) {
+	mut sock := mock_ws_connect(relay_port, '/?token=${token}') or { return }
+	// 注册消息：和真实扩展一样先上报扩展 id。
+	mock_ws_write_text(mut sock,
+		'{"method":"registerExtension","params":{"extensionId":"mockextensionidtest000"}}') or { return }
+	mut authorized := false
+	mut switch_calls := 0
+	for {
+		opcode, raw := mock_ws_read_frame(mut sock) or { break }
+		if opcode != 1 {
+			// 二进制帧 / 控制帧：mock 扩展不关心。
+			continue
+		}
+		id := cdp_extract_int(raw, '"id":')
+		method := cdp_extract_str(raw, 'method')
+		if id <= 0 {
+			// 事件类消息：mock 扩展不关心。
+			continue
+		}
+		if method == 'switchToTab' {
+			switch_calls++
+			cmd_ch <- switch_calls
+		}
+		response := if authorized {
+			mock_extension_result(id, method)
+		} else {
+			// pending：按扩展真实的格式拒绝，用户"选中标签页"之后才放行。
+			authorized = true
+			'{"id":${id},"error":${json_str(mock_extension_not_authorized_message)}}'
+		}
+		mock_ws_write_text(mut sock, response) or { break }
+	}
+}
+
+// 向运行中的 server 发一条 IPC 请求并读取响应。
+fn ipc_request_to_server(port int, req IpcRequest, timeout time.Duration) !IpcResponse {
+	mut conn := net.dial_tcp('127.0.0.1:${port}')!
+	defer {
+		conn.close() or {}
+	}
+	conn.set_read_timeout(timeout)
+	conn.write_string(ipc_encode_request(req)) or { return err }
+	mut buf := []u8{len: 8192}
+	mut pending := ''
+	for {
+		n := conn.read(mut buf) or { return err }
+		if n == 0 {
+			return error('the server closed the connection')
+		}
+		pending += buf[..n].bytestr()
+		if idx := pending.index('\n') {
+			return ipc_decode_response(pending[..idx])
+		}
+	}
+}
+
+fn test_connect_waits_for_extension_authorization_integration() {
+	$if windows {
+		assert true
+		return
+	}
+	bin_path := build_integration_cli_binary() or { panic(err) }
+	test_home := new_integration_test_home('auth-wait')
+	// 随机端口：绝不碰用户真实 server 的 47978 / 47979。
+	test_relay_port, test_ipc_port := integration_ports(7)
+	defer {
+		cleanup_integration_server(bin_path, test_home, test_relay_port, test_ipc_port)
+		os.rmdir_all(test_home) or {}
+	}
+	pid := start_integration_server(bin_path, test_home, test_relay_port, test_ipc_port) or {
+		panic(err)
+	}
+	assert pid > 0
+	token := (os.read_file(os.join_path(test_home, '.v-browser', 'token')) or { '' }).trim_space()
+	assert token.len >= 16
+
+	// mock 扩展：第一次命令按 pending 拒绝，之后才算授权。
+	// 收到的 switchToTab 次数通过 channel 汇报：跨线程共享标量状态不可靠，
+	// channel 才是线程之间安全的传递方式。
+	cmd_ch := chan int{cap: 16}
+	spawn fn [test_relay_port, token, cmd_ch] () {
+		run_mock_extension(test_relay_port, token, cmd_ch)
+	}()
+
+	// 等扩展真的连上 relay（server 的 status 变成 connected），
+	// 否则 connect 请求会先一步到达 server，报"no extension connected"。
+	mut deadline := time.now().add(15 * time.second)
+	for time.now() < deadline {
+		status := ipc_request_to_server(test_ipc_port, IpcRequest{
+			id:     9
+			method: 'status'
+			params: '{}'
+		}, 5 * time.second) or { IpcResponse{} }
+		if status.result.contains('"connected":true') {
+			break
+		}
+		time.sleep(50 * time.millisecond)
+	}
+
+	// connect 请求放到后台发：扩展还没授权时 server 会一直等着，
+	// 主线程要先把扩展置为已授权，connect 才能返回。
+	// 响应通过 channel 回传：跨线程传字符串必须靠 channel 做同步。
+	resp_ch := chan IpcResponse{cap: 1}
+	spawn fn [resp_ch, test_ipc_port] () {
+		resp := ipc_request_to_server(test_ipc_port, IpcRequest{
+			id:     1
+			method: 'connect'
+			params: '{"tabId":7,"windowId":3}'
+		}, 30 * time.second) or {
+			resp_ch <- IpcResponse{
+				id:  1
+				err: 'ipc request failed'
+			}
+			return
+		}
+		resp_ch <- resp
+	}()
+
+	// 等 server 重试：扩展被 pending 拒绝之后，server 必须再发一次命令。
+	// 第一次 switchToTab 会被拒绝，第二次才成功——中间就是"等待授权"。
+	mut switch_calls := 0
+	mut deadline2 := time.now().add(15 * time.second)
+	for time.now() < deadline2 && switch_calls < 2 {
+		select {
+			n := <-cmd_ch {
+				switch_calls = n
+			}
+			200 * time.millisecond {
+			}
+		}
+	}
+	assert switch_calls >= 2
+
+	// 等 connect 的响应。
+	select {
+		resp := <-resp_ch {
+			assert resp.err == ''
+			assert resp.result.contains('"tabId":7')
+		}
+		30 * time.second {
+			assert false, 'the connect request did not return in time'
+		}
+	}
 }

@@ -52,6 +52,7 @@ mut:
 	filter            string
 	candidate_urls    map[string]bool
 	saved_request_ids map[string]bool
+	failed_count      int
 	next_index        int
 }
 
@@ -130,7 +131,7 @@ mut:
 	response_headers string
 	response_body    string
 	error_text       string
-	timestamp        int
+	timestamp        i64
 	fallback_text    string
 }
 
@@ -1523,6 +1524,7 @@ fn clone_network_watch_state(src NetworkWatchState) NetworkWatchState {
 		filter:            src.filter
 		candidate_urls:    clone_bool_map(src.candidate_urls)
 		saved_request_ids: clone_bool_map(src.saved_request_ids)
+		failed_count:      src.failed_count
 		next_index:        src.next_index
 	}
 }
@@ -2067,6 +2069,11 @@ fn cdp_parse_message(raw string) ProtocolResponse {
 }
 
 fn cdp_extract_int(s string, key string) int {
+	return int(cdp_extract_i64(s, key))
+}
+
+// cdp_extract_i64 解析不会被 32 位截断的整数（例如 Date.now() 时间戳）。
+fn cdp_extract_i64(s string, key string) i64 {
 	idx := s.index(key) or { return 0 }
 	rest := s[idx + key.len..].trim_left(' ')
 	mut end := 0
@@ -2076,7 +2083,7 @@ fn cdp_extract_int(s string, key string) int {
 	if end == 0 {
 		return 0
 	}
-	return rest[..end].int()
+	return rest[..end].i64()
 }
 
 fn cdp_extract_bool(s string, key string) bool {

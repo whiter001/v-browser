@@ -5,6 +5,7 @@ module main
 import os
 import time
 import encoding.base64
+import x.json2 as json_urls
 import strings
 import sync
 import rand
@@ -164,6 +165,36 @@ fn evaluate_bool_js(mut sess CdpSession, js string) !bool {
 	return val == 'true'
 }
 
+// eval_prepared_js 执行「已经完成作用域包装」的 JavaScript。
+//
+// 这里和 eval_scoped_expression 是两种不同的 API，职责必须分开：
+//   - eval_scoped_expression：传入**原始表达式**，由它负责套一层作用域
+//     （必要时进入 iframe），整段代码只包装一次；
+//   - eval_prepared_js：传入的脚本**自带作用域包装**（例如
+//     build_document_scope_js / build_element_scope_js / build_element_action_js
+//     的产物），这里绝不能再包装一次。
+//
+// 旧实现把这两者混用：run_element_action 生成的脚本本身已经进入了 iframe，
+// 却又被 eval_scoped_expression 包了一层，于是内层脚本在子文档里再执行一次
+// querySelector(frame_selector)——搜的已经不是主文档，选择 iframe 之后的
+// click / check / uncheck 等元素动作必然失败。
+fn eval_prepared_js(mut sess CdpSession, js string, await_promise bool) !string {
+	p := '{"expression":${json_str(js)},"returnByValue":true,"awaitPromise":${await_promise}}'
+	resp := sess.send_command('Runtime.evaluate', p)!
+	return evaluate_result_value(resp.result)
+}
+
+// eval_prepared_js_short 是 eval_prepared_js 的短超时（3 秒）版本，
+// 用于可能触发对话框、不能长时间阻塞整个 CDP 会话的操作。
+fn eval_prepared_js_short(mut sess CdpSession, js string) !string {
+	p := '{"expression":${json_str(js)},"returnByValue":true,"awaitPromise":false}'
+	resp := sess.send_command_to('Runtime.evaluate', p, '', 3 * time.second)!
+	return evaluate_result_value(resp.result)
+}
+
+// eval_scoped_expression 在当前 frame 上下文中执行**原始表达式**。
+// 作用域只包装一次：没有 frame 选择器时直接在当前文档执行，
+// 有 frame 选择器时进入该 iframe 的 document/window 后再求值。
 fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) !string {
 	// #21: 直接 json_str 嵌入表达式，浏览器端用 JSON.parse 取回。
 	// 旧实现先 V 端 base64.encode，再浏览器 atob + Uint8Array + TextDecoder，
@@ -178,7 +209,7 @@ fn eval_scoped_expression(mut sess CdpSession, expr string, await_promise bool) 
 // Short-timeout (3 s) variant for use during dialog-triggering actions to avoid
 // blocking the whole CLI when the CDP session is frozen by a synchronous alert/prompt.
 // eval_scoped_expression_short 短超时版本（3秒），用于可能触发对话框的操作
-// 避免对话框阻塞整个 CDP 会话
+// 避免对话框阻塞整个 CDP 会话。传入的同样是**原始表达式**。
 fn eval_scoped_expression_short(mut sess CdpSession, expr string) !string {
 	// 同上 #21
 	scoped_expr := build_scoped_runtime_js(mut sess, 'return eval(JSON.parse(${js_str(json_str(expr))}));')
@@ -187,22 +218,29 @@ fn eval_scoped_expression_short(mut sess CdpSession, expr string) !string {
 	return evaluate_result_value(resp.result)
 }
 
-// Run element action with a short (3 s) timeout — used when the action may
-// trigger a blocking dialog so we do not want to wait the full CDP timeout.
-fn run_element_action_short(mut sess CdpSession, sel string, body string) ! {
+// build_element_action_js 生成「定位元素 + 执行动作」的完整页面脚本。
+// 脚本自带作用域（必要时进入 iframe 并把 document/window 绑定到子文档），
+// 因此只能配合 eval_prepared_js / eval_prepared_js_short 使用，
+// 不能再被 eval_scoped_expression 二次包装。
+fn build_element_action_js(mut sess CdpSession, sel string, body string) string {
 	query := if sel.starts_with('//') || sel.starts_with('(//') {
 		'var el=doc.evaluate(${js_str(sel)}, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;'
 	} else {
 		'var el=doc.querySelector(${js_str(sel)});'
 	}
 	frame_selector := sess.current_frame_selector_value()
-	js := if frame_selector == '' {
-		'(function(){ var frame=null; var doc=document; var win=window; ${query} if(el === null) return false; ${body} })()'
-	} else {
-		frame_sel := js_str(frame_selector)
-		'(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${query} if(el === null) return false; ${body} })()'
+	if frame_selector == '' {
+		return '(function(){ var frame=null; var doc=document; var win=window; ${query} if(el === null) return false; ${body} })()'
 	}
-	result := eval_scoped_expression_short(mut sess, js)!
+	frame_sel := js_str(frame_selector)
+	return '(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${query} if(el === null) return false; ${body} })()'
+}
+
+// Run element action with a short (3 s) timeout — used when the action may
+// trigger a blocking dialog so we do not want to wait the full CDP timeout.
+fn run_element_action_short(mut sess CdpSession, sel string, body string) ! {
+	js := build_element_action_js(mut sess, sel, body)
+	result := eval_prepared_js_short(mut sess, js)!
 	ok := result == 'true'
 	if !ok {
 		return error('element not found: ${sel}')
@@ -223,19 +261,9 @@ fn resolve_object_id_by_selector(mut sess CdpSession, sel string) !string {
 
 fn run_element_action(mut sess CdpSession, sel string, body string) ! {
 	// Build a self-contained page script so selector lookup and event dispatch run in the same DOM scope.
-	query := if sel.starts_with('//') || sel.starts_with('(//') {
-		'var el=doc.evaluate(${js_str(sel)}, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;'
-	} else {
-		'var el=doc.querySelector(${js_str(sel)});'
-	}
-	frame_selector := sess.current_frame_selector_value()
-	js := if frame_selector == '' {
-		'(function(){ var frame=null; var doc=document; var win=window; ${query} if(el === null) return false; ${body} })()'
-	} else {
-		frame_sel := js_str(frame_selector)
-		'(function(){ var frame=document.querySelector(${frame_sel}); if(!frame) return null; var doc; try { doc=frame.contentDocument; } catch (e) { return null; } if(!doc) return null; var win=frame.contentWindow || doc.defaultView; ${query} if(el === null) return false; ${body} })()'
-	}
-	result := eval_scoped_expression(mut sess, js, false)!
+	// 脚本已自带作用域，只能用 eval_prepared_js 执行（避免二次进入 iframe）。
+	js := build_element_action_js(mut sess, sel, body)
+	result := eval_prepared_js(mut sess, js, false)!
 	ok := result == 'true'
 	if !ok {
 		return error('element not found: ${sel}')
@@ -316,11 +344,58 @@ fn pointer_click(mut sess CdpSession, x f64, y f64, click_count int) ! {
 	}
 }
 
+// resolve_axref_object_id 通过 backendNodeId 解析出 Runtime RemoteObjectId。
+// @eN 引用不是 CSS 选择器，必须走 backendNodeId / objectId 这条路。
+fn resolve_axref_object_id(mut sess CdpSession, backend_node_id int) !string {
+	resp := sess.send_command('DOM.resolveNode', '{"backendNodeId":${backend_node_id}}')!
+	object_id := cdp_extract_str(resp.result, 'objectId')
+	if object_id == '' {
+		return error('could not resolve backendNodeId ${backend_node_id}')
+	}
+	return object_id
+}
+
+// 所有快照引用优先绑定 backendNodeId；节点失效时禁止回退到可能已指向别人的 selector。
+fn run_axref_action(mut sess CdpSession, ref string, body string) ! {
+	r := axref_get(&sess.axref, ref) or {
+		return error('unknown ref ${ref}: run `v-browser snapshot` first')
+	}
+	if r.backend_node_id <= 0 {
+		return error('stale-reference ${ref}: run `v-browser snapshot` again')
+	}
+	object_id := resolve_axref_object_id(mut sess, r.backend_node_id) or {
+		return error('stale-reference ${ref}: ${err}')
+	}
+	defer { release_remote_object(mut sess, object_id) }
+	// 先检查连接状态，避免 detached 节点仍能成功派发事件。
+	declaration := 'function(){ var el = this; if (!el.isConnected) throw new Error("stale-reference: detached node"); var win = el.ownerDocument.defaultView; ${body} }'
+	resp := sess.send_command('Runtime.callFunctionOn', '{"objectId":${json_str(object_id)},"functionDeclaration":${json_str(declaration)},"returnByValue":true}')!
+	value := evaluate_result_value(resp.result)!
+	if value != 'true' {
+		return error('element action failed for ref ${ref}')
+	}
+}
+
+// run_element_action_by_selector 是元素动作的统一入口：
+// @eN 引用走 backendNodeId / objectId 解析，普通选择器走 CSS / XPath。
+fn run_element_action_by_selector(mut sess CdpSession, sel string, body string) ! {
+	if axref_is_ref(sel) {
+		run_axref_action(mut sess, sel, body)!
+		return
+	}
+	run_element_action(mut sess, sel, body)!
+}
+
 // pointer_action_for_selector 对选择器指定的元素执行指针操作（click/dblclick/hover）
 // #22: 单次 Runtime.evaluate 同时做 scrollIntoView + 可见性检查 + rect 读取，
 // 替代旧的 3 次 CDP round-trip（旧流程 resolve → scrollIntoView → 再 resolve）。
 fn pointer_action_for_selector(mut sess CdpSession, sel string, action string) ! {
-	el := resolve_action_point_by_selector(mut sess, sel)!
+	// @eN 不是 CSS 选择器：鼠标回退路径必须用 backendNodeId 解析出的边界框
+	el := if axref_is_ref(sel) {
+		resolve_selector(mut sess, sel)!
+	} else {
+		resolve_action_point_by_selector(mut sess, sel)!
+	}
 	match action {
 		'click' { pointer_click(mut sess, el.x, el.y, 1)! }
 		'dblclick' { pointer_click(mut sess, el.x, el.y, 2)! }
@@ -398,7 +473,8 @@ fn parse_verify_settings(params string, default_timeout time.Duration) (bool, ti
 
 fn read_element_text_or_value(mut sess CdpSession, sel string) !string {
 	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; if ("value" in el) return el.value; return el.textContent || "";')
-	return eval_scoped_expression(mut sess, js, false)
+	// 脚本已带作用域包装，用 eval_prepared_js 避免二次包装
+	return eval_prepared_js(mut sess, js, false)
 }
 
 fn wait_for_element_text_or_value(mut sess CdpSession, sel string, expected string, timeout time.Duration) ! {
@@ -425,15 +501,17 @@ fn wait_for_element_text_or_value(mut sess CdpSession, sel string, expected stri
 // read_file_input_names 读取文件选择框已选中的文件名列表
 // 以换行符分隔返回所有文件名
 fn read_file_input_names(mut sess CdpSession, sel string) !string {
-	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; if (!el.files) return ""; return Array.from(el.files).map(function(file) { return file.name; }).join("\n");')
-	return eval_scoped_expression(mut sess, js, false)
+	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; if (!el.files) return ""; return Array.from(el.files).map(function(file) { return file.name; }).join("\\n");')
+	// 脚本已带作用域包装，用 eval_prepared_js 避免二次包装
+	return eval_prepared_js(mut sess, js, false)
 }
 
 // read_preview_text 读取预览区域元素的内容
 // 支持 innerText、textContent、value 属性
 fn read_preview_text(mut sess CdpSession, sel string) !string {
 	js := build_element_scope_js(mut sess, sel, 'if(!el) return null; return (el.innerText || el.textContent || el.value || "").trim();')
-	return eval_scoped_expression(mut sess, js, false)
+	// 脚本已带作用域包装，用 eval_prepared_js 避免二次包装
+	return eval_prepared_js(mut sess, js, false)
 }
 
 // wait_for_file_input_names 等待文件选择框包含期望的文件
@@ -669,37 +747,239 @@ fn cmd_screenshot(mut sess CdpSession, params string) string {
 	return json_str(out_path)
 }
 
-// cmd_screenshot_annotate 截取带标注的页面截图
-// 自动识别页面中的输入框并添加边框标注
-fn cmd_screenshot_annotate(mut sess CdpSession, _params string, path string, fmt string, full bool, max_labels int) string {
-	js := build_screenshot_annotate_js(full, max_labels)
-	result := eval_scoped_expression(mut sess, js, true) or { return 'ERROR:${err}' }
-	ok := cdp_extract_obj_key(result, '"ok":')
-	if ok != 'true' {
-		err_msg := cdp_extract_str(result, 'error')
-		return 'ERROR:${err_msg}'
-	}
-	annotated_b64 := cdp_extract_str(result, 'data')
-	if annotated_b64 == '' {
-		return 'ERROR:no annotated screenshot data returned'
-	}
+// ─── 标注截图 ───────────────────────────────────────────────
+//
+// 旧实现把标注逻辑整个塞进页面脚本，靠 chrome.runtime.sendMessage 找扩展要
+// 无障碍树和截图：扩展里根本没有 getAXTree / captureScreenshot 消息处理器，
+// 脚本本身还带着嵌套引号的语法错误，命令必然失败。
+//
+// 现在全部走 CDP：
+//   1. Accessibility.getFullAXTree 拿 AX 节点；
+//   2. DOM.resolveNode + Runtime.callFunctionOn 拿节点在文档坐标系里的矩形；
+//   3. 页面里只注入一个纯 DOM 的标注覆盖层（不依赖任何扩展 API）；
+//   4. Page.captureScreenshot 截图，随后移除覆盖层。
 
+// annotate_interactive_roles 参与标注的 AX 角色。
+const annotate_interactive_roles = ['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox',
+	'listbox', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'searchbox', 'slider',
+	'spinbutton', 'switch', 'tab', 'treeitem', 'heading', 'image']
+
+// annotate_rect_function 计算元素在**顶层文档坐标系**里的矩形。
+// 同源 iframe 里的元素会逐层累加 iframe 自身的偏移。
+const annotate_rect_function = 'function(){var own=this.ownerDocument.defaultView;var child=own!==own.top;var node=this;var x=0,y=0;while(node){var r=node.getBoundingClientRect();x+=r.left;y+=r.top;var w=node.ownerDocument&&node.ownerDocument.defaultView;if(!w)throw new Error("annotation coordinate conversion failed: missing window");if(w===w.top)break;var fe;try{fe=w.frameElement;}catch(e){throw new Error("annotation coordinate conversion failed: cross-origin frame");}if(!fe)throw new Error("annotation coordinate conversion failed: cross-origin frame owner unavailable");x+=fe.clientLeft||0;y+=fe.clientTop||0;node=fe;}var rect=this.getBoundingClientRect();return {x:x+(child?0:own.scrollX),y:y+(child?0:own.scrollY),width:rect.width,height:rect.height,needsTopScroll:child};}'
+
+// AnnotateLabel 是一个待标注的元素（坐标为文档坐标系）。
+struct AnnotateLabel {
+	num    int
+	role   string
+	name   string
+	x      f64
+	y      f64
+	width  f64
+	height f64
+}
+
+// AnnotateRect 是元素在文档坐标系里的矩形。
+struct AnnotateRect {
+	x      f64
+	y      f64
+	width  f64
+	height f64
+}
+
+// annotate_node_rect 解析某个 backendNodeId 对应的矩形。
+fn annotate_node_rect(mut sess CdpSession, backend_node_id int) !AnnotateRect {
+	resolve_resp := sess.send_command('DOM.resolveNode', '{"backendNodeId":${backend_node_id}}')!
+	object_id := cdp_extract_str(resolve_resp.result, 'objectId')
+	if object_id == '' {
+		return error('could not resolve backendNodeId ${backend_node_id}')
+	}
+	// 远端对象只服务这一次取矩形，取完立即释放
+	defer { release_remote_object(mut sess, object_id) }
+	resp := sess.send_command('Runtime.callFunctionOn', '{"objectId":${json_str(object_id)},"functionDeclaration":${json_str(annotate_rect_function)},"returnByValue":true}')!
+	evaluate_check_exception(resp.result)!
+	value_obj := cdp_extract_obj_key(cdp_extract_obj_key(resp.result, '"result":'), '"value":')
+	if value_obj == '' || value_obj == 'null' {
+		return error('could not read box of backendNodeId ${backend_node_id}')
+	}
+	mut scroll_x := 0.0
+	mut scroll_y := 0.0
+	if cdp_extract_bool(value_obj, 'needsTopScroll') {
+		// 顶层独立求值，不允许子 frame 跨源读取 top.scrollX/Y 后静默退回 0。
+		scroll := eval_prepared_js(mut sess, '(function(){if(window !== window.top) throw new Error("annotation coordinate conversion failed: not top context");return {x:window.scrollX,y:window.scrollY};})()', false)!
+		if cdp_extract_obj_key(scroll, '"x":') == '' || cdp_extract_obj_key(scroll, '"y":') == '' {
+			return error('annotation coordinate conversion failed: top scroll is unavailable')
+		}
+		scroll_x = cdp_extract_float(scroll, 'x')
+		scroll_y = cdp_extract_float(scroll, 'y')
+	}
+	return AnnotateRect{
+		x:      cdp_extract_float(value_obj, 'x') + scroll_x
+		y:      cdp_extract_float(value_obj, 'y') + scroll_y
+		width:  cdp_extract_float(value_obj, 'width')
+		height: cdp_extract_float(value_obj, 'height')
+	}
+}
+
+// collect_annotate_labels 从 AX 树里收集需要标注的可交互元素。
+fn collect_annotate_labels(mut sess CdpSession, max_labels int) ![]AnnotateLabel {
+	resp := sess.send_command('Accessibility.getFullAXTree', '{}')!
+	nodes_json := cdp_extract_obj_key(resp.result, '"nodes":')
+	if nodes_json == '' {
+		return error('no AX tree returned')
+	}
+	limit := if max_labels > 0 { max_labels } else { 20 }
+	mut labels := []AnnotateLabel{}
+	mut counter := 1
+	mut pos := 1
+	mut guard := 0
+	for pos < nodes_json.len - 1 && labels.len < limit {
+		guard++
+		if guard > 20000 {
+			break
+		}
+		if nodes_json[pos] != `{` {
+			pos++
+			continue
+		}
+		node_str := cdp_balanced(nodes_json[pos..])
+		pos += node_str.len
+		role := ax_prop(node_str, 'role')
+		bnid := cdp_extract_int(node_str, '"backendDOMNodeId":')
+		if role == '' || role !in annotate_interactive_roles || bnid <= 0 {
+			continue
+		}
+		rect := annotate_node_rect(mut sess, bnid) or { return error('annotation failed: ${err}') }
+		if rect.width <= 0 || rect.height <= 0 {
+			continue
+		}
+		labels << AnnotateLabel{
+			num:    counter
+			role:   role
+			name:   ax_prop(node_str, 'name')
+			x:      rect.x
+			y:      rect.y
+			width:  rect.width
+			height: rect.height
+		}
+		counter++
+	}
+	return labels
+}
+
+// build_screenshot_overlay_js 生成标注覆盖层的页面脚本。
+// 纯 DOM 实现，不调用任何扩展 API；返回 Promise，由 CDP 以 awaitPromise 等待，
+// 保证覆盖层绘制完成之后才截图。
+fn build_screenshot_overlay_js(labels []AnnotateLabel, overlay_ids ...string) string {
+	overlay_id := if overlay_ids.len > 0 { overlay_ids[0] } else { '__vBrowserAnnotateOverlay' }
+	mut items := []string{}
+	for l in labels {
+		items << '{"num":${l.num},"x":${l.x},"y":${l.y},"width":${l.width},"height":${l.height}}'
+	}
+	items_json := '[' + items.join(',') + ']'
+	return [
+		'(async function(){',
+		'  var labels = ${items_json};',
+		'  var id = ${json_str(overlay_id)};',
+		'  if (document.getElementById(id)) throw new Error("annotation overlay id collision");',
+		'  var layer = document.createElement("div");',
+		'  layer.id = id;',
+		'  layer.setAttribute("data-vbrowser-annotate", "1");',
+		'  var st = layer.style;',
+		'  st.position = "absolute";',
+		'  st.left = "0px";',
+		'  st.top = "0px";',
+		'  st.width = "0px";',
+		'  st.height = "0px";',
+		'  st.pointerEvents = "none";',
+		'  st.zIndex = "2147483647";',
+		'  for (var i = 0; i < labels.length; i++) {',
+		'    var l = labels[i];',
+		'    var box = document.createElement("div");',
+		'    var bs = box.style;',
+		'    bs.position = "absolute";',
+		'    bs.left = (Number(l.x) || 0) + "px";',
+		'    bs.top = (Number(l.y) || 0) + "px";',
+		'    bs.width = Math.max(0, Number(l.width) || 0) + "px";',
+		'    bs.height = Math.max(0, Number(l.height) || 0) + "px";',
+		'    bs.border = "2px solid #ff0000";',
+		'    bs.boxSizing = "border-box";',
+		'    var tag = document.createElement("div");',
+		'    tag.textContent = String(l.num);',
+		'    var ts = tag.style;',
+		'    ts.position = "absolute";',
+		'    ts.left = "-2px";',
+		'    ts.top = "-22px";',
+		'    ts.width = "20px";',
+		'    ts.height = "20px";',
+		'    ts.lineHeight = "20px";',
+		'    ts.textAlign = "center";',
+		'    ts.background = "#ff0000";',
+		'    ts.color = "#ffffff";',
+		'    ts.font = "bold 13px monospace";',
+		'    box.appendChild(tag);',
+		'    layer.appendChild(box);',
+		'  }',
+		'  if (!document.documentElement) return false;',
+		'  document.documentElement.appendChild(layer);',
+		'  // 等一帧，确保覆盖层已经画到页面上',
+		'  await new Promise(function(resolve) {',
+		'    if (typeof requestAnimationFrame === "function") { requestAnimationFrame(function() { resolve(true); }); }',
+		'    else { setTimeout(resolve, 0); }',
+		'  });',
+		'  return true;',
+		'})()',
+	].join('\n')
+}
+
+// build_screenshot_overlay_remove_js 生成移除标注覆盖层的脚本。
+fn build_screenshot_overlay_remove_js(overlay_ids ...string) string {
+	overlay_id := if overlay_ids.len > 0 { overlay_ids[0] } else { '__vBrowserAnnotateOverlay' }
+	return '(function(){ var el = document.getElementById(${json_str(overlay_id)}); if (el && el.attributes && el.attributes["data-vbrowser-annotate"] && el.parentNode) el.parentNode.removeChild(el); return true; })()'
+}
+
+// 清理幂等且只删除本次注入的标记节点，失败不影响主流程。
+fn remove_screenshot_overlay(mut sess CdpSession, overlay_id string) {
+	eval_prepared_js(mut sess, build_screenshot_overlay_remove_js(overlay_id), false) or {}
+}
+
+// annotate_labels_json 输出标注元素列表。
+fn annotate_labels_json(labels []AnnotateLabel) string {
+	mut items := []string{}
+	for l in labels {
+		items << '{"num":${l.num},"role":${json_str(l.role)},"name":${json_str(l.name)},"x":${l.x},"y":${l.y},"width":${l.width},"height":${l.height}}'
+	}
+	return '[' + items.join(',') + ']'
+}
+
+// cmd_screenshot_annotate 截取带标注的页面截图
+// 标注元素来自 CDP 的 AX 树，标注由页面内的纯 DOM 覆盖层绘制。
+fn cmd_screenshot_annotate(mut sess CdpSession, _params string, path string, fmt string, full bool, max_labels int) string {
+	labels := collect_annotate_labels(mut sess, max_labels) or { return 'ERROR:${err}' }
+	if labels.len == 0 {
+		return 'ERROR:no interactive elements found for annotation'
+	}
+	overlay_id := '__vBrowserAnnotateOverlay_${rand.uuid_v4()}'
+	// 必须在注入前注册清理，Promise 超时或注入半途失败也不能残留覆盖层。
+	defer { remove_screenshot_overlay(mut sess, overlay_id) }
+	installed := eval_prepared_js(mut sess, build_screenshot_overlay_js(labels, overlay_id), true) or {
+		return 'ERROR:${err}'
+	}
+	if installed != 'true' { return 'ERROR:annotation overlay injection failed' }
+	mut p := '{"format":${json_str(fmt)},"captureBeyondViewport":${full}}'
+	resp := sess.send_command('Page.captureScreenshot', p) or { return 'ERROR:${err}' }
+	data := cdp_extract_str(resp.result, 'data')
+	if data == '' {
+		return 'ERROR:no screenshot data returned'
+	}
 	out_path := if path != '' {
 		path
 	} else {
 		os.join_path(os.temp_dir(), 'screenshot_annotated_${time.now().unix_milli()}.${fmt}')
 	}
-	raw_bytes := base64.decode(annotated_b64)
+	raw_bytes := base64.decode(data)
 	os.write_file_array(out_path, raw_bytes) or { return 'ERROR:write failed: ${err}' }
-
-	mut json_out := '{"path":${json_str(out_path)}'
-	labels_count := cdp_extract_int(result, '"labelsCount":')
-	if labels_count > 0 {
-		labels_json := cdp_extract_obj_key(result, '"labels":')
-		json_out += ',"labelsCount":${labels_count},"labels":${labels_json}'
-	}
-	json_out += '}'
-	return json_out
+	return '{"path":${json_str(out_path)},"labelsCount":${labels.len},"labels":${annotate_labels_json(labels)}}'
 }
 
 fn capture_screenshot_base64(mut sess CdpSession, format string, full bool, selector string) !string {
@@ -873,12 +1153,13 @@ fn install_dom_download_capture(mut sess CdpSession) ! {
 		}, true);
 		return true;
 	')
-	eval_scoped_expression(mut sess, js, false)!
+	eval_prepared_js(mut sess, js, false)!
 }
 
 fn pull_dom_download_capture(mut sess CdpSession) !string {
 	js := build_document_scope_js(mut sess, 'var queue = win.__vBrowserDownloadQueue || []; if (queue.length === 0) return null; return JSON.stringify(queue.shift());')
-	return eval_scoped_expression(mut sess, js, false)!
+	// 脚本已带作用域包装，用 eval_prepared_js 避免二次包装
+	return eval_prepared_js(mut sess, js, false)!
 }
 
 fn write_dom_download_result(raw string, target_path string) !string {
@@ -981,7 +1262,7 @@ fn fetch_download_via_dom(mut sess CdpSession, sel string, target_path string) !
 				return JSON.stringify({ ok: false, url: url, filename: filename, error: String(err) });
 			});
 	')
-	raw := eval_scoped_expression(mut sess, js, true)!
+	raw := eval_prepared_js(mut sess, js, true)!
 	return write_dom_download_result(raw, target_path)
 }
 
@@ -1128,9 +1409,226 @@ fn capture_dom_snapshot(mut sess CdpSession, selector string, compact bool, max_
 	return cdp_extract_value_from_result(result)
 }
 
+// enable_lifecycle_events 打开 Page.lifecycleEvent 上报。
+// CDP 默认不发送 lifecycle 事件，不显式打开就永远等不到 networkIdle。
+fn enable_lifecycle_events(mut sess CdpSession) ! {
+	sess.send_command('Page.setLifecycleEventsEnabled', '{"enabled":true}')!
+}
+
+// LifecycleTarget 描述等待 networkidle 时应该关注的 frame 及其当前文档。
+struct LifecycleTarget {
+	frame_id  string
+	loader_id string
+}
+
+// resolve_lifecycle_target 的失败必须显式传播，不能把 iframe 错误降级成主 frame。
+
+// FrameEntry 是 frame 树里的一个 frame（id + 当前文档的 loaderId）。
+struct FrameEntry {
+	frame_id  string
+	loader_id string
+}
+
+// parse_frame_node 递归解析 frame 树节点，收集所有 frame。
+fn parse_frame_node(node_json string, mut out []FrameEntry) {
+	frame := cdp_extract_obj_key(node_json, '"frame":')
+	if frame != '' {
+		out << FrameEntry{
+			frame_id:  cdp_extract_str(frame, 'id')
+			loader_id: cdp_extract_str(frame, 'loaderId')
+		}
+	}
+	children := cdp_extract_obj_key(node_json, '"childFrames":')
+	if children == '' || children == '[]' {
+		return
+	}
+	mut pos := 1
+	for pos < children.len {
+		if children[pos] == `{` {
+			item := cdp_balanced(children[pos..])
+			parse_frame_node(item, mut out)
+			pos += item.len
+		} else {
+			pos++
+		}
+	}
+}
+
+// collect_frame_entries 收集 frame 树里的所有 frame。
+fn collect_frame_entries(tree_json string) []FrameEntry {
+	mut out := []FrameEntry{}
+	parse_frame_node(tree_json, mut out)
+	return out
+}
+
+// iframe_backend_node_id 解析 iframe 元素（主文档里的 CSS 选择器）的 backendNodeId。
+fn iframe_backend_node_id(mut sess CdpSession, selector string) !int {
+	doc_resp := sess.send_command('DOM.getDocument', '{"depth":0}')!
+	root_node_id := cdp_extract_int(doc_resp.result, '"nodeId":')
+	if root_node_id == 0 {
+		return error('could not get document root')
+	}
+	qs_resp := sess.send_command('DOM.querySelector', '{"nodeId":${root_node_id},"selector":${json_str(selector)}}')!
+	target_node_id := cdp_extract_int(qs_resp.result, '"nodeId":')
+	if target_node_id == 0 {
+		return error('selector not found: ${selector}')
+	}
+	desc_resp := sess.send_command('DOM.describeNode', '{"nodeId":${target_node_id}}')!
+	bnid := cdp_extract_int(desc_resp.result, '"backendNodeId":')
+	if bnid == 0 {
+		return error('could not get backendNodeId for ${selector}')
+	}
+	return bnid
+}
+
+// find_frame_by_owner 在 frame 列表里找出 owner backendNodeId 匹配的那个 frame。
+fn find_frame_by_owner(mut sess CdpSession, frames []FrameEntry, owner_bnid int) ?FrameEntry {
+	for f in frames {
+		resp := sess.send_command('Page.getFrameOwner', '{"frameId":${json_str(f.frame_id)}}') or {
+			continue
+		}
+		bnid := cdp_extract_int(resp.result, '"backendNodeId":')
+		if bnid == owner_bnid {
+			return f
+		}
+	}
+	return none
+}
+
+// resolve_lifecycle_target 找出等待 networkidle 时应该关注的 frame。
+// 默认是主 frame；当前处于 iframe 上下文时，改为该 iframe 对应的子 frame
+// （用 Page.getFrameOwner 的 backendNodeId 与 iframe 元素对上号）。
+fn resolve_lifecycle_target(mut sess CdpSession) !LifecycleTarget {
+	resp := sess.send_command('Page.getFrameTree', '{}') or { return error(err.msg()) }
+	tree := cdp_extract_obj_key(resp.result, '"frameTree":')
+	if tree == '' {
+		return error('cannot resolve lifecycle target: frame tree is empty')
+	}
+	frame := cdp_extract_obj_key(tree, '"frame":')
+	target := LifecycleTarget{
+		frame_id:  cdp_extract_str(frame, 'id')
+		loader_id: cdp_extract_str(frame, 'loaderId')
+	}
+	if target.frame_id == '' {
+		return error('cannot resolve lifecycle target: main frame id is missing')
+	}
+	selector := sess.current_frame_selector_value()
+	if selector == '' {
+		return target
+	}
+	owner_bnid := iframe_backend_node_id(mut sess, selector) or {
+		return error('cannot resolve lifecycle target for iframe ${selector}: ${err}')
+	}
+	child := find_frame_by_owner(mut sess, collect_frame_entries(tree), owner_bnid) or {
+		return error('cannot resolve lifecycle target for iframe ${selector}: child frame is missing')
+	}
+	return LifecycleTarget{
+		frame_id:  child.frame_id
+		loader_id: child.loader_id
+	}
+}
+
+// lifecycle_event_matches 判断 lifecycle 事件是否命中目标 frame / loader。
+//   - frame_id 为空表示不限制 frame；
+//   - loader_id 为空表示不限制 loader；
+//   - exclude_loader 非空表示该 loader（旧文档）必须被排除。
+fn lifecycle_event_matches(params string, frame_id string, loader_id string, exclude_loader string) bool {
+	if cdp_extract_str(params, 'name') != 'networkIdle' {
+		return false
+	}
+	if frame_id != '' {
+		evt_frame := cdp_extract_str(params, 'frameId')
+		if evt_frame != '' && evt_frame != frame_id {
+			return false
+		}
+	}
+	evt_loader := cdp_extract_str(params, 'loaderId')
+	if loader_id != '' {
+		// loader 已知时拒绝缺失 loaderId 的事件，避免导航后误收旧文档事件。
+		return evt_loader != '' && evt_loader == loader_id
+	}
+	if exclude_loader != '' && evt_loader != '' {
+		return evt_loader != exclude_loader
+	}
+	return true
+}
+
+// wait_for_networkidle 等待 networkIdle 生命周期事件。
+//   - 等待前显式打开 lifecycle 事件上报（CDP 默认关闭，等不到事件）；
+//   - 用固定 deadline 控制整个循环：收到无关事件不会重置时限；
+//   - 事件必须属于目标 frame / loader 才算命中。
+fn wait_for_networkidle(mut sess CdpSession, timeout time.Duration) ! {
+	// 先订阅再开启上报，避免漏掉开启后立刻到达的事件
+	ch := sess.subscribe('Page.lifecycleEvent')
+	defer { sess.unsubscribe('Page.lifecycleEvent', ch) }
+	enable_lifecycle_events(mut sess)!
+	target := resolve_lifecycle_target(mut sess) or { return error(err.msg()) }
+	deadline := time.now().add(timeout)
+	for time.now() < deadline {
+		select {
+			evt := <-ch {
+				if lifecycle_event_matches(evt.params, target.frame_id, target.loader_id, '') {
+					return
+				}
+			}
+			250 * time.millisecond {
+				// 轮询检查 deadline（收到无关事件不会重置时限）
+			}
+		}
+	}
+	return error('timeout waiting for networkidle')
+}
+
+// 导航使用 Page.navigate 返回的 loaderId，不能依赖可能先到或缺失的 frameNavigated。
+fn navigate_and_wait_networkidle(mut sess CdpSession, url string) ! {
+	lifecycle_ch := sess.subscribe('Page.lifecycleEvent')
+	same_document_ch := sess.subscribe('Page.navigatedWithinDocument')
+	defer {
+		sess.unsubscribe('Page.lifecycleEvent', lifecycle_ch)
+		sess.unsubscribe('Page.navigatedWithinDocument', same_document_ch)
+	}
+	enable_lifecycle_events(mut sess)!
+	target := resolve_lifecycle_target(mut sess)!
+	resp := sess.send_command('Page.navigate', '{"url":${json_str(url)},"frameId":${json_str(target.frame_id)}}')!
+	error_text := cdp_extract_str(resp.result, 'errorText')
+	if error_text != '' { return error('navigation failed: ${error_text}') }
+	if cdp_extract_bool(resp.result, 'isDownload') {
+		return error('navigation started a download, not a document')
+	}
+	new_loader := cdp_extract_str(resp.result, 'loaderId')
+	frame_id := cdp_extract_str(resp.result, 'frameId')
+	if frame_id == '' || frame_id != target.frame_id {
+		return error('navigation response has no matching frameId')
+	}
+	deadline := time.now().add(30 * time.second)
+	for time.now() < deadline {
+		select {
+			evt := <-same_document_ch {
+				// 同文档导航不创建新 loader，也不会再触发新文档的 networkIdle。
+				if new_loader == '' && cdp_extract_str(evt.params, 'frameId') == frame_id
+					&& cdp_extract_str(evt.params, 'url') == url {
+					return
+				}
+			}
+			evt := <-lifecycle_ch {
+				if new_loader != '' && lifecycle_event_matches(evt.params, frame_id, new_loader, '') {
+					return
+				}
+			}
+			250 * time.millisecond {
+			}
+		}
+	}
+	return error('timeout waiting for networkidle')
+}
+
 // wait_for_navigation_state 等待页面导航到指定状态
 // 支持状态：commit/domcontentloaded/loaded/networkidle
 fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
+	if state == 'networkidle' {
+		wait_for_networkidle(mut sess, 30 * time.second)!
+		return
+	}
 	match state {
 		'', 'load' {
 			ch := sess.subscribe('Page.loadEventFired')
@@ -1154,22 +1652,6 @@ fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
 				}
 			}
 		}
-		'networkidle' {
-			ch := sess.subscribe('Page.lifecycleEvent')
-			defer { sess.unsubscribe('Page.lifecycleEvent', ch) }
-			for {
-				select {
-					evt := <-ch {
-						if cdp_extract_str(evt.params, 'name') == 'networkIdle' {
-							return
-						}
-					}
-					30 * time.second {
-						return error('timeout waiting for networkidle')
-					}
-				}
-			}
-		}
 		else {
 			return error('unknown waitUntil state: ${state}')
 		}
@@ -1177,29 +1659,17 @@ fn wait_for_navigation_state(mut sess CdpSession, state string) ! {
 }
 
 fn navigate_and_wait(mut sess CdpSession, url string, state string) ! {
+	if state == 'networkidle' {
+		navigate_and_wait_networkidle(mut sess, url)!
+		return
+	}
 	mut event := 'Page.loadEventFired'
 	if state == 'domcontentloaded' {
 		event = 'Page.domContentEventFired'
-	} else if state == 'networkidle' {
-		event = 'Page.lifecycleEvent'
 	}
 	ch := sess.subscribe(event)
 	defer { sess.unsubscribe(event, ch) }
 	sess.send_command('Page.navigate', '{"url":${json_str(url)}}')!
-	if state == 'networkidle' {
-		for {
-			select {
-				evt := <-ch {
-					if cdp_extract_str(evt.params, 'name') == 'networkIdle' {
-						return
-					}
-				}
-				30 * time.second {
-					return error('timeout waiting for networkidle')
-				}
-			}
-		}
-	}
 	select {
 		_ := <-ch {
 		}
@@ -1215,63 +1685,6 @@ fn baseline_mime_type(path string) string {
 		return 'image/jpeg'
 	}
 	return 'image/png'
-}
-
-fn build_screenshot_annotate_js(full bool, max_labels int) string {
-	full_js := if full { 'true' } else { 'false' }
-	return "((function(){
-var interactiveRoles = [\"button\",\"link\",\"textbox\",\"checkbox\",\"radio\",\"combobox\",\"listbox\",\"menuitem\",\"menuitemcheckbox\",\"menuitemradio\",\"option\",\"searchbox\",\"slider\",\"spinbutton\",\"switch\",\"tab\",\"treeitem\",\"heading\",\"image\"];
-var nodes = [];
-try {
-var tree = (function(){ var cb; var promise = new Promise(function(r){cb=r;}); chrome.runtime.sendMessage({type:\"getAXTree\"},function(resp){cb(resp);}); return promise; })();
-var counter = 1;
-for (var i = 0; i < tree.length && counter <= ${max_labels}; i++) {
-var node = tree[i];
-var role = node.role && node.role.value ? node.role.value : \"\";
-if (interactiveRoles.indexOf(role) === -1) continue;
-var name = node.name && node.name.value ? node.name.value : \"\";
-var bnid = node.backendDOMNodeId || 0;
-if (bnid === 0) continue;
-var js = \"(function(){var el=null;try{el=window.domAccessHelper.querySelectorByBackendNodeId(\" + bnid + \");}catch(e){}if(!el)return null;var r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)return null;var frame=null;try{var iframes=document.querySelectorAll(\"iframe\");for(var fi=0;fi<iframes.length;fi++){var fr=iframes[fi].getBoundingClientRect();if(r.x>=fr.x&&r.x<fr.x+fr.width&&r.y>=fr.y&&r.y<fr.y+fr.height){frame=iframes[fi];break;}}}catch(e){}if(frame){return{x:fr.x+r.x+r.width/2,y:fr.y+r.y+r.height/2,width:r.width,height:r.height};}return{x:r.x+r.width/2,y:r.y+r.height/2,width:r.width,height:r.height};})()\";
-var rect = null;
-try{rect=eval(js);}catch(e){}
-if (!rect) continue;
-nodes.push({num:counter,role:role,name:name.substring(0,50),x:rect.x,y:rect.y,width:rect.width,height:rect.height});
-counter++;
-}
-} catch(e) { return JSON.stringify({ok:false,error:\"failed to get AX tree: \"+e.message}); }
-if (nodes.length === 0) { return JSON.stringify({ok:false,error:\"no interactive elements found\"}); }
-var resp = (function(){ var cb; var promise = new Promise(function(r){cb=r;}); chrome.runtime.sendMessage({type:\"captureScreenshot\",params:{format:\"png\",captureBeyondViewport:${full_js}}},function(r){cb(r);}); return promise; })();
-var img = new Image();
-img.src = \"data:image/png;base64,\" + resp.data;
-var canvas = document.createElement(\"canvas\");
-canvas.width = img.width;
-canvas.height = img.height;
-var ctx = canvas.getContext(\"2d\");
-ctx.drawImage(img,0,0);
-ctx.strokeStyle = \"#ff0000\";
-ctx.lineWidth = 2;
-for (var i = 0; i < nodes.length; i++) {
-var n = nodes[i];
-var scaleX = img.width / window.innerWidth;
-var scaleY = img.height / window.innerHeight;
-var x = n.x * scaleX;
-var y = n.y * scaleY;
-var w = n.width * scaleX;
-var h = n.height * scaleY;
-ctx.strokeRect(x - w/2, y - h/2, w, h);
-var fontSize = Math.max(14, Math.min(24, Math.floor(Math.min(w, h) * 0.4)));
-ctx.fillStyle = \"#ff0000\";
-ctx.fillRect(x + w/2 - 4, y - h/2 - fontSize - 4, fontSize + 8, fontSize + 8);
-ctx.fillStyle = \"#ffffff\";
-ctx.font = \"bold \" + fontSize + \"px monospace\";
-ctx.textAlign = \"center\";
-ctx.textBaseline = \"middle\";
-ctx.fillText(n.num.toString(), x + w/2, y - h/2 - fontSize/2);
-}
-var outData = canvas.toDataURL(\"image/png\").split(\",\")[1];
-return JSON.stringify({ok:true,data:outData,labelsCount:nodes.length,labels:nodes});
-})())"
 }
 
 fn screenshot_diff_js(baseline_b64 string, baseline_mime string, current_b64 string, threshold f64, include_diff bool) string {
@@ -1582,9 +1995,41 @@ fn render_ax_tree(nodes_json string, start_counter int, mut store AxRefStore, in
 	return out.str(), counter
 }
 
+// cursor_selector_helper_js 返回 cursor-interactive 快照用到的选择器辅助函数源码。
+// 单独抽出来是为了能在 node 沙箱里直接验证索引语义：
+//   - nthOfTypeIndex：CSS :nth-of-type 只按「标签」计数，
+//     所以索引必须基于**所有同标签兄弟**，不能按「同标签且同 class」过滤；
+//   - strictSelector：兜底路径，只用 tag:nth-child 逐级定位，保证唯一命中。
+fn cursor_selector_helper_js() string {
+	return [
+		'function nthOfTypeIndex(el) {',
+		'  var parent = el.parentElement;',
+		'  if (!parent) return 1;',
+		'  var kids = parent.children || [];',
+		'  var sameTag = [];',
+		'  for (var i = 0; i < kids.length; i++) {',
+		'    if (kids[i].tagName === el.tagName) sameTag.push(kids[i]);',
+		'  }',
+		'  return sameTag.indexOf(el) + 1;',
+		'}',
+		'function strictSelector(el) {',
+		'  var parts = [];',
+		'  var current = el;',
+		'  while (current && current.parentElement) {',
+		'    var parent = current.parentElement;',
+		'    var kids = parent.children || [];',
+		'    parts.unshift(current.tagName.toLowerCase() + ":nth-child(" + (kids.indexOf(current) + 1) + ")");',
+		'    current = parent;',
+		'  }',
+		'  return parts.join(" > ");',
+		'}',
+	].join('\n')
+}
+
 fn build_cursor_interactive_snapshot_js(mut sess CdpSession, candidate_limit int) string {
 	limit := if candidate_limit > 0 { candidate_limit } else { 1000 }
 	return build_document_scope_js(mut sess, '
+		${cursor_selector_helper_js()}
 		var interactiveRoles = new Set([
 			"button", "link", "textbox", "checkbox", "radio", "combobox", "listbox",
 			"menuitem", "menuitemcheckbox", "menuitemradio", "option", "searchbox",
@@ -1595,9 +2040,13 @@ fn build_cursor_interactive_snapshot_js(mut sess CdpSession, candidate_limit int
 			return String(value || "").replace(/\\s+/g, " ").trim();
 		}
 		function buildSelector(el) {
+			// 特殊属性值可能生成非法 CSS；候选唯一性检查失败时继续走路径兜底。
+			function unique(candidate) { try { var found=doc.querySelectorAll(candidate); return found.length === 1 && found[0] === el; } catch (e) { return false; } }
 			var testId = el.getAttribute("data-testid");
-			if (testId) return "[data-testid=" + JSON.stringify(testId) + "]";
-			if (el.id) return "#" + CSS.escape(el.id);
+			var testSelector = testId ? "[data-testid=" + JSON.stringify(testId) + "]" : "";
+			if (testSelector && unique(testSelector)) return testSelector;
+			var idSelector = el.id ? "#" + CSS.escape(el.id) : "";
+			if (idSelector && unique(idSelector)) return idSelector;
 			var path = [];
 			var current = el;
 			while (current && current !== doc.body) {
@@ -1606,28 +2055,37 @@ fn build_cursor_interactive_snapshot_js(mut sess CdpSession, candidate_limit int
 				if (classes.length > 0) sel += "." + CSS.escape(classes[0]);
 				var parent = current.parentElement;
 				if (parent) {
-					var siblings = Array.from(parent.children);
-					var matching = siblings.filter(function(node) {
-						if (node.tagName !== current.tagName) return false;
-						if (classes.length > 0 && !node.classList.contains(classes[0])) return false;
-						return true;
+					var sameTag = Array.from(parent.children || []).filter(function(node) {
+						return node.tagName === current.tagName;
 					});
-					if (matching.length > 1) {
-						sel += ":nth-of-type(" + (matching.indexOf(current) + 1) + ")";
+					// :nth-of-type 只按标签计数（class 不参与），
+					// 索引必须基于所有同标签兄弟，否则会指向另一个元素。
+					if (sameTag.length > 1) {
+						sel += ":nth-of-type(" + nthOfTypeIndex(current) + ")";
 					}
 				}
 				path.unshift(sel);
 				current = current.parentElement;
 				try {
 					var candidate = path.join(" > ");
-					if (doc.querySelectorAll(candidate).length === 1) break;
+					var found = doc.querySelectorAll(candidate);
+					// 必须唯一命中原元素，否则继续往上级补路径
+					if (found.length === 1 && found[0] === el) return candidate;
 				} catch (e) {}
 				if (path.length >= 8) break;
 			}
+			// 兜底：只用 tag:nth-child 逐级定位，保证唯一命中
+			var fallback = strictSelector(el);
+			try {
+				var found = doc.querySelectorAll(fallback);
+				if (found.length === 1 && found[0] === el) return fallback;
+			} catch (e) {}
 			return path.join(" > ");
 		}
 		var seen = new Set();
 		var results = [];
+		// 保存扫描时的真实节点，后续换取 backendNodeId，不再重新按 selector 指向替代节点。
+		var snapshotNodes = win.__vBrowserCursorSnapshotNodes = [];
 		// 优化：不再使用 querySelectorAll("*")，仅扫描明确的可交互元素或有交互意图的属性
 		var selector = [
 			"a", "button", "input", "select", "textarea", "details", "summary",
@@ -1666,11 +2124,12 @@ fn build_cursor_interactive_snapshot_js(mut sess CdpSession, candidate_limit int
 			if (hasCursorPointer) hints.push("cursor:pointer");
 			if (hasOnClick) hints.push("onclick");
 			if (hasTabIndex) hints.push("tabindex");
+			snapshotNodes.push(el);
 			results.push({ selector: selector, text: text.slice(0, 120), role: hasCursorPointer || hasOnClick ? "clickable" : "focusable", hints: hints.join(", ") });
 		}
 		return results.map(function(item) {
-			return [item.selector, item.text.replace(/[\t\n\r]+/g, " "), item.role, item.hints.replace(/[\t\n\r]+/g, " ")].join("\t");
-		}).join("\n");
+			return [item.selector, item.text.replace(/[\\t\\n\\r]+/g, " "), item.role, item.hints.replace(/[\\t\\n\\r]+/g, " ")].join("\\t");
+		}).join("\\n");
 	')
 }
 
@@ -1685,9 +2144,13 @@ fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mu
 	if raw_lines == '' || raw_lines == 'null' {
 		return ''
 	}
+	defer {
+		cleanup := build_document_scope_js(mut sess, 'delete win.__vBrowserCursorSnapshotNodes; return true;')
+		eval_prepared_js(mut sess, cleanup, false) or {}
+	}
 	mut out := strings.new_builder(4096)
 	mut counter := start_counter
-	for line in raw_lines.split('\n') {
+	for node_index, line in raw_lines.split('\n') {
 		// maxNodes 是全局输出预算，这里沿用剩余额度继续截断。
 		if max_nodes > 0 && counter - start_counter >= max_nodes {
 			break
@@ -1703,6 +2166,20 @@ fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mu
 		if selector == '' || text == '' {
 			continue
 		}
+		lookup := build_document_scope_js(mut sess, 'var el=(win.__vBrowserCursorSnapshotNodes || [])[${node_index}]; if(!el || !el.isConnected) throw new Error("stale-reference: cursor snapshot node disappeared"); return el;')
+		node_resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(lookup)}}')!
+		evaluate_check_exception(node_resp.result)!
+		object_id := cdp_extract_str(node_resp.result, 'objectId')
+		if object_id == '' { return error('stale-reference: cannot resolve cursor snapshot node') }
+		desc := sess.send_command('DOM.describeNode', '{"objectId":${json_str(object_id)}}') or {
+			release_remote_object(mut sess, object_id)
+			return error('stale-reference: ${err}')
+		}
+		release_remote_object(mut sess, object_id)
+		backend_node_id := cdp_extract_int(desc.result, '"backendNodeId":')
+		if backend_node_id <= 0 {
+			return error('stale-reference: cursor snapshot backendNodeId is missing')
+		}
 		ref_key := '@e${counter}'
 		counter++
 		resolved_role := if role != '' { role } else { 'clickable' }
@@ -1712,9 +2189,10 @@ fn render_cursor_interactive_snapshot(mut sess CdpSession, start_counter int, mu
 		}
 		out.write_string('\n')
 		axref_set(mut store, ref_key, AxRef{
-			selector: selector
-			role:     resolved_role
-			name:     text
+			// 引用只用稳定节点身份，避免 resolver 的 selector 优先路径重新指向别的元素。
+			backend_node_id: backend_node_id
+			role:            resolved_role
+			name:            text
 		})
 	}
 	return out.str()
@@ -1747,7 +2225,7 @@ struct TryResult {
 }
 
 fn try_run_element_action(mut sess CdpSession, sel string, body string) TryResult {
-	run_element_action(mut sess, sel, body) or {
+	run_element_action_by_selector(mut sess, sel, body) or {
 		return TryResult{
 			ok:  false
 			msg: err.msg()
@@ -1781,6 +2259,8 @@ fn dispatch_pointer_action(mut sess CdpSession, sel string, action string) strin
 	if dom_result.ok {
 		return 'null'
 	}
+	// stale 引用不能通过鼠标回退伪装成功。
+	if dom_result.msg.contains('stale-reference') { return 'ERROR:${dom_result.msg}' }
 	mouse_result := try_pointer_action(mut sess, sel, action)
 	if mouse_result.ok {
 		// DOM path 失败但 mouse fallback 成功；保留 dom 错误供诊断
@@ -2050,7 +2530,9 @@ fn cmd_check(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	run_element_action(mut sess, sel, build_toggle_action_body(true)) or { return 'ERROR:${err}' }
+	run_element_action_by_selector(mut sess, sel, build_toggle_action_body(true)) or {
+		return 'ERROR:${err}'
+	}
 	return 'null'
 }
 
@@ -2060,7 +2542,9 @@ fn cmd_uncheck(mut sess CdpSession, params string) string {
 	if sel == '' {
 		return 'ERROR:missing selector'
 	}
-	run_element_action(mut sess, sel, build_toggle_action_body(false)) or { return 'ERROR:${err}' }
+	run_element_action_by_selector(mut sess, sel, build_toggle_action_body(false)) or {
+		return 'ERROR:${err}'
+	}
 	return 'null'
 }
 
@@ -2386,31 +2870,17 @@ fn cmd_wait(mut sess CdpSession, params string) string {
 // wait_load 等待页面加载事件
 // 支持状态参数控制等待时机
 fn wait_load(mut sess CdpSession, state string) string {
+	if state == 'networkidle' {
+		// 显式打开 lifecycle 事件上报 + 固定 deadline + frame/loader 关联
+		wait_for_networkidle(mut sess, 30 * time.second) or { return 'ERROR:${err}' }
+		return 'null'
+	}
 	event := match state {
 		'load' {
 			'Page.loadEventFired'
 		}
 		'domcontentloaded' {
 			'Page.domContentEventFired'
-		}
-		'networkidle' {
-			// 监听 Page.lifecycleEvent name=networkIdle
-			ch := sess.subscribe('Page.lifecycleEvent')
-			defer { sess.unsubscribe('Page.lifecycleEvent', ch) }
-			for {
-				select {
-					evt := <-ch {
-						name := cdp_extract_str(evt.params, 'name')
-						if name == 'networkIdle' {
-							break
-						}
-					}
-					30 * time.second {
-						return 'ERROR:timeout waiting for networkidle'
-					}
-				}
-			}
-			return 'null'
 		}
 		else {
 			return 'ERROR:unknown load state: ${state}'
@@ -2934,7 +3404,8 @@ fn semantic_mouse_action(mut sess CdpSession, locator_js string, action string, 
 		else { return 'ERROR:unknown action: ${action}' }
 	}
 	js := build_semantic_action_js(mut sess, locator_js, 'if (!el) return false; el.scrollIntoView({block:"center",inline:"center"}); ${body}')
-	ok := eval_scoped_expression(mut sess, js, false) or {
+	// 脚本已带作用域包装，用 eval_prepared_js 避免二次包装
+	ok := eval_prepared_js(mut sess, js, false) or {
 		pointer_action_for_locator_js(mut sess, locator_js, action) or { return 'ERROR:${err}' }
 		return 'null'
 	}
@@ -3347,6 +3818,10 @@ mut:
 	paused_ch              chan ProtocolResponse
 	auth_ch                chan ProtocolResponse
 	stop_ch                chan bool
+	// commands.v 独立保存新增状态，避免修改并行维护的 CdpSession 结构。
+	watch_generation   string
+	saving_request_ids map[string]bool
+	poll_document_ids  map[string]string
 }
 
 @[unsafe]
@@ -3853,7 +4328,7 @@ fn network_hook_script_id(script_id string) string {
 }
 
 fn network_hook_config_js(filter string, capture_body bool, capture_response bool, clear bool, max_body_len int, script_id string) string {
-	return 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} window.__vBrowserHookConfig.active = true; window.__vBrowserHookConfig.filter = ${json_str(filter)}; window.__vBrowserHookConfig.captureBody = ${capture_body}; window.__vBrowserHookConfig.captureResponse = ${capture_response}; window.__vBrowserHookConfig.maxBodyLen = ${max_body_len}; window.__vBrowserHookConfig.scriptId = ${json_str(script_id)}; window.__vBrowserHookState = window.__vBrowserHookState || { events: [], nextId: 0 }; if (${clear}) { window.__vBrowserHookState.events = []; window.__vBrowserHookState.nextId = 0; } window.__vBrowserHookInstalled = true; "ok"'
+	return 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "true"); } } catch (err) {} window.__vBrowserHookConfig.active = true; window.__vBrowserHookConfig.filter = ${json_str(filter)}; window.__vBrowserHookConfig.captureBody = ${capture_body}; window.__vBrowserHookConfig.captureResponse = ${capture_response}; window.__vBrowserHookConfig.maxBodyLen = ${max_body_len}; window.__vBrowserHookConfig.scriptId = ${json_str(script_id)}; try { var savedHookConfig = JSON.stringify(window.__vBrowserHookConfig); if (window.localStorage) { window.localStorage.setItem("__vBrowserHookConfig", savedHookConfig); } if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookConfig", savedHookConfig); } } catch (err) {} window.__vBrowserHookState = window.__vBrowserHookState || { events: [], nextId: 0 }; if (${clear}) { window.__vBrowserHookState.events = []; window.__vBrowserHookState.nextId = 0; } window.__vBrowserHookInstalled = true; "ok"'
 }
 
 fn network_hook_activate_js(filter string, capture_body bool, capture_response bool, clear bool, max_body_len int, script_id string) string {
@@ -3861,7 +4336,8 @@ fn network_hook_activate_js(filter string, capture_body bool, capture_response b
 }
 
 fn network_hook_stop_js() string {
-	return 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} window.__vBrowserHookConfig.active = false; window.__vBrowserHookInstalled = true; "ok"'
+	// 完整配置与旧的 __vBrowserHookActive 标记同步置 false，保证降级/旧 bootstrap 路径也不会误恢复
+	return 'window.__vBrowserHookConfig = window.__vBrowserHookConfig || {}; window.__vBrowserHookConfig.active = false; try { if (window.localStorage) { window.localStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} try { if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookActive", "false"); } } catch (err) {} try { var savedHookConfig = JSON.stringify(window.__vBrowserHookConfig); if (window.localStorage) { window.localStorage.setItem("__vBrowserHookConfig", savedHookConfig); } if (window.sessionStorage) { window.sessionStorage.setItem("__vBrowserHookConfig", savedHookConfig); } } catch (err) {} window.__vBrowserHookInstalled = true; "ok"'
 }
 
 fn apply_hook_js_to_default_contexts(mut sess CdpSession, js string) {
@@ -3900,7 +4376,7 @@ fn start_network_hook(mut sess CdpSession, params string) !string {
 	sess.hook_state.active = true
 	sess.hook_state.injected = true
 	sess.hook_state.script_id = script_id
-	sess.hook_state.script_version = 3
+	sess.hook_state.script_version = 4
 	sess.hook_state.filter = filter
 	sess.hook_state.capture_body = capture_body
 	sess.hook_state.capture_response = capture_response
@@ -4011,19 +4487,28 @@ fn network_hook_replay_json(mut sess CdpSession, params string) !string {
 		return error('missing recordId')
 	}
 	override_method := cdp_extract_str(params, 'method')
-	override_body := cdp_extract_str(params, 'body')
+	override_body_provided := params.contains('"overrideBody":')
+	override_body := if override_body_provided {
+		cdp_extract_str(params, 'overrideBody')
+	} else {
+		cdp_extract_str(params, 'body')
+	}
 	mut override_headers := cdp_extract_str(params, 'overrideHeaders')
 	dry_run := cdp_extract_str(params, 'dryRun') == 'true'
+	// 只在锁内复制记录，后续 CDP 调用不能持有 hook_mu。
+	sess.hook_mu.@lock()
 	record := sess.hook_records[record_id] or {
+		sess.hook_mu.unlock()
 		return error('hook record not found: ${record_id}')
 	}
+	sess.hook_mu.unlock()
 	method := if override_method != '' {
 		override_method
 	} else {
 		cdp_extract_str(record.raw_json, 'method')
 	}
 	url := network_hook_replay_url_from_params(params, record)
-	body := if override_body != '' {
+	body := if override_body_provided || override_body != '' {
 		override_body
 	} else {
 		cdp_extract_str(record.raw_json, 'requestBody')
@@ -4110,7 +4595,7 @@ fn hook_record_view_from_raw(record HookRecord) RequestRecord {
 		response_headers: if response_headers == '' { '{}' } else { response_headers }
 		response_body:    response_body
 		error_text:       cdp_extract_str(raw, 'errorText')
-		timestamp:        cdp_extract_int(raw, '"timestamp":')
+		timestamp:        cdp_extract_i64(raw, '"timestamp":')
 		fallback_text:    fallback_text
 	}
 }
@@ -4355,7 +4840,7 @@ fn hook_transform_rules_json(view RequestRecord) string {
 		'"hasCursorHint":${view.cursor_hint != ''}',
 		'"method":"${json_object_key(view.method)}"',
 	]
-	return '[' + rules.join(',') + ']'
+	return '{' + rules.join(',') + '}'
 }
 
 fn hook_expected_shape_json(view RequestRecord) string {
@@ -4493,14 +4978,14 @@ fn install_network_hook(mut sess CdpSession, script_id string, persistent bool, 
 	if persistent {
 		sess.hook_mu.@lock()
 		should_install := force_install || !sess.hook_state.injected
-			|| sess.hook_state.script_id != script_id || sess.hook_state.script_version != 3
+			|| sess.hook_state.script_id != script_id || sess.hook_state.script_version != 4
 		sess.hook_mu.unlock()
 		if should_install {
 			sess.send_command('Page.addScriptToEvaluateOnNewDocument', '{"source":${json_str(bootstrap_js)}}')!
 			sess.hook_mu.@lock()
 			sess.hook_state.injected = true
 			sess.hook_state.script_id = script_id
-			sess.hook_state.script_version = 3
+			sess.hook_state.script_version = 4
 			sess.hook_mu.unlock()
 		}
 	}
@@ -4572,38 +5057,50 @@ fn sync_network_hook_records(mut sess CdpSession) !int {
 	sess.hook_mu.@lock()
 	last_synced_index := sess.hook_state.last_synced_index
 	sess.hook_mu.unlock()
-	read_js := 'JSON.stringify(window.__vBrowserHookState && window.__vBrowserHookState.events ? window.__vBrowserHookState.events.slice(${last_synced_index}) : [])'
-	raw := eval_scoped_expression(mut sess, read_js, false) or { return error(err.msg()) }
-	trimmed := raw.trim_space()
-	if trimmed == '' || trimmed == 'null' || trimmed == 'undefined' || trimmed == '[]' {
-		return 0
-	}
-	items := split_json_array_objects(trimmed)
-	if items.len == 0 {
-		return 0
-	}
-	return append_polled_hook_records(mut sess, items, last_synced_index)
+	scope := '${sess.current_tab_id}:${sess.current_frame_selector_value()}'
+	previous_document := fetch_config_snapshot(mut sess).poll_document_ids[scope]
+	// 在页面中先比较 documentId 再 slice，导航后不能沿用旧文档的游标。
+	read_js := '(function(){ var s=window.__vBrowserHookState || {}; var events=s.events || []; var documentId=String(s.documentId || ""); var index=documentId === ${json_str(previous_document)} ? ${last_synced_index} : 0; if(index > events.length) index=0; return JSON.stringify({documentId:documentId,index:index,events:events.slice(index)}); })()'
+	raw := eval_scoped_expression(mut sess, read_js, false)!
+	if raw.trim_space() in ['', 'null', 'undefined'] { return 0 }
+	document_id := cdp_extract_str(raw, 'documentId')
+	index := cdp_extract_int(raw, '"index":')
+	fetch_config_update(mut sess, fn [scope, document_id] (mut cfg FetchSessionConfig) {
+		cfg.poll_document_ids[scope] = document_id
+	})
+	sess.hook_mu.@lock()
+	sess.hook_state.last_synced_index = index
+	sess.hook_mu.unlock()
+	items := split_json_array_objects(cdp_extract_obj_key(raw, '"events":'))
+	return append_polled_hook_records(mut sess, items, index)
 }
 
 fn network_hook_bootstrap_js() string {
 	return [
 		'(function() {',
-		'  var SCRIPT_VERSION = 3;',
+		'  var SCRIPT_VERSION = 4;',
+		// 旧包装器闭包捕获旧配置；停用旧配置后重新包装，不能只改版本号。
+		'  if (window.__vBrowserHookInstalled && window.__vBrowserHookVersion !== SCRIPT_VERSION) {',
+		'    var previous = window.__vBrowserHookConfig || {}, replacement = Object.assign({}, previous); previous.active = false; window.__vBrowserHookConfig = replacement;',
+		'    if (window.fetch) { try { delete window.fetch.__vBrowserHookWrapped; } catch (e) {} }',
+		'    if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) { try { delete window.XMLHttpRequest.prototype.__vBrowserHookWrapped; } catch (e) {} }',
+		'  }',
 		'  var cfg = window.__vBrowserHookConfig = window.__vBrowserHookConfig || {};',
-		'  function readPersistedActive() {',
+		'  try { var persistedConfig = JSON.parse((window.localStorage && window.localStorage.getItem("__vBrowserHookConfig")) || (window.sessionStorage && window.sessionStorage.getItem("__vBrowserHookConfig")) || "null"); if (persistedConfig && typeof persistedConfig === "object") { Object.keys(persistedConfig).forEach(function(key) { cfg[key] = persistedConfig[key]; }); } } catch (err) {}',
+		'  if (cfg.active === undefined) { try { var legacyActive = window.localStorage && window.localStorage.getItem("__vBrowserHookActive"); if (legacyActive === null) { legacyActive = window.sessionStorage && window.sessionStorage.getItem("__vBrowserHookActive"); } if (legacyActive !== null) { cfg.active = legacyActive === "true"; } } catch (err) {} }',
+		'  function readPersistedConfig() {',
 		'    try {',
-		'      var value = window.localStorage && window.localStorage.getItem("__vBrowserHookActive");',
-		'      if (value === "true") { return true; }',
-		'      if (value === "false") { return false; }',
-		'      value = window.sessionStorage && window.sessionStorage.getItem("__vBrowserHookActive");',
-		'      if (value === "true") { return true; }',
-		'      if (value === "false") { return false; }',
+		'      var value = window.localStorage && window.localStorage.getItem("__vBrowserHookConfig");',
+		'      if (value) { return JSON.parse(value); }',
+		'      value = window.sessionStorage && window.sessionStorage.getItem("__vBrowserHookConfig");',
+		'      if (value) { return JSON.parse(value); }',
 		'    } catch (err) {}',
 		'    return null;',
 		'  }',
-		'  var persistedActive = readPersistedActive();',
-		'  if (persistedActive !== null) { cfg.active = persistedActive; }',
+		'  var persistedConfig = readPersistedConfig();',
+		'  if (persistedConfig && typeof persistedConfig === "object") { Object.keys(persistedConfig).forEach(function(key) { cfg[key] = persistedConfig[key]; }); }',
 		'  var state = window.__vBrowserHookState = window.__vBrowserHookState || { events: [], nextId: 0 };',
+		'  if (!state.documentId) { state.documentId = String(Date.now()) + "-" + Math.random().toString(36).slice(2); }',
 		'  if (window.__vBrowserHookInstalled && window.__vBrowserHookVersion === SCRIPT_VERSION) { return "ok"; }',
 		'  window.__vBrowserHookVersion = SCRIPT_VERSION;',
 		'  function truncateText(value, limit) {',
@@ -4673,7 +5170,7 @@ fn network_hook_bootstrap_js() string {
 		'    return haystack.toLowerCase().indexOf(filter.toLowerCase()) >= 0;',
 		'  }',
 		'  function pushRecord(record) {',
-		'    record.recordId = String(++state.nextId);',
+		'    record.recordId = String(state.documentId) + ":" + String(++state.nextId);',
 		'    record.scriptId = String(cfg.scriptId || "");',
 		'    record.pageUrl = String(location.href || "");',
 		'    record.timestamp = Date.now();',
@@ -4917,7 +5414,7 @@ fn network_hook_bootstrap_js() string {
 		'    registerNativeLike(XHR.prototype.setRequestHeader, "setRequestHeader", 2);',
 		'    XHR.prototype.send = function(body) {',
 		'      var xhr = this;',
-		'      var meta = xhr.__vBrowserHookMeta || { method: "GET", url: "", headers: {}, body: "" };',
+		'      var meta = Object.assign({}, xhr.__vBrowserHookMeta || { method: "GET", url: "", headers: {}, body: "" });',
 		'      meta.body = captureRequestBody(body);',
 		'      if (cfg.active && shouldCapture(meta.method, meta.url)) {',
 		'        var finalized = false;',
@@ -5059,11 +5556,17 @@ fn start_network_watch(mut sess CdpSession, target_dir string, filter string) !s
 		}
 	}
 	sess.network_watch_mu.@lock()
+	generation := rand.uuid_v4()
+	fetch_config_update(mut sess, fn [generation] (mut cfg FetchSessionConfig) {
+		cfg.watch_generation = generation
+		cfg.saving_request_ids = map[string]bool{}
+	})
 	sess.network_watch.active = true
 	sess.network_watch.target_dir = target_dir
 	sess.network_watch.filter = filter
 	sess.network_watch.candidate_urls = map[string]bool{}
 	sess.network_watch.saved_request_ids = map[string]bool{}
+	sess.network_watch.failed_count = 0
 	sess.network_watch.next_index = 0
 	for url in candidate_urls {
 		sess.network_watch.candidate_urls[url] = true
@@ -5086,6 +5589,7 @@ fn stop_network_watch(mut sess CdpSession) string {
 	sess.network_watch.filter = ''
 	sess.network_watch.candidate_urls = map[string]bool{}
 	sess.network_watch.saved_request_ids = map[string]bool{}
+	sess.network_watch.failed_count = 0
 	sess.network_watch.next_index = 0
 	sess.network_watch_mu.unlock()
 	return '{"ok":true,"active":${active},"targetDir":${json_str(target_dir)},"filter":${json_str(filter)},"candidateCount":${candidate_count},"savedCount":${saved_count}}'
@@ -5094,74 +5598,69 @@ fn stop_network_watch(mut sess CdpSession) string {
 fn network_watch_status_json(mut sess CdpSession) string {
 	sess.network_watch_mu.@lock()
 	defer { sess.network_watch_mu.unlock() }
-	return '{"active":${sess.network_watch.active},"targetDir":${json_str(sess.network_watch.target_dir)},"filter":${json_str(sess.network_watch.filter)},"candidateCount":${sess.network_watch.candidate_urls.len},"savedCount":${sess.network_watch.saved_request_ids.len},"nextIndex":${sess.network_watch.next_index}}'
+	return '{"active":${sess.network_watch.active},"targetDir":${json_str(sess.network_watch.target_dir)},"filter":${json_str(sess.network_watch.filter)},"candidateCount":${sess.network_watch.candidate_urls.len},"savedCount":${sess.network_watch.saved_request_ids.len},"failedCount":${sess.network_watch.failed_count},"nextIndex":${sess.network_watch.next_index}}'
+}
+
+// 锁内预留在途请求；失败只释放预留，重试由本次保存的三次尝试负责，
+// 不承诺后台自动重试。之后显式同步或再次收到事件时可以重新尝试。
+fn reserve_network_watch_save(mut sess CdpSession, entry TrackedNetworkRequest) !(string, string) {
+	sess.network_watch_mu.@lock()
+	defer { sess.network_watch_mu.unlock() }
+	cfg := fetch_config_snapshot(mut sess)
+	if !sess.network_watch.active || !entry.finished
+		|| entry.url !in sess.network_watch.candidate_urls
+		|| entry.request_id in sess.network_watch.saved_request_ids
+		|| entry.request_id in cfg.saving_request_ids {
+		return error('not a pending watch candidate')
+	}
+	request_id := entry.request_id
+	fetch_config_update(mut sess, fn [request_id] (mut state FetchSessionConfig) {
+		state.saving_request_ids[request_id] = true
+	})
+	sess.network_watch.next_index++
+	path := os.join_path(sess.network_watch.target_dir, network_image_output_name(sess.network_watch.next_index, entry))
+	return path, cfg.watch_generation
+}
+
+fn finish_network_watch_save(mut sess CdpSession, request_id string, generation string, saved bool) {
+	sess.network_watch_mu.@lock()
+	defer { sess.network_watch_mu.unlock() }
+	cfg := fetch_config_snapshot(mut sess)
+	// stop/start 之间返回的旧回调不能污染新一轮，也不能删除新一轮的预留。
+	if !sess.network_watch.active || cfg.watch_generation != generation { return }
+	fetch_config_update(mut sess, fn [request_id] (mut state FetchSessionConfig) {
+		state.saving_request_ids.delete(request_id)
+	})
+	if saved {
+		sess.network_watch.saved_request_ids[request_id] = true
+	} else {
+		sess.network_watch.failed_count++
+	}
+}
+
+fn save_network_watch_reserved(mut sess CdpSession, request_id string, path string, generation string) {
+	if _ := save_network_response_with_retry(mut sess, request_id, path, 3, 150 * time.millisecond) {
+		finish_network_watch_save(mut sess, request_id, generation, true)
+	} else {
+		finish_network_watch_save(mut sess, request_id, generation, false)
+		eprintln('[network watch] save failed for ${request_id}: ${err}')
+	}
 }
 
 fn sync_network_watch_existing_requests(mut sess CdpSession) {
-	entries := sess.network_request_entries_snapshot()
-	sess.network_watch_mu.@lock()
-	if !sess.network_watch.active {
-		sess.network_watch_mu.unlock()
-		return
-	}
-	mut request_ids := []string{}
-	mut paths := []string{}
-	for entry in entries {
+	for entry in sess.network_request_entries_snapshot() {
+		path, generation := reserve_network_watch_save(mut sess, entry) or { continue }
 		request_id := entry.request_id
-		if !entry.finished {
-			continue
-		}
-		if entry.url !in sess.network_watch.candidate_urls {
-			continue
-		}
-		if request_id in sess.network_watch.saved_request_ids {
-			continue
-		}
-		sess.network_watch.next_index++
-		seq := sess.network_watch.next_index
-		paths << os.join_path(sess.network_watch.target_dir, network_image_output_name(seq,
-			entry))
-		sess.network_watch.saved_request_ids[request_id] = true
-		request_ids << request_id
-	}
-	sess.network_watch_mu.unlock()
-	for i, request_id in request_ids {
-		path := paths[i]
-		spawn fn [mut sess, request_id, path] () {
-			if err := save_network_response_with_retry(mut sess, request_id, path, 3,
-				150 * time.millisecond)
-			{
-				eprintln('[network watch] sync save failed for ${request_id}: ${err}')
-			}
+		spawn fn [mut sess, request_id, path, generation] () {
+			save_network_watch_reserved(mut sess, request_id, path, generation)
 		}()
 	}
 }
 
 fn handle_network_watch_loading_finished(mut sess CdpSession, request_id string) {
 	entry := sess.network_request_snapshot(request_id) or { return }
-	sess.network_watch_mu.@lock()
-	if !sess.network_watch.active {
-		sess.network_watch_mu.unlock()
-		return
-	}
-	if entry.url !in sess.network_watch.candidate_urls {
-		sess.network_watch_mu.unlock()
-		return
-	}
-	if request_id in sess.network_watch.saved_request_ids {
-		sess.network_watch_mu.unlock()
-		return
-	}
-	sess.network_watch.next_index++
-	seq := sess.network_watch.next_index
-	target_dir := sess.network_watch.target_dir
-	sess.network_watch.saved_request_ids[request_id] = true
-	sess.network_watch_mu.unlock()
-	output_name := network_image_output_name(seq, entry)
-	path := os.join_path(target_dir, output_name)
-	if err := save_network_response_with_retry(mut sess, request_id, path, 3, 150 * time.millisecond) {
-		eprintln('[network watch] save failed for ${request_id}: ${err}')
-	}
+	path, generation := reserve_network_watch_save(mut sess, entry) or { return }
+	save_network_watch_reserved(mut sess, request_id, path, generation)
 }
 
 fn save_network_response_with_retry(mut sess CdpSession, request_id string, target_path string, attempts int, delay time.Duration) !string {
@@ -5182,19 +5681,19 @@ fn save_network_response_with_retry(mut sess CdpSession, request_id string, targ
 
 fn collect_page_primary_image_urls(mut sess CdpSession) ![]string {
 	js := build_page_primary_image_urls_js(mut sess)
-	raw := eval_scoped_expression(mut sess, js, true)!
+	// 脚本已带作用域包装，用 eval_prepared_js 避免二次包装
+	raw := eval_prepared_js(mut sess, js, true)!
 	if raw == '' || raw == 'null' || raw == '[]' {
 		return []string{}
 	}
+	if !raw.starts_with('[') || !raw.ends_with(']') {
+		return error('invalid image URL JSON: expected array')
+	}
+	parsed := json_urls.decode[json_urls.Any](raw) or { return error('invalid image URL JSON: ${err}') }
 	mut urls := []string{}
-	trimmed := raw.trim_space()
-	if trimmed.starts_with('[') && trimmed.ends_with(']') {
-		for item in trimmed[1..trimmed.len - 1].split(',') {
-			url := decode_json_string_literal(item.trim_space())
-			if url != '' && url !in urls {
-				urls << url
-			}
-		}
+	for item in parsed.as_array() {
+		url := item.str()
+		if url != '' && url !in urls { urls << url }
 	}
 	return urls
 }
@@ -5788,17 +6287,25 @@ fn apply_device_preset(mut sess CdpSession, preset DevicePreset) ! {
 
 fn read_protocol_stream(mut sess CdpSession, stream string) !string {
 	mut out := ''
-	for {
+	mut total_bytes := 0
+	deadline := time.now().add(30 * time.second)
+	defer { sess.send_command('IO.close', '{"handle":${json_str(stream)}}') or {} }
+	for time.now() < deadline {
 		resp := sess.send_command('IO.read', '{"handle":${json_str(stream)}}')!
 		data := cdp_extract_str(resp.result, 'data')
-		out += data
-		eof := cdp_extract_obj_key(resp.result, '"eof":') == 'true'
-		if eof {
-			break
+		if cdp_extract_obj_key(resp.result, '"base64Encoded":') == 'true' {
+			decoded := base64.decode(data)
+			total_bytes += decoded.len
+			if total_bytes > 64 * 1024 * 1024 { return error('protocol stream exceeds 64 MiB') }
+			out += decoded.bytestr()
+		} else {
+			total_bytes += data.len
+			if total_bytes > 64 * 1024 * 1024 { return error('protocol stream exceeds 64 MiB') }
+			out += data
 		}
+		if cdp_extract_obj_key(resp.result, '"eof":') == 'true' { return out }
 	}
-	sess.send_command('IO.close', '{"handle":${json_str(stream)}}') or {}
-	return out
+	return error('protocol stream read timed out')
 }
 
 // cmd_diff 比较页面状态差异
@@ -5814,7 +6321,7 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 	dtype := cdp_extract_str(params, 'type')
 	match dtype {
 		'snapshot' {
-			current := cmd_snapshot(mut sess, '{}').trim('"')
+			current := cmd_snapshot(mut sess, '{"raw":true}')
 			baseline_path := cdp_extract_str(params, 'baseline')
 			if baseline_path != '' {
 				baseline := os.read_file(baseline_path) or {
@@ -5859,7 +6366,7 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 			full := cdp_extract_str(params, 'full') == 'true'
 
 			navigate_and_wait(mut sess, url1, wait_until) or { return 'ERROR:${err}' }
-			snapshot1 := cmd_snapshot(mut sess, '{}').trim('"')
+			snapshot1 := cmd_snapshot(mut sess, '{"raw":true}')
 			mut screenshot1_b64 := ''
 			if with_screenshot {
 				screenshot1_b64 = capture_screenshot_base64(mut sess, 'png', full, '') or {
@@ -5868,7 +6375,7 @@ fn cmd_diff(mut sess CdpSession, params string) string {
 			}
 
 			navigate_and_wait(mut sess, url2, wait_until) or { return 'ERROR:${err}' }
-			snapshot2 := cmd_snapshot(mut sess, '{}').trim('"')
+			snapshot2 := cmd_snapshot(mut sess, '{"raw":true}')
 			snapshot_diff := text_diff(snapshot1, snapshot2)
 			mut result := '{"url1":${json_str(url1)},"url2":${json_str(url2)},"snapshot":{"diff":${json_str(snapshot_diff)},"before":${json_str(snapshot1)},"after":${json_str(snapshot2)}}'
 			if with_screenshot {
@@ -6021,13 +6528,28 @@ fn cmd_state(mut sess CdpSession, params string) string {
 			// 获取 localStorage
 			ls_js := 'JSON.stringify(Object.fromEntries(Object.keys(localStorage).map(k=>[k,localStorage.getItem(k)])))'
 			ls_resp := sess.send_command('Runtime.evaluate', '{"expression":${json_str(ls_js)},"returnByValue":true}') or {
-				ProtocolResponse{}
+				return 'ERROR:localStorage export failed: ${err}'
 			}
 			ls_result := cdp_extract_obj_key(ls_resp.result, '"result":')
 			local_storage := cdp_extract_value_from_result(ls_result)
 			state := '{"cookies":${cookies},"localStorage":${json_str(local_storage)}}'
 			out_path := if os.is_abs_path(path) { path } else { os.join_path(state_dir, path) }
-			os.write_file(out_path, state) or { return 'ERROR:${err}' }
+			if os.is_link(out_path) { return 'ERROR:refusing to overwrite symbolic link' }
+			parent_dir := os.dir(out_path)
+			os.mkdir_all(parent_dir) or { return 'ERROR:create state directory failed: ${err}' }
+			tmp_path := '${out_path}.tmp-${rand.uuid_v4()}'
+			// 创建时即为 0600，内容写入前不存在默认权限泄露窗口。
+			mut state_file := os.open_file(tmp_path, 'w', 0o600) or { return 'ERROR:${err}' }
+			state_file.write_string(state) or {
+				state_file.close()
+				os.rm(tmp_path) or {}
+				return 'ERROR:write state failed: ${err}'
+			}
+			state_file.close()
+			os.mv(tmp_path, out_path) or {
+				os.rm(tmp_path) or {}
+				return 'ERROR:atomic state replace failed: ${err}'
+			}
 			return json_str(out_path)
 		}
 		'load' {
@@ -6036,11 +6558,11 @@ fn cmd_state(mut sess CdpSession, params string) string {
 			cookies_json := cdp_extract_obj_key(content, '"cookies":')
 			local_storage_json := cdp_extract_str(content, 'localStorage')
 			if cookies_json != '' && cookies_json != '[]' {
-				sess.send_command('Network.setCookies', '{"cookies":${cookies_json}}') or {}
+				sess.send_command('Network.setCookies', '{"cookies":${cookies_json}}') or { return 'ERROR:cookie restore failed: ${err}' }
 			}
 			if local_storage_json != '' {
 				restore_js := build_storage_restore_script('localStorage', local_storage_json)
-				sess.send_command('Runtime.evaluate', '{"expression":${json_str(restore_js)}}') or {}
+				sess.send_command('Runtime.evaluate', '{"expression":${json_str(restore_js)}}') or { return 'ERROR:localStorage restore failed: ${err}' }
 			}
 			return 'null'
 		}
